@@ -11,6 +11,8 @@ const navItems = [
   { href: "/services", label: "Services", icon: "🏷️" },
   { href: "/quotes", label: "Quotes", icon: "📋" },
   { href: "/onboarding", label: "Onboarding", icon: "🚀" },
+  { href: "/deadlines", label: "Deadlines", icon: "📅" },
+  { href: "/engagement", label: "Engagement", icon: "📝" },
 ];
 
 export default function ConditionalSidebar({
