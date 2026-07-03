@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
+import SendEngagementButton from "./send-button";
 
 export const dynamic = "force-dynamic";
 
@@ -27,17 +28,6 @@ async function updateLetter(id: string, formData: FormData) {
   revalidatePath(`/engagement/${id}`);
 }
 
-async function markAsSent(id: string) {
-  "use server";
-
-  await supabase.from("engagement_letters").update({
-    sent_at: new Date().toISOString(),
-    status: "Sent",
-  }).eq("id", id);
-
-  revalidatePath(`/engagement/${id}`);
-}
-
 export default async function EngagementDetailPage({
   params,
 }: {
@@ -54,7 +44,6 @@ export default async function EngagementDetailPage({
   if (error || !letter) notFound();
 
   const updateWithId = updateLetter.bind(null, id);
-  const markAsSentWithId = markAsSent.bind(null, id);
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
   const signingUrl = `${baseUrl}/sign/${letter.token}`;
@@ -95,7 +84,6 @@ export default async function EngagementDetailPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900 mb-4">Letter Preview</h2>
 
-            {/* Actual letter */}
             <div className="border border-slate-200 rounded-xl p-8 bg-white text-sm text-slate-700 leading-relaxed space-y-4">
               
               <div className="text-right text-xs text-slate-400">
@@ -135,9 +123,9 @@ export default async function EngagementDetailPage({
               <div>
                 <p className="font-semibold text-slate-900">Your Responsibilities</p>
                 <p className="mt-1">
-                  You are responsible for maintaining adequate accounting records and for preparing 
-                  accounts which give a true and fair view. You are also responsible for making 
-                  available to us all information of which you are aware that is relevant to the 
+                  You are responsible for maintaining adequate accounting records and for preparing
+                  accounts which give a true and fair view. You are also responsible for making
+                  available to us all information of which you are aware that is relevant to the
                   preparation of the accounts.
                 </p>
               </div>
@@ -145,8 +133,8 @@ export default async function EngagementDetailPage({
               <div>
                 <p className="font-semibold text-slate-900">Our Responsibilities</p>
                 <p className="mt-1">
-                  We will prepare your accounts and tax returns using the information and 
-                  explanations provided to us. We will not be responsible for errors arising 
+                  We will prepare your accounts and tax returns using the information and
+                  explanations provided to us. We will not be responsible for errors arising
                   from incorrect or incomplete information provided by you.
                 </p>
               </div>
@@ -154,8 +142,8 @@ export default async function EngagementDetailPage({
               <div>
                 <p className="font-semibold text-slate-900">Confidentiality</p>
                 <p className="mt-1">
-                  We confirm that we will keep your affairs strictly confidential and will not 
-                  disclose information about your affairs to any third party without your consent, 
+                  We confirm that we will keep your affairs strictly confidential and will not
+                  disclose information about your affairs to any third party without your consent,
                   except where we are required to do so by law or professional regulations.
                 </p>
               </div>
@@ -163,7 +151,7 @@ export default async function EngagementDetailPage({
               <div>
                 <p className="font-semibold text-slate-900">Termination</p>
                 <p className="mt-1">
-                  Either party may terminate this engagement by giving one month's written notice. 
+                  Either party may terminate this engagement by giving one month's written notice.
                   Any outstanding fees will be payable on termination.
                 </p>
               </div>
@@ -175,9 +163,7 @@ export default async function EngagementDetailPage({
                 </div>
               )}
 
-              <p>
-                Please sign below to confirm your acceptance of these terms of engagement.
-              </p>
+              <p>Please sign below to confirm your acceptance of these terms of engagement.</p>
 
               <div className="border-t border-slate-200 pt-4 mt-6">
                 <p>Yours sincerely,</p>
@@ -205,7 +191,7 @@ export default async function EngagementDetailPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Send for Signing</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              Share this link with the client to collect their digital signature.
+              Email the letter to the client for digital signing.
             </p>
 
             <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-4">
@@ -213,24 +199,17 @@ export default async function EngagementDetailPage({
               <p className="text-sm font-mono text-blue-600 break-all">{signingUrl}</p>
             </div>
 
-            <div className="mt-4 flex gap-3">
+            <div className="mt-4 space-y-3">
               <a href={signingUrl} target="_blank" rel="noopener noreferrer"
-                className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                className="inline-block rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
                 Preview →
               </a>
-
-              {!letter.sent_at ? (
-                <form action={markAsSentWithId}>
-                  <button type="submit"
-                    className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">
-                    Mark as Sent
-                  </button>
-                </form>
-              ) : (
-                <span className="rounded-xl bg-green-50 px-4 py-2 text-sm font-semibold text-green-700">
-                  ✓ Sent {new Date(letter.sent_at).toLocaleDateString("en-GB")}
-                </span>
-              )}
+              <SendEngagementButton
+                letterId={id}
+                clientEmail={letter.client_email || ""}
+                alreadySent={!!letter.sent_at}
+                sentAt={letter.sent_at}
+              />
             </div>
           </div>
         </div>

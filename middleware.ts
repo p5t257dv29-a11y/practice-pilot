@@ -32,7 +32,7 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   // If not logged in and not already on login page, redirect to login
-  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/q/") && !request.nextUrl.pathname.startsWith("/onboard/")) {
+  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/q/") && !request.nextUrl.pathname.startsWith("/onboard/") && !request.nextUrl.pathname.startsWith("/sign/")){
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
