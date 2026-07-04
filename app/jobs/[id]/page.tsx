@@ -9,25 +9,94 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Calculates the next due date based on the recurrence frequency
+function getNextDueDate(currentDueDate: string | null, frequency: string | null): string | null {
+  if (!currentDueDate) return null;
+
+  const date = new Date(currentDueDate);
+
+  if (frequency === "Monthly") {
+    date.setMonth(date.getMonth() + 1);
+  } else if (frequency === "Quarterly") {
+    date.setMonth(date.getMonth() + 3);
+  } else {
+    // Default to Annually
+    date.setFullYear(date.getFullYear() + 1);
+  }
+
+  return date.toISOString().split("T")[0];
+}
+
+// If the job name contains a 4-digit year, bump it forward to match the new due date's year
+function getNextJobName(currentName: string, oldDueDate: string | null, newDueDate: string | null): string {
+  if (!oldDueDate || !newDueDate) return currentName;
+
+  const oldYear = new Date(oldDueDate).getFullYear().toString();
+  const newYear = new Date(newDueDate).getFullYear().toString();
+
+  if (currentName.includes(oldYear)) {
+    return currentName.replace(oldYear, newYear);
+  }
+  return currentName;
+}
+
 async function updateJobRecord(id: string, formData: FormData) {
   "use server";
 
   const get = (key: string) => String(formData.get(key) || "").trim();
+  const newStatus = get("status");
+  const isRecurring = formData.get("is_recurring") === "on";
+
+  // Fetch the current job first so we know its previous status and recurrence settings
+  const { data: currentJob } = await supabase
+    .from("jobs")
+    .select("*")
+    .eq("id", id)
+    .single();
 
   await supabase.from("jobs").update({
     client_id: get("client_id"),
     job_name: get("job_name"),
     job_type: get("job_type"),
-    status: get("status"),
+    status: newStatus,
     workflow_stage: get("workflow_stage"),
     period_start: get("period_start") || null,
     period_end: get("period_end") || null,
     due_date: get("due_date") || null,
     assigned_to: get("assigned_to"),
     notes: get("notes"),
+    is_recurring: isRecurring,
+    recurrence_frequency: isRecurring ? get("recurrence_frequency") || null : null,
   }).eq("id", id);
 
+  // If this job just became Completed, and it's recurring, spawn the next occurrence
+  const wasAlreadyCompleted = currentJob?.status === "Completed";
+  if (isRecurring && newStatus === "Completed" && !wasAlreadyCompleted) {
+    const nextDueDate = getNextDueDate(get("due_date") || currentJob?.due_date, get("recurrence_frequency"));
+    const nextJobName = getNextJobName(get("job_name"), get("due_date") || currentJob?.due_date, nextDueDate);
+
+    const { error: spawnError } = await supabase.from("jobs").insert({
+      client_id: get("client_id"),
+      job_name: nextJobName,
+      job_type: get("job_type"),
+      status: "Draft",
+      workflow_stage: "Not Started",
+      assigned_to: get("assigned_to"),
+      due_date: nextDueDate,
+      is_recurring: true,
+      recurrence_frequency: get("recurrence_frequency"),
+      recurrence_parent_id: id,
+    });
+
+    if (spawnError) {
+      console.error("Could not create next recurring job:", spawnError.message);
+    } else {
+      console.log("✅ Next recurring job created, due:", nextDueDate);
+    }
+  }
+
   revalidatePath(`/jobs/${id}`);
+  revalidatePath("/jobs");
 }
 
 export default async function JobDetailPage({
@@ -65,7 +134,14 @@ export default async function JobDetailPage({
 
       <div className="mt-4 flex items-start justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900">{job.job_name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-3xl font-bold text-slate-900">{job.job_name}</h1>
+            {job.is_recurring && (
+              <span className="rounded-full bg-purple-50 px-3 py-1 text-xs text-purple-600 font-medium">
+                ↻ Recurs {job.recurrence_frequency}
+              </span>
+            )}
+          </div>
           <p className="mt-1 text-slate-500">
             {job.clients?.client_name || "No client"} ·{" "}
             {job.job_type || "No type"}
@@ -94,6 +170,12 @@ export default async function JobDetailPage({
           </span>
         </div>
       </div>
+
+      {job.recurrence_parent_id && (
+        <div className="mt-4 rounded-xl bg-purple-50 border border-purple-100 p-3 text-sm text-purple-700">
+          This job was automatically created from a previous recurring job.
+        </div>
+      )}
 
       {/* Edit Form */}
       <form action={updateWithId} className="mt-8 space-y-6">
@@ -238,6 +320,38 @@ export default async function JobDetailPage({
               />
             </div>
 
+          </div>
+        </div>
+
+        {/* Recurring Settings */}
+        <div className="rounded-2xl bg-white p-6 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-900">Recurring Job Settings</h2>
+          <p className="text-sm text-slate-500 mt-0.5">
+            When this job is marked Completed, the next occurrence will be created automatically.
+          </p>
+          <div className="mt-4 flex items-center gap-3">
+            <input
+              type="checkbox"
+              id="is_recurring"
+              name="is_recurring"
+              defaultChecked={job.is_recurring || false}
+              className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+            />
+            <label htmlFor="is_recurring" className="text-sm font-medium text-slate-700">
+              Make this a recurring job
+            </label>
+          </div>
+          <div className="mt-3 max-w-xs">
+            <label className="block text-sm font-medium text-slate-700 mb-1">Recurs</label>
+            <select
+              name="recurrence_frequency"
+              defaultValue={job.recurrence_frequency || "Annually"}
+              className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+            >
+              <option value="Annually">Annually</option>
+              <option value="Quarterly">Quarterly</option>
+              <option value="Monthly">Monthly</option>
+            </select>
           </div>
         </div>
 

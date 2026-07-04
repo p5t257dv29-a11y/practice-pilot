@@ -1,6 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +18,8 @@ async function createJobRecord(formData: FormData) {
     return;
   }
 
+  const isRecurring = formData.get("is_recurring") === "on";
+
   const { data, error } = await supabase.from("jobs").insert({
     client_id,
     job_name,
@@ -26,7 +27,10 @@ async function createJobRecord(formData: FormData) {
     status: formData.get("status")?.toString().trim() || "Draft",
     workflow_stage: formData.get("workflow_stage")?.toString().trim() || null,
     assigned_to: formData.get("assigned_to")?.toString().trim() || null,
+    due_date: formData.get("due_date")?.toString().trim() || null,
     notes: formData.get("notes")?.toString().trim() || null,
+    is_recurring: isRecurring,
+    recurrence_frequency: isRecurring ? formData.get("recurrence_frequency")?.toString().trim() || null : null,
   }).select();
 
   if (error) {
@@ -146,6 +150,39 @@ export default async function JobsPage() {
                 placeholder="Staff member name" />
             </div>
 
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Due Date</label>
+              <input name="due_date" type="date"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+
+            {/* Recurring job settings */}
+            <div className="md:col-span-2 rounded-xl border border-slate-200 p-4 bg-slate-50">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="is_recurring"
+                  name="is_recurring"
+                  className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                />
+                <label htmlFor="is_recurring" className="text-sm font-medium text-slate-700">
+                  Make this a recurring job
+                </label>
+              </div>
+              <p className="text-xs text-slate-500 mt-1 ml-7">
+                When this job is marked Completed, the next occurrence will be created automatically.
+              </p>
+              <div className="mt-3 ml-7">
+                <label className="block text-sm font-medium text-slate-700 mb-1">Recurs</label>
+                <select name="recurrence_frequency"
+                  className="w-full max-w-xs rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                  <option value="Annually">Annually</option>
+                  <option value="Quarterly">Quarterly</option>
+                  <option value="Monthly">Monthly</option>
+                </select>
+              </div>
+            </div>
+
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
               <textarea name="notes" rows={3}
@@ -173,7 +210,14 @@ export default async function JobsPage() {
             <div key={job.id}
               className="flex items-center justify-between rounded-xl border border-slate-100 p-4">
               <a href={`/jobs/${job.id}`} className="flex-1 hover:opacity-70 transition-opacity">
-                <p className="font-semibold text-slate-900">{job.job_name}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-semibold text-slate-900">{job.job_name}</p>
+                  {job.is_recurring && (
+                    <span className="rounded-full bg-purple-50 px-2 py-0.5 text-xs text-purple-600 font-medium">
+                      ↻ {job.recurrence_frequency}
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-slate-500">
                   {job.clients?.client_name || "No client"} · {job.job_type || "No type"}
                 </p>
