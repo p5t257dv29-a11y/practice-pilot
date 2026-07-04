@@ -11,6 +11,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Keeps the linked engagement letter's services/fee text in sync with the quote's line items and totals
 async function syncEngagementLetter(quoteId: string) {
   const { data: lines } = await supabase
     .from("quote_lines")
@@ -26,7 +27,7 @@ async function syncEngagementLetter(quoteId: string) {
   if (!quote) return;
 
   const servicesDescription = (lines || [])
-    .map((l) => `${l.description} (Qty: ${l.qty} @ £${Number(l.price).toFixed(2)})`)
+    .map((l) => l.description)
     .join("\n");
 
   const feeDescription =
@@ -178,11 +179,13 @@ export default async function QuoteDetailPage({
     { data: lines },
     { data: services },
     { data: jobs },
+    { data: engagementLetter },
   ] = await Promise.all([
     supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single(),
-   supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id),
+    supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id).order("created_at", { ascending: true }),
     supabase.from("services").select("*").eq("is_active", true).order("service_name", { ascending: true }),
     supabase.from("jobs").select("id, job_name").order("job_name", { ascending: true }),
+    supabase.from("engagement_letters").select("id, status").eq("quote_id", id).maybeSingle(),
   ]);
 
   if (error || !quote) notFound();
@@ -192,6 +195,8 @@ export default async function QuoteDetailPage({
 
   return (
     <div className="min-h-screen bg-slate-50">
+
+      {/* Header */}
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <a href="/quotes" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
           ← Back to Quotes
@@ -218,6 +223,8 @@ export default async function QuoteDetailPage({
       </div>
 
       <div className="p-8 grid gap-6 lg:grid-cols-3">
+
+        {/* Left - Line Items */}
         <div className="lg:col-span-2 space-y-6">
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Line Items</h2>
@@ -291,6 +298,7 @@ export default async function QuoteDetailPage({
               )}
             </div>
 
+            {/* Add line item */}
             <div className="mt-6 border-t border-slate-100 pt-6">
               <h3 className="text-sm font-bold text-slate-900 mb-4">Add Line Item</h3>
               <form action={addLineWithId} className="space-y-4">
@@ -343,7 +351,10 @@ export default async function QuoteDetailPage({
           </div>
         </div>
 
+        {/* Right - Totals & Settings */}
         <div className="space-y-6">
+
+          {/* Totals */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Quote Total</h2>
             <div className="mt-4 space-y-3">
@@ -362,6 +373,30 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
+          {/* Linked Engagement Letter */}
+          {engagementLetter && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Linked Engagement Letter</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Automatically created with this quote.
+              </p>
+              <div className="mt-4 flex items-center justify-between">
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  engagementLetter.status === "Signed" ? "bg-green-100 text-green-700"
+                  : engagementLetter.status === "Sent" ? "bg-blue-100 text-blue-700"
+                  : "bg-slate-100 text-slate-600"
+                }`}>
+                  {engagementLetter.status || "Draft"}
+                </span>
+                <a href={`/engagement/${engagementLetter.id}`}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                  View Engagement Letter
+                </a>
+              </div>
+            </div>
+          )}
+
+          {/* Convert to Invoice */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Convert to Invoice</h2>
             <p className="text-sm text-slate-500 mt-0.5">
@@ -380,6 +415,7 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
+          {/* Send to Client */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Send to Client</h2>
             <p className="text-sm text-slate-500 mt-0.5">
@@ -394,6 +430,7 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
+          {/* Quote Details */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Quote Details</h2>
             <form action={updateWithId} className="mt-4 space-y-4">
@@ -433,6 +470,7 @@ export default async function QuoteDetailPage({
               </button>
             </form>
           </div>
+
         </div>
       </div>
     </div>

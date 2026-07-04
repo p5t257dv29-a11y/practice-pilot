@@ -60,7 +60,6 @@ export default async function DeadlinesPage() {
     );
   }
 
-  // Build deadline entries
   type DeadlineEntry = {
     client_id: string;
     client_name: string;
@@ -95,7 +94,6 @@ export default async function DeadlinesPage() {
     }
   });
 
-  // Sort by days (overdue first, then soonest)
   deadlines.sort((a, b) => a.days - b.days);
 
   const overdue = deadlines.filter(d => d.days < 0);
@@ -110,6 +108,36 @@ export default async function DeadlinesPage() {
     day: "numeric",
   });
 
+  const renderList = (list: DeadlineEntry[]) => (
+    <div className="space-y-2">
+      {list.map((d, i) => {
+        const urgency = getUrgencyColor(d.days);
+        return (
+          <a key={i} href={`/clients/${d.client_id}`}
+            className={`flex items-center justify-between rounded-xl border ${urgency.border} ${urgency.bg} p-4 hover:opacity-80 transition-opacity`}>
+            <div className="flex items-center gap-3">
+              <div className={`w-2.5 h-2.5 rounded-full ${urgency.dot}`}></div>
+              <div>
+                <p className="font-semibold text-slate-900">{d.client_name}</p>
+                <p className="text-xs text-slate-500">
+                  {d.company_number && `${d.company_number} · `}{d.type}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <p className="text-sm text-slate-600">
+                {new Date(d.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+              </p>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${urgency.badge}`}>
+                {d.days < 0 ? `${Math.abs(d.days)} days overdue` : urgency.label}
+              </span>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50">
 
@@ -122,28 +150,28 @@ export default async function DeadlinesPage() {
           </div>
         </div>
 
-        {/* Summary stats */}
+        {/* Summary stats — click to jump to and expand that section */}
         <div className="mt-4 flex gap-6">
-          <div className="flex items-center gap-2">
+          <a href="#overdue-section" className="flex items-center gap-2 hover:opacity-70 transition-opacity">
             <div className="w-2.5 h-2.5 rounded-full bg-red-500"></div>
             <span className="text-sm text-slate-600"><span className="font-bold text-red-600">{overdue.length}</span> overdue</span>
-          </div>
-          <div className="flex items-center gap-2">
+          </a>
+          <a href="#due-soon-section" className="flex items-center gap-2 hover:opacity-70 transition-opacity">
             <div className="w-2.5 h-2.5 rounded-full bg-orange-500"></div>
             <span className="text-sm text-slate-600"><span className="font-bold text-orange-600">{dueSoon.length}</span> due within 30 days</span>
-          </div>
-          <div className="flex items-center gap-2">
+          </a>
+          <a href="#upcoming-section" className="flex items-center gap-2 hover:opacity-70 transition-opacity">
             <div className="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
             <span className="text-sm text-slate-600"><span className="font-bold text-yellow-600">{upcoming.length}</span> due within 90 days</span>
-          </div>
-          <div className="flex items-center gap-2">
+          </a>
+          <a href="#future-section" className="flex items-center gap-2 hover:opacity-70 transition-opacity">
             <div className="w-2.5 h-2.5 rounded-full bg-green-500"></div>
             <span className="text-sm text-slate-600"><span className="font-bold text-green-600">{future.length}</span> future</span>
-          </div>
+          </a>
         </div>
       </div>
 
-      <div className="p-8 space-y-8">
+      <div className="p-8 space-y-4">
 
         {deadlines.length === 0 && (
           <div className="rounded-2xl bg-white p-12 shadow-sm border border-slate-100 text-center">
@@ -154,152 +182,48 @@ export default async function DeadlinesPage() {
           </div>
         )}
 
-        {/* Overdue */}
+        {/* Overdue — open by default */}
         {overdue.length > 0 && (
-          <div>
-            <h2 className="text-base font-bold text-red-600 mb-3 flex items-center gap-2">
+          <details id="overdue-section" open className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <summary className="text-base font-bold text-red-600 flex items-center gap-2 cursor-pointer list-none">
               <div className="w-2.5 h-2.5 rounded-full bg-red-500"></div>
               Overdue ({overdue.length})
-            </h2>
-            <div className="space-y-2">
-              {overdue.map((d, i) => {
-                const urgency = getUrgencyColor(d.days);
-                return (
-                  <a key={i} href={`/clients/${d.client_id}`}
-                    className={`flex items-center justify-between rounded-xl border ${urgency.border} ${urgency.bg} p-4 hover:opacity-80 transition-opacity`}>
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${urgency.dot}`}></div>
-                      <div>
-                        <p className="font-semibold text-slate-900">{d.client_name}</p>
-                        <p className="text-xs text-slate-500">
-                          {d.company_number && `${d.company_number} · `}{d.type}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <p className="text-sm text-slate-600">
-                        {new Date(d.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                      </p>
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${urgency.badge}`}>
-                        {Math.abs(d.days)} days overdue
-                      </span>
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-          </div>
+            </summary>
+            <div className="mt-3">{renderList(overdue)}</div>
+          </details>
         )}
 
-        {/* Due within 30 days */}
+        {/* Due within 30 days — open by default */}
         {dueSoon.length > 0 && (
-          <div>
-            <h2 className="text-base font-bold text-orange-600 mb-3 flex items-center gap-2">
+          <details id="due-soon-section" open className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <summary className="text-base font-bold text-orange-600 flex items-center gap-2 cursor-pointer list-none">
               <div className="w-2.5 h-2.5 rounded-full bg-orange-500"></div>
               Due within 30 days ({dueSoon.length})
-            </h2>
-            <div className="space-y-2">
-              {dueSoon.map((d, i) => {
-                const urgency = getUrgencyColor(d.days);
-                return (
-                  <a key={i} href={`/clients/${d.client_id}`}
-                    className={`flex items-center justify-between rounded-xl border ${urgency.border} ${urgency.bg} p-4 hover:opacity-80 transition-opacity`}>
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${urgency.dot}`}></div>
-                      <div>
-                        <p className="font-semibold text-slate-900">{d.client_name}</p>
-                        <p className="text-xs text-slate-500">
-                          {d.company_number && `${d.company_number} · `}{d.type}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <p className="text-sm text-slate-600">
-                        {new Date(d.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                      </p>
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${urgency.badge}`}>
-                        {urgency.label}
-                      </span>
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-          </div>
+            </summary>
+            <div className="mt-3">{renderList(dueSoon)}</div>
+          </details>
         )}
 
-        {/* Due within 90 days */}
+        {/* Due within 90 days — collapsed by default */}
         {upcoming.length > 0 && (
-          <div>
-            <h2 className="text-base font-bold text-yellow-600 mb-3 flex items-center gap-2">
+          <details id="upcoming-section" className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <summary className="text-base font-bold text-yellow-600 flex items-center gap-2 cursor-pointer list-none">
               <div className="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
               Due within 90 days ({upcoming.length})
-            </h2>
-            <div className="space-y-2">
-              {upcoming.map((d, i) => {
-                const urgency = getUrgencyColor(d.days);
-                return (
-                  <a key={i} href={`/clients/${d.client_id}`}
-                    className={`flex items-center justify-between rounded-xl border ${urgency.border} ${urgency.bg} p-4 hover:opacity-80 transition-opacity`}>
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${urgency.dot}`}></div>
-                      <div>
-                        <p className="font-semibold text-slate-900">{d.client_name}</p>
-                        <p className="text-xs text-slate-500">
-                          {d.company_number && `${d.company_number} · `}{d.type}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <p className="text-sm text-slate-600">
-                        {new Date(d.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                      </p>
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${urgency.badge}`}>
-                        {urgency.label}
-                      </span>
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-          </div>
+            </summary>
+            <div className="mt-3">{renderList(upcoming)}</div>
+          </details>
         )}
 
-        {/* Future */}
+        {/* Future — collapsed by default */}
         {future.length > 0 && (
-          <div>
-            <h2 className="text-base font-bold text-green-600 mb-3 flex items-center gap-2">
+          <details id="future-section" className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <summary className="text-base font-bold text-green-600 flex items-center gap-2 cursor-pointer list-none">
               <div className="w-2.5 h-2.5 rounded-full bg-green-500"></div>
               Future ({future.length})
-            </h2>
-            <div className="space-y-2">
-              {future.map((d, i) => {
-                const urgency = getUrgencyColor(d.days);
-                return (
-                  <a key={i} href={`/clients/${d.client_id}`}
-                    className={`flex items-center justify-between rounded-xl border ${urgency.border} ${urgency.bg} p-4 hover:opacity-80 transition-opacity`}>
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${urgency.dot}`}></div>
-                      <div>
-                        <p className="font-semibold text-slate-900">{d.client_name}</p>
-                        <p className="text-xs text-slate-500">
-                          {d.company_number && `${d.company_number} · `}{d.type}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <p className="text-sm text-slate-600">
-                        {new Date(d.due_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                      </p>
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${urgency.badge}`}>
-                        {urgency.label}
-                      </span>
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-          </div>
+            </summary>
+            <div className="mt-3">{renderList(future)}</div>
+          </details>
         )}
 
       </div>
