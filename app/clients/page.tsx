@@ -122,7 +122,13 @@ async function deleteClientRecord(id: string) {
   revalidatePath("/clients");
 }
 
-export default async function ClientsPage() {
+export default async function ClientsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ new?: string }>;
+}) {
+  const { new: newParam } = await searchParams;
+
   const { data: clients, error } = await supabase
     .from("clients")
     .select("*")
@@ -134,6 +140,7 @@ export default async function ClientsPage() {
       error={error?.message}
       createAction={createClientRecord}
       deleteAction={deleteClientRecord}
+      autoOpen={newParam === "true"}
     />
   );
 }

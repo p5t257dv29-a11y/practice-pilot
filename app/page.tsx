@@ -50,7 +50,7 @@ export default async function DashboardPage() {
             <p className="text-sm text-slate-500 mt-0.5">{today}</p>
           </div>
           <div className="flex gap-3">
-            <a href="/clients" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">+ New Client</a>
+            <a href="/clients?new=true" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">+ New Client</a>
             <a href="/jobs" className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">+ New Job</a>
             <a href="/quotes" className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 transition-colors">+ New Quote</a>
           </div>

@@ -18,20 +18,30 @@ export default function ClientsPageClient({
   error,
   createAction,
   deleteAction,
+  autoOpen,
 }: {
   clients: Client[];
   error?: string;
   createAction: (formData: FormData) => Promise<void>;
   deleteAction: (id: string) => Promise<void>;
+  autoOpen?: boolean;
 }) {
-  const [showModal, setShowModal] = useState(false);
+  const [showModal, setShowModal] = useState(autoOpen || false);
   const [search, setSearch] = useState("");
+  const [entityFilter, setEntityFilter] = useState("");
 
-  const filtered = clients.filter(c =>
-    c.client_name?.toLowerCase().includes(search.toLowerCase()) ||
-    c.client_ref?.toLowerCase().includes(search.toLowerCase()) ||
-    c.email?.toLowerCase().includes(search.toLowerCase())
-  );
+  const entityTypes = Array.from(
+    new Set(clients.map((c) => c.entity_type).filter(Boolean))
+  ) as string[];
+
+  const filtered = clients.filter(c => {
+    const matchesSearch =
+      c.client_name?.toLowerCase().includes(search.toLowerCase()) ||
+      c.client_ref?.toLowerCase().includes(search.toLowerCase()) ||
+      c.email?.toLowerCase().includes(search.toLowerCase());
+    const matchesEntity = !entityFilter || c.entity_type === entityFilter;
+    return matchesSearch && matchesEntity;
+  });
 
   const handleCreate = async (formData: FormData) => {
     await createAction(formData);
@@ -47,7 +57,7 @@ export default function ClientsPageClient({
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Clients</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              {clients.length} client{clients.length !== 1 ? "s" : ""} in your practice
+              {filtered.length} of {clients.length} client{clients.length !== 1 ? "s" : ""} in your practice
             </p>
           </div>
           <button
@@ -58,8 +68,8 @@ export default function ClientsPageClient({
           </button>
         </div>
 
-        {/* Search */}
-        <div className="mt-4">
+        {/* Search + Filter */}
+        <div className="mt-4 flex gap-3">
           <input
             type="text"
             value={search}
@@ -67,6 +77,16 @@ export default function ClientsPageClient({
             placeholder="Search by name, reference or email..."
             className="w-full max-w-md rounded-xl border border-slate-200 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
           />
+          <select
+            value={entityFilter}
+            onChange={(e) => setEntityFilter(e.target.value)}
+            className="rounded-xl border border-slate-200 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+          >
+            <option value="">All entity types</option>
+            {entityTypes.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -148,9 +168,11 @@ export default function ClientsPageClient({
             {filtered.length === 0 && (
               <div className="px-6 py-12 text-center">
                 <p className="text-slate-500 text-sm">
-                  {search ? `No clients matching "${search}"` : "No clients yet."}
+                  {search || entityFilter
+                    ? "No clients matching your search/filter."
+                    : "No clients yet."}
                 </p>
-                {!search && (
+                {!search && !entityFilter && (
                   <button
                     onClick={() => setShowModal(true)}
                     className="mt-3 text-blue-600 text-sm hover:underline"
