@@ -112,9 +112,14 @@ export default async function ClientDetailPage({
 
         <div className="mt-4 flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">{client.client_name}</h1>
-            <p className="text-sm text-slate-500 mt-0.5">
-              {client.entity_type || "No entity type"} · {client.company_number || "No company number"}
+  <h1 className="text-2xl font-bold text-slate-900">{client.client_name}</h1>
+<p className="text-sm text-slate-500 mt-0.5">
+  {client.client_ref && (
+    <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 mr-2">
+      {client.client_ref}
+    </span>
+  )}
+  {client.entity_type || "No entity type"} · {client.company_number || "No company number"}
               {client.company_status && (
                 <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold capitalize ${
                   client.company_status === "active" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
