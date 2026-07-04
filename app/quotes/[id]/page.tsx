@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import SendQuoteButton from "./send-quote-button";
+import ConvertToInvoiceButton from "./convert-to-invoice";
 
 export const dynamic = "force-dynamic";
 
@@ -95,10 +96,12 @@ export default async function QuoteDetailPage({
     { data: quote, error },
     { data: lines },
     { data: services },
+    { data: jobs },
   ] = await Promise.all([
     supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single(),
     supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id).order("created_at", { ascending: true }),
     supabase.from("services").select("*").eq("is_active", true).order("service_name", { ascending: true }),
+    supabase.from("jobs").select("id, job_name").order("job_name", { ascending: true }),
   ]);
 
   if (error || !quote) notFound();
@@ -241,6 +244,25 @@ export default async function QuoteDetailPage({
                 <span className="font-bold text-slate-900">Total</span>
                 <span className="font-bold text-slate-900 text-lg">£{Number(quote.total || 0).toFixed(2)}</span>
               </div>
+            </div>
+          </div>
+
+          {/* Convert to Invoice */}
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Convert to Invoice</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Create an invoice from this quote.
+            </p>
+            <div className="mt-4">
+              <ConvertToInvoiceButton
+                quoteId={id}
+                clientId={quote.client_id}
+                subtotal={Number(quote.subtotal || 0)}
+                vat={Number(quote.vat || 0)}
+                total={Number(quote.total || 0)}
+                status={quote.status}
+                jobs={jobs || []}
+              />
             </div>
           </div>
 
