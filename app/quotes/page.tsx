@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 
@@ -13,27 +14,67 @@ async function createQuote(formData: FormData) {
 
   const get = (key: string) => String(formData.get(key) || "").trim();
 
-  // Generate quote number based on timestamp
-  const quoteNumber = `Q-${Date.now().toString().slice(-6)}`;
+  const { data: allQuotes } = await supabase
+    .from("quotes")
+    .select("quote_number");
 
-  const { error } = await supabase.from("quotes").insert({
-    quote_number: quoteNumber,
-    client_id: get("client_id"),
-    quote_date: get("quote_date") || null,
-    valid_until: get("valid_until") || null,
-    status: get("status") || "Draft",
-    notes: get("notes"),
-    subtotal: 0,
-    vat: 0,
-    total: 0,
-  });
+  let highest = 4; // sequence starts at Q-0005
+  for (const q of allQuotes || []) {
+    const match = q.quote_number?.match(/Q-(\d+)/);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (match[1].length <= 4 && num > highest) {
+        highest = num;
+      }
+    }
+  }
+  const quoteNumber = `Q-${String(highest + 1).padStart(4, "0")}`;
+  const clientId = get("client_id");
+
+  const { data: newQuote, error } = await supabase
+    .from("quotes")
+    .insert({
+      quote_number: quoteNumber,
+      client_id: clientId,
+      quote_date: get("quote_date") || null,
+      valid_until: get("valid_until") || null,
+      status: get("status") || "Draft",
+      notes: get("notes"),
+      subtotal: 0,
+      vat: 0,
+      total: 0,
+    })
+    .select()
+    .single();
 
   if (error) {
     console.error("Could not create quote:", error.message);
     return;
   }
 
+  const { data: client } = await supabase
+    .from("clients")
+    .select("email")
+    .eq("id", clientId)
+    .single();
+
+  const { error: elError } = await supabase.from("engagement_letters").insert({
+    client_id: clientId,
+    quote_id: newQuote.id,
+    client_email: client?.email || null,
+    status: "Draft",
+    services_description: null,
+    fee_description: null,
+  });
+
+  if (elError) {
+    console.error("Could not create linked engagement letter:", elError.message, elError);
+  } else {
+    console.log("✅ Engagement letter created successfully, linked to quote:", newQuote.id, "client:", clientId);
+  }
+
   revalidatePath("/quotes");
+  revalidatePath("/engagement");
 }
 
 async function deleteQuote(id: string) {
@@ -179,18 +220,17 @@ export default async function QuotesPage() {
           <h2 className="text-lg font-bold text-slate-900">
             All Quotes ({quotes?.length ?? 0})
           </h2>
-
-          <div className="mt-4 space-y-3">
+<div className="mt-4 space-y-3">
             {(quotes || []).map((quote) => (
-              <div
+  <div
                 key={quote.id}
                 className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors"
               >
-                <a
+                <Link
                   href={`/quotes/${quote.id}`}
                   className="flex-1"
-                >
-                  <div className="flex items-center gap-3">
+>
+<div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-sm font-bold text-blue-600">
                       📋
                     </div>
@@ -209,7 +249,7 @@ export default async function QuotesPage() {
                       </p>
                     </div>
                   </div>
-                </a>
+                </Link>
 
                 <div className="flex items-center gap-4">
                   <div className="text-right">

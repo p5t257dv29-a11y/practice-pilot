@@ -11,6 +11,42 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+async function syncEngagementLetter(quoteId: string) {
+  const { data: lines } = await supabase
+    .from("quote_lines")
+    .select("*")
+    .eq("quote_id", quoteId);
+
+  const { data: quote } = await supabase
+    .from("quotes")
+    .select("subtotal, vat, total")
+    .eq("id", quoteId)
+    .single();
+
+  if (!quote) return;
+
+  const servicesDescription = (lines || [])
+    .map((l) => `${l.description} (Qty: ${l.qty} @ £${Number(l.price).toFixed(2)})`)
+    .join("\n");
+
+  const feeDescription =
+    `Subtotal: £${Number(quote.subtotal).toFixed(2)}\n` +
+    `VAT: £${Number(quote.vat).toFixed(2)}\n` +
+    `Total: £${Number(quote.total).toFixed(2)}`;
+
+  const { error } = await supabase
+    .from("engagement_letters")
+    .update({
+      services_description: servicesDescription,
+      fee_description: feeDescription,
+    })
+    .eq("quote_id", quoteId);
+
+  if (error) {
+    console.error("Could not sync engagement letter:", error.message);
+  }
+}
+
 async function updateQuote(id: string, formData: FormData) {
   "use server";
 
@@ -61,7 +97,48 @@ async function addLineItem(quoteId: string, formData: FormData) {
     await supabase.from("quotes").update({ subtotal, vat, total }).eq("id", quoteId);
   }
 
+  await syncEngagementLetter(quoteId);
+
   revalidatePath(`/quotes/${quoteId}`);
+  revalidatePath("/engagement");
+}
+
+async function updateLineItem(quoteId: string, lineId: string, formData: FormData) {
+  "use server";
+
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  const qty = parseFloat(get("qty")) || 1;
+  const price = parseFloat(get("price")) || 0;
+  const vatRate = parseFloat(get("vat_rate")) || 20;
+  const lineTotal = qty * price;
+
+  await supabase.from("quote_lines").update({
+    description: get("description"),
+    qty,
+    price,
+    vat_rate: vatRate,
+    line_total: lineTotal,
+  }).eq("id", lineId);
+
+  const { data: lines } = await supabase
+    .from("quote_lines")
+    .select("*")
+    .eq("quote_id", quoteId);
+
+  const subtotal = (lines || []).reduce((sum, l) => sum + Number(l.line_total), 0);
+  const vat = (lines || []).reduce(
+    (sum, l) => sum + (Number(l.line_total) * Number(l.vat_rate)) / 100,
+    0
+  );
+  const total = subtotal + vat;
+
+  await supabase.from("quotes").update({ subtotal, vat, total }).eq("id", quoteId);
+
+  await syncEngagementLetter(quoteId);
+
+  revalidatePath(`/quotes/${quoteId}`);
+  revalidatePath("/engagement");
 }
 
 async function deleteLineItem(quoteId: string, lineId: string) {
@@ -82,7 +159,11 @@ async function deleteLineItem(quoteId: string, lineId: string) {
   const total = subtotal + vat;
 
   await supabase.from("quotes").update({ subtotal, vat, total }).eq("id", quoteId);
+
+  await syncEngagementLetter(quoteId);
+
   revalidatePath(`/quotes/${quoteId}`);
+  revalidatePath("/engagement");
 }
 
 export default async function QuoteDetailPage({
@@ -99,7 +180,7 @@ export default async function QuoteDetailPage({
     { data: jobs },
   ] = await Promise.all([
     supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single(),
-    supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id).order("created_at", { ascending: true }),
+   supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id),
     supabase.from("services").select("*").eq("is_active", true).order("service_name", { ascending: true }),
     supabase.from("jobs").select("id, job_name").order("job_name", { ascending: true }),
   ]);
@@ -111,8 +192,6 @@ export default async function QuoteDetailPage({
 
   return (
     <div className="min-h-screen bg-slate-50">
-
-      {/* Header */}
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <a href="/quotes" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
           ← Back to Quotes
@@ -139,30 +218,70 @@ export default async function QuoteDetailPage({
       </div>
 
       <div className="p-8 grid gap-6 lg:grid-cols-3">
-
-        {/* Left - Line Items */}
         <div className="lg:col-span-2 space-y-6">
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Line Items</h2>
 
             <div className="mt-4 space-y-2">
               {(lines || []).map((line) => (
-                <div key={line.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4">
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-slate-900">{line.description}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Qty: {line.qty} × £{Number(line.price).toFixed(2)} · VAT: {line.vat_rate}%
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <p className="font-bold text-slate-900">£{Number(line.line_total).toFixed(2)}</p>
+                <details key={line.id} className="rounded-xl border border-slate-100 group">
+                  <summary className="flex items-center justify-between p-4 cursor-pointer list-none">
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold text-slate-900">{line.description}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Qty: {line.qty} × £{Number(line.price).toFixed(2)} · VAT: {line.vat_rate}%
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <p className="font-bold text-slate-900">£{Number(line.line_total).toFixed(2)}</p>
+                      <span className="text-xs font-semibold text-blue-600 group-open:hidden">Edit</span>
+                      <span className="text-xs font-semibold text-slate-400 hidden group-open:inline">Close</span>
+                    </div>
+                  </summary>
+
+                  <div className="border-t border-slate-100 p-4 space-y-4">
+                    <form action={updateLineItem.bind(null, id, line.id)} className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
+                        <input name="description" required defaultValue={line.description}
+                          className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Qty</label>
+                          <input name="qty" type="number" defaultValue={line.qty} step="0.01" min="0"
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Price (£)</label>
+                          <input name="price" type="number" defaultValue={line.price} step="0.01" min="0"
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">VAT %</label>
+                          <select name="vat_rate" defaultValue={line.vat_rate}
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                            <option value="20">20%</option>
+                            <option value="5">5%</option>
+                            <option value="0">0%</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex gap-3">
+                        <button type="submit"
+                          className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                          Save Changes
+                        </button>
+                      </div>
+                    </form>
+
                     <form action={deleteLineItem.bind(null, id, line.id)}>
-                      <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                        Remove
+                      <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                        Remove Line Item
                       </button>
                     </form>
                   </div>
-                </div>
+                </details>
               ))}
 
               {lines && lines.length === 0 && (
@@ -172,7 +291,6 @@ export default async function QuoteDetailPage({
               )}
             </div>
 
-            {/* Add line item */}
             <div className="mt-6 border-t border-slate-100 pt-6">
               <h3 className="text-sm font-bold text-slate-900 mb-4">Add Line Item</h3>
               <form action={addLineWithId} className="space-y-4">
@@ -225,10 +343,7 @@ export default async function QuoteDetailPage({
           </div>
         </div>
 
-        {/* Right - Totals & Settings */}
         <div className="space-y-6">
-
-          {/* Totals */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Quote Total</h2>
             <div className="mt-4 space-y-3">
@@ -247,7 +362,6 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
-          {/* Convert to Invoice */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Convert to Invoice</h2>
             <p className="text-sm text-slate-500 mt-0.5">
@@ -266,7 +380,6 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
-          {/* Send to Client */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Send to Client</h2>
             <p className="text-sm text-slate-500 mt-0.5">
@@ -281,7 +394,6 @@ export default async function QuoteDetailPage({
             </div>
           </div>
 
-          {/* Quote Details */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Quote Details</h2>
             <form action={updateWithId} className="mt-4 space-y-4">
@@ -321,7 +433,6 @@ export default async function QuoteDetailPage({
               </button>
             </form>
           </div>
-
         </div>
       </div>
     </div>
