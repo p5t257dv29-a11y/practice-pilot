@@ -38,6 +38,8 @@ async function updateClientRecord(id: string, formData: FormData) {
     onboarding_status: get("onboarding_status"),
     authentication_notes: get("authentication_notes"),
     notes: get("notes"),
+    requires_self_assessment: formData.get("requires_self_assessment") === "on",
+    vat_stagger_group: get("vat_stagger_group") || null,
   }).eq("id", id);
 
   revalidatePath(`/clients/${id}`);
@@ -112,14 +114,14 @@ export default async function ClientDetailPage({
 
         <div className="mt-4 flex items-start justify-between">
           <div>
-  <h1 className="text-2xl font-bold text-slate-900">{client.client_name}</h1>
-<p className="text-sm text-slate-500 mt-0.5">
-  {client.client_ref && (
-    <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 mr-2">
-      {client.client_ref}
-    </span>
-  )}
-  {client.entity_type || "No entity type"} · {client.company_number || "No company number"}
+            <h1 className="text-2xl font-bold text-slate-900">{client.client_name}</h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              {client.client_ref && (
+                <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 mr-2">
+                  {client.client_ref}
+                </span>
+              )}
+              {client.entity_type || "No entity type"} · {client.company_number || "No company number"}
               {client.company_status && (
                 <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold capitalize ${
                   client.company_status === "active" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
@@ -233,6 +235,40 @@ export default async function ClientDetailPage({
                   </select>
                 </div>
               </div>
+            </div>
+
+            {/* Tax Deadline Settings — NEW SECTION */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Tax Deadline Settings</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Controls which recurring deadlines appear for this client (useful for sole traders, partnerships, and other non-Companies-House entities).
+              </p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div className="flex items-center gap-3 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    id="requires_self_assessment"
+                    name="requires_self_assessment"
+                    defaultChecked={client.requires_self_assessment || false}
+                    className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                  />
+                  <label htmlFor="requires_self_assessment" className="text-sm font-medium text-slate-700">
+                    Requires Self Assessment (shows next 31 January deadline)
+                  </label>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">VAT Quarter Group</label>
+                  <select name="vat_stagger_group" defaultValue={client.vat_stagger_group || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Not VAT registered / not applicable</option>
+                    <option value="Jan/Apr/Jul/Oct">Jan / Apr / Jul / Oct</option>
+                    <option value="Feb/May/Aug/Nov">Feb / May / Aug / Nov</option>
+                    <option value="Mar/Jun/Sep/Dec">Mar / Jun / Sep / Dec</option>
+                  </select>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mt-3">
+                Payroll reminders show automatically whenever a PAYE Reference is set below (monthly, due 22nd).
+              </p>
             </div>
 
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">

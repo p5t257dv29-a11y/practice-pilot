@@ -7,12 +7,66 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-function getDaysUntil(dateStr: string): number {
+function getDaysUntil(date: Date): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const due = new Date(dateStr);
+  const due = new Date(date);
   due.setHours(0, 0, 0, 0);
   return Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// Finds the next upcoming occurrence of a given month/day (annual recurring date, e.g. 31 Jan)
+function nextAnnualDate(month: number, day: number): Date {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let candidate = new Date(today.getFullYear(), month, day);
+  if (candidate < today) {
+    candidate = new Date(today.getFullYear() + 1, month, day);
+  }
+  return candidate;
+}
+
+// Finds the next upcoming occurrence of a given day-of-month (monthly recurring date, e.g. 22nd)
+function nextMonthlyDate(day: number): Date {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let candidate = new Date(today.getFullYear(), today.getMonth(), day);
+  if (candidate < today) {
+    candidate = new Date(today.getFullYear(), today.getMonth() + 1, day);
+  }
+  return candidate;
+}
+
+// VAT quarter-end months (0-indexed) for each stagger group
+const VAT_GROUPS: Record<string, number[]> = {
+  "Jan/Apr/Jul/Oct": [0, 3, 6, 9],
+  "Feb/May/Aug/Nov": [1, 4, 7, 10],
+  "Mar/Jun/Sep/Dec": [2, 5, 8, 11],
+};
+
+// VAT returns are due 1 month + 7 days after the quarter end
+function nextVatDeadline(staggerGroup: string): Date | null {
+  const months = VAT_GROUPS[staggerGroup];
+  if (!months) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Build a list of candidate quarter-end dates across this year and next
+  const candidates: Date[] = [];
+  for (const year of [today.getFullYear(), today.getFullYear() + 1]) {
+    for (const month of months) {
+      // Last day of that month = day 0 of the following month
+      const quarterEnd = new Date(year, month + 1, 0);
+      const deadline = new Date(quarterEnd);
+      deadline.setMonth(deadline.getMonth() + 1);
+      deadline.setDate(deadline.getDate() + 7);
+      candidates.push(deadline);
+    }
+  }
+
+  candidates.sort((a, b) => a.getTime() - b.getTime());
+  return candidates.find((d) => d >= today) || null;
 }
 
 function getUrgencyColor(days: number) {
@@ -49,7 +103,7 @@ function getUrgencyColor(days: number) {
 export default async function DeadlinesPage() {
   const { data: clients, error } = await supabase
     .from("clients")
-    .select("id, client_name, company_number, accounts_next_due, confirmation_statement_next_due, onboarding_status")
+    .select("id, client_name, company_number, accounts_next_due, confirmation_statement_next_due, onboarding_status, requires_self_assessment, vat_stagger_group, paye_reference")
     .order("client_name", { ascending: true });
 
   if (error) {
@@ -79,7 +133,7 @@ export default async function DeadlinesPage() {
         company_number: client.company_number,
         type: "Accounts Filing",
         due_date: client.accounts_next_due,
-        days: getDaysUntil(client.accounts_next_due),
+        days: getDaysUntil(new Date(client.accounts_next_due)),
       });
     }
     if (client.confirmation_statement_next_due) {
@@ -89,7 +143,42 @@ export default async function DeadlinesPage() {
         company_number: client.company_number,
         type: "Confirmation Statement",
         due_date: client.confirmation_statement_next_due,
-        days: getDaysUntil(client.confirmation_statement_next_due),
+        days: getDaysUntil(new Date(client.confirmation_statement_next_due)),
+      });
+    }
+    if (client.requires_self_assessment) {
+      const saDate = nextAnnualDate(0, 31); // 31 January
+      deadlines.push({
+        client_id: client.id,
+        client_name: client.client_name,
+        company_number: client.company_number,
+        type: "Self Assessment",
+        due_date: saDate.toISOString(),
+        days: getDaysUntil(saDate),
+      });
+    }
+    if (client.vat_stagger_group) {
+      const vatDate = nextVatDeadline(client.vat_stagger_group);
+      if (vatDate) {
+        deadlines.push({
+          client_id: client.id,
+          client_name: client.client_name,
+          company_number: client.company_number,
+          type: "VAT Return",
+          due_date: vatDate.toISOString(),
+          days: getDaysUntil(vatDate),
+        });
+      }
+    }
+    if (client.paye_reference) {
+      const payrollDate = nextMonthlyDate(22);
+      deadlines.push({
+        client_id: client.id,
+        client_name: client.client_name,
+        company_number: client.company_number,
+        type: "Payroll (PAYE)",
+        due_date: payrollDate.toISOString(),
+        days: getDaysUntil(payrollDate),
       });
     }
   });
@@ -177,7 +266,7 @@ export default async function DeadlinesPage() {
           <div className="rounded-2xl bg-white p-12 shadow-sm border border-slate-100 text-center">
             <p className="text-slate-500">No deadlines found.</p>
             <p className="text-sm text-slate-400 mt-1">
-              Add clients via Companies House lookup to automatically populate filing deadlines.
+              Add clients via Companies House lookup, or set Self Assessment/VAT/PAYE settings on a client to populate deadlines here.
             </p>
           </div>
         )}
