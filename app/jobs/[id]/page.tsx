@@ -138,7 +138,7 @@ export default async function JobDetailPage({
 }) {
   const { id } = await params;
 
-  const [{ data: job, error }, { data: clients }, { data: checklistItems }, { data: templates }] = await Promise.all([
+  const [{ data: job, error }, { data: clients }, { data: checklistItems }, { data: templates }, { data: staff }] = await Promise.all([
     supabase
       .from("jobs")
       .select("*, clients(client_name)")
@@ -156,6 +156,11 @@ export default async function JobDetailPage({
     supabase
       .from("checklist_templates")
       .select("id, name")
+      .order("name", { ascending: true }),
+    supabase
+      .from("staff")
+      .select("id, name")
+      .eq("is_active", true)
       .order("name", { ascending: true }),
   ]);
 
@@ -280,12 +285,16 @@ export default async function JobDetailPage({
 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Assigned To</label>
-                  <input
+                  <select
                     name="assigned_to"
                     defaultValue={job.assigned_to || ""}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    placeholder="Staff member name"
-                  />
+                  >
+                    <option value="">Unassigned</option>
+                    {(staff || []).map((member) => (
+                      <option key={member.id} value={member.name}>{member.name}</option>
+                    ))}
+                  </select>
                 </div>
 
               </div>

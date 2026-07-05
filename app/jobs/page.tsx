@@ -28,6 +28,8 @@ async function createJobRecord(formData: FormData) {
     status: formData.get("status")?.toString().trim() || "Draft",
     workflow_stage: formData.get("workflow_stage")?.toString().trim() || null,
     assigned_to: formData.get("assigned_to")?.toString().trim() || null,
+    period_start: formData.get("period_start")?.toString().trim() || null,
+    period_end: formData.get("period_end")?.toString().trim() || null,
     due_date: formData.get("due_date")?.toString().trim() || null,
     notes: formData.get("notes")?.toString().trim() || null,
     is_recurring: isRecurring,
@@ -57,7 +59,7 @@ export default async function JobsPage() {
       .order("created_at", { ascending: false }),
     supabase
       .from("clients")
-      .select("id, client_name")
+      .select("id, client_name, year_end, accounts_next_due, confirmation_statement_next_due")
       .order("client_name", { ascending: true }),
   ]);
 

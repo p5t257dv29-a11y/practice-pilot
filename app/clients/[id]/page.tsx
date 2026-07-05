@@ -40,6 +40,7 @@ async function updateClientRecord(id: string, formData: FormData) {
     notes: get("notes"),
     requires_self_assessment: formData.get("requires_self_assessment") === "on",
     vat_stagger_group: get("vat_stagger_group") || null,
+    assigned_staff: get("assigned_staff") || null,
   }).eq("id", id);
 
   revalidatePath(`/clients/${id}`);
@@ -84,11 +85,13 @@ export default async function ClientDetailPage({
     { data: officers },
     { data: pscs },
     { data: shareholdings },
+    { data: staff },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*").eq("client_id", id).order("is_active", { ascending: false }),
     supabase.from("company_pscs").select("*").eq("client_id", id).order("is_active", { ascending: false }),
     supabase.from("company_shareholdings").select("*").eq("client_id", id).order("created_at", { ascending: true }),
+    supabase.from("staff").select("id, name").eq("is_active", true).order("name", { ascending: true }),
   ]);
 
   if (error || !client) notFound();
@@ -232,6 +235,15 @@ export default async function ClientDetailPage({
                     <option>Onboarding</option>
                     <option>Active Client</option>
                     <option>Inactive</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Account Manager</label>
+                  <select name="assigned_staff" defaultValue={client.assigned_staff || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Unassigned</option>
+                    {(staff || []).map((member) => (
+                      <option key={member.id} value={member.name}>{member.name}</option>
+                    ))}
                   </select>
                 </div>
               </div>
