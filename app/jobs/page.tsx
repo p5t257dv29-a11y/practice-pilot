@@ -52,7 +52,7 @@ async function deleteJobRecord(id: string) {
 }
 
 export default async function JobsPage() {
-  const [{ data: jobs, error }, { data: clients }] = await Promise.all([
+  const [{ data: jobs, error }, { data: clients }, { data: staff }] = await Promise.all([
     supabase
       .from("jobs")
       .select("*, clients(client_name)")
@@ -61,12 +61,18 @@ export default async function JobsPage() {
       .from("clients")
       .select("id, client_name, year_end, accounts_next_due, confirmation_statement_next_due")
       .order("client_name", { ascending: true }),
+    supabase
+      .from("staff")
+      .select("id, name")
+      .eq("is_active", true)
+      .order("name", { ascending: true }),
   ]);
 
   return (
     <JobsPageClient
       jobs={jobs || []}
       clients={clients || []}
+      staff={staff || []}
       error={error?.message}
       createAction={createJobRecord}
       deleteAction={deleteJobRecord}
