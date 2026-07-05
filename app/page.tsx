@@ -136,7 +136,7 @@ export default async function DashboardPage() {
               ))}
               {recentClients && recentClients.length === 0 && (
                 <p className="text-sm text-slate-500 text-center py-6">
-                  No clients yet. <a href="/clients" className="text-blue-600 hover:underline">Add your first →</a>
+                  No clients yet. <a href="/clients?new=true" className="text-blue-600 hover:underline">Add your first →</a>
                 </p>
               )}
             </div>

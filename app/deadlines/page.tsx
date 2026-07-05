@@ -100,10 +100,16 @@ function getUrgencyColor(days: number) {
   };
 }
 
-export default async function DeadlinesPage() {
+export default async function DeadlinesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ entity?: string; type?: string }>;
+}) {
+  const { entity, type: typeFilter } = await searchParams;
+
   const { data: clients, error } = await supabase
     .from("clients")
-    .select("id, client_name, company_number, accounts_next_due, confirmation_statement_next_due, onboarding_status, requires_self_assessment, vat_stagger_group, paye_reference")
+    .select("id, client_name, company_number, entity_type, accounts_next_due, confirmation_statement_next_due, onboarding_status, requires_self_assessment, vat_stagger_group, paye_reference")
     .order("client_name", { ascending: true });
 
   if (error) {
@@ -118,19 +124,29 @@ export default async function DeadlinesPage() {
     client_id: string;
     client_name: string;
     company_number: string | null;
+    entity_type: string | null;
     type: string;
     due_date: string;
     days: number;
   };
 
+  const entityTypes = Array.from(
+    new Set((clients || []).map((c) => c.entity_type).filter(Boolean))
+  ) as string[];
+
+  const relevantClients = entity
+    ? (clients || []).filter((c) => c.entity_type === entity)
+    : (clients || []);
+
   const deadlines: DeadlineEntry[] = [];
 
-  (clients || []).forEach((client) => {
+  relevantClients.forEach((client) => {
     if (client.accounts_next_due) {
       deadlines.push({
         client_id: client.id,
         client_name: client.client_name,
         company_number: client.company_number,
+        entity_type: client.entity_type,
         type: "Accounts Filing",
         due_date: client.accounts_next_due,
         days: getDaysUntil(new Date(client.accounts_next_due)),
@@ -141,6 +157,7 @@ export default async function DeadlinesPage() {
         client_id: client.id,
         client_name: client.client_name,
         company_number: client.company_number,
+        entity_type: client.entity_type,
         type: "Confirmation Statement",
         due_date: client.confirmation_statement_next_due,
         days: getDaysUntil(new Date(client.confirmation_statement_next_due)),
@@ -152,6 +169,7 @@ export default async function DeadlinesPage() {
         client_id: client.id,
         client_name: client.client_name,
         company_number: client.company_number,
+        entity_type: client.entity_type,
         type: "Self Assessment",
         due_date: saDate.toISOString(),
         days: getDaysUntil(saDate),
@@ -164,6 +182,7 @@ export default async function DeadlinesPage() {
           client_id: client.id,
           client_name: client.client_name,
           company_number: client.company_number,
+          entity_type: client.entity_type,
           type: "VAT Return",
           due_date: vatDate.toISOString(),
           days: getDaysUntil(vatDate),
@@ -176,6 +195,7 @@ export default async function DeadlinesPage() {
         client_id: client.id,
         client_name: client.client_name,
         company_number: client.company_number,
+        entity_type: client.entity_type,
         type: "Payroll (PAYE)",
         due_date: payrollDate.toISOString(),
         days: getDaysUntil(payrollDate),
@@ -183,12 +203,18 @@ export default async function DeadlinesPage() {
     }
   });
 
-  deadlines.sort((a, b) => a.days - b.days);
+  const deadlineTypes = Array.from(new Set(deadlines.map((d) => d.type)));
 
-  const overdue = deadlines.filter(d => d.days < 0);
-  const dueSoon = deadlines.filter(d => d.days >= 0 && d.days <= 30);
-  const upcoming = deadlines.filter(d => d.days > 30 && d.days <= 90);
-  const future = deadlines.filter(d => d.days > 90);
+  const filteredDeadlines = typeFilter
+    ? deadlines.filter((d) => d.type === typeFilter)
+    : deadlines;
+
+  filteredDeadlines.sort((a, b) => a.days - b.days);
+
+  const overdue = filteredDeadlines.filter(d => d.days < 0);
+  const dueSoon = filteredDeadlines.filter(d => d.days >= 0 && d.days <= 30);
+  const upcoming = filteredDeadlines.filter(d => d.days > 30 && d.days <= 90);
+  const future = filteredDeadlines.filter(d => d.days > 90);
 
   const today = new Date().toLocaleDateString("en-GB", {
     weekday: "long",
@@ -258,11 +284,61 @@ export default async function DeadlinesPage() {
             <span className="text-sm text-slate-600"><span className="font-bold text-green-600">{future.length}</span> future</span>
           </a>
         </div>
+
+        {/* Entity type filter chips */}
+        {entityTypes.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <a
+              href="/deadlines"
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                !entity ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              All types
+            </a>
+            {entityTypes.map((type) => (
+              <a
+                key={type}
+                href={`/deadlines?entity=${encodeURIComponent(type)}${typeFilter ? `&type=${encodeURIComponent(typeFilter)}` : ""}`}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  entity === type ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {type}
+              </a>
+            ))}
+          </div>
+        )}
+
+        {/* Deadline type filter chips */}
+        {deadlineTypes.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            <a
+              href={entity ? `/deadlines?entity=${encodeURIComponent(entity)}` : "/deadlines"}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                !typeFilter ? "bg-slate-700 text-white" : "bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-200"
+              }`}
+            >
+              All deadline types
+            </a>
+            {deadlineTypes.map((type) => (
+              <a
+                key={type}
+                href={`/deadlines?type=${encodeURIComponent(type)}${entity ? `&entity=${encodeURIComponent(entity)}` : ""}`}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  typeFilter === type ? "bg-slate-700 text-white" : "bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-200"
+                }`}
+              >
+                {type}
+              </a>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="p-8 space-y-4">
 
-        {deadlines.length === 0 && (
+        {filteredDeadlines.length === 0 && (
           <div className="rounded-2xl bg-white p-12 shadow-sm border border-slate-100 text-center">
             <p className="text-slate-500">No deadlines found.</p>
             <p className="text-sm text-slate-400 mt-1">

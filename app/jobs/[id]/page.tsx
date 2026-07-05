@@ -40,6 +40,38 @@ function getNextJobName(currentName: string, oldDueDate: string | null, newDueDa
   return currentName;
 }
 
+async function attachChecklist(jobId: string, formData: FormData) {
+  "use server";
+
+  const templateId = String(formData.get("template_id") || "").trim();
+  if (!templateId) return;
+
+  const { data: templateItems } = await supabase
+    .from("checklist_template_items")
+    .select("*")
+    .eq("template_id", templateId)
+    .order("sort_order", { ascending: true });
+
+  if (templateItems && templateItems.length > 0) {
+    await supabase.from("job_checklist_items").insert(
+      templateItems.map((item) => ({
+        job_id: jobId,
+        item_text: item.item_text,
+        sort_order: item.sort_order,
+        is_received: false,
+      }))
+    );
+  }
+
+  revalidatePath(`/jobs/${jobId}`);
+}
+
+async function toggleChecklistItem(jobId: string, itemId: string, currentStatus: boolean) {
+  "use server";
+  await supabase.from("job_checklist_items").update({ is_received: !currentStatus }).eq("id", itemId);
+  revalidatePath(`/jobs/${jobId}`);
+}
+
 async function updateJobRecord(id: string, formData: FormData) {
   "use server";
 
@@ -106,7 +138,7 @@ export default async function JobDetailPage({
 }) {
   const { id } = await params;
 
-  const [{ data: job, error }, { data: clients }] = await Promise.all([
+  const [{ data: job, error }, { data: clients }, { data: checklistItems }, { data: templates }] = await Promise.all([
     supabase
       .from("jobs")
       .select("*, clients(client_name)")
@@ -116,11 +148,22 @@ export default async function JobDetailPage({
       .from("clients")
       .select("id, client_name")
       .order("client_name", { ascending: true }),
+    supabase
+      .from("job_checklist_items")
+      .select("*")
+      .eq("job_id", id)
+      .order("sort_order", { ascending: true }),
+    supabase
+      .from("checklist_templates")
+      .select("id, name")
+      .order("name", { ascending: true }),
   ]);
 
   if (error || !job) notFound();
 
   const updateWithId = updateJobRecord.bind(null, id);
+  const attachChecklistWithId = attachChecklist.bind(null, id);
+  const receivedCount = (checklistItems || []).filter((i) => i.is_received).length;
 
   return (
     <div className="p-8">
@@ -177,206 +220,271 @@ export default async function JobDetailPage({
         </div>
       )}
 
-      {/* Edit Form */}
-      <form action={updateWithId} className="mt-8 space-y-6">
+      <div className="mt-8 grid gap-6 lg:grid-cols-3">
 
-        {/* Job Details */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">Job Details</h2>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {/* Left column — main job details */}
+        <div className="lg:col-span-2">
+          <form action={updateWithId} className="space-y-6">
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
-              <select
-                name="client_id"
-                defaultValue={job.client_id || ""}
-                required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              >
-                <option value="">Select a client</option>
-                {(clients || []).map((client) => (
-                  <option key={client.id} value={client.id}>
-                    {client.client_name}
-                  </option>
-                ))}
-              </select>
+            {/* Job Details */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900">Job Details</h2>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
+                  <select
+                    name="client_id"
+                    defaultValue={job.client_id || ""}
+                    required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  >
+                    <option value="">Select a client</option>
+                    {(clients || []).map((client) => (
+                      <option key={client.id} value={client.id}>
+                        {client.client_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Job Name *</label>
+                  <input
+                    name="job_name"
+                    defaultValue={job.job_name || ""}
+                    required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Job Type</label>
+                  <select
+                    name="job_type"
+                    defaultValue={job.job_type || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  >
+                    <option value="">Select job type</option>
+                    <option>Year End Accounts</option>
+                    <option>Corporation Tax Return</option>
+                    <option>VAT Return</option>
+                    <option>Payroll</option>
+                    <option>Self Assessment</option>
+                    <option>Bookkeeping</option>
+                    <option>Management Accounts</option>
+                    <option>Companies House Filing</option>
+                    <option>Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Assigned To</label>
+                  <input
+                    name="assigned_to"
+                    defaultValue={job.assigned_to || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Staff member name"
+                  />
+                </div>
+
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Job Name *</label>
-              <input
-                name="job_name"
-                defaultValue={job.job_name || ""}
-                required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
+            {/* Status & Workflow */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900">Status & Workflow</h2>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                  <select
+                    name="status"
+                    defaultValue={job.status || "Draft"}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  >
+                    <option>Draft</option>
+                    <option>Active</option>
+                    <option>On Hold</option>
+                    <option>Completed</option>
+                    <option>Cancelled</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Workflow Stage</label>
+                  <select
+                    name="workflow_stage"
+                    defaultValue={job.workflow_stage || "Not Started"}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  >
+                    <option>Not Started</option>
+                    <option>Waiting for Info</option>
+                    <option>In Progress</option>
+                    <option>Review</option>
+                    <option>Awaiting Client Approval</option>
+                    <option>Filing</option>
+                    <option>Complete</option>
+                  </select>
+                </div>
+
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Job Type</label>
-              <select
-                name="job_type"
-                defaultValue={job.job_type || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              >
-                <option value="">Select job type</option>
-                <option>Year End Accounts</option>
-                <option>Corporation Tax Return</option>
-                <option>VAT Return</option>
-                <option>Payroll</option>
-                <option>Self Assessment</option>
-                <option>Bookkeeping</option>
-                <option>Management Accounts</option>
-                <option>Companies House Filing</option>
-                <option>Other</option>
-              </select>
+            {/* Dates */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900">Dates</h2>
+              <div className="mt-4 grid gap-4 md:grid-cols-3">
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Period Start</label>
+                  <input
+                    name="period_start"
+                    type="date"
+                    defaultValue={job.period_start || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Period End</label>
+                  <input
+                    name="period_end"
+                    type="date"
+                    defaultValue={job.period_end || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Due Date</label>
+                  <input
+                    name="due_date"
+                    type="date"
+                    defaultValue={job.due_date || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  />
+                </div>
+
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Assigned To</label>
-              <input
-                name="assigned_to"
-                defaultValue={job.assigned_to || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                placeholder="Staff member name"
-              />
+            {/* Recurring Settings */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900">Recurring Job Settings</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                When this job is marked Completed, the next occurrence will be created automatically.
+              </p>
+              <div className="mt-4 flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="is_recurring"
+                  name="is_recurring"
+                  defaultChecked={job.is_recurring || false}
+                  className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                />
+                <label htmlFor="is_recurring" className="text-sm font-medium text-slate-700">
+                  Make this a recurring job
+                </label>
+              </div>
+              <div className="mt-3 max-w-xs">
+                <label className="block text-sm font-medium text-slate-700 mb-1">Recurs</label>
+                <select
+                  name="recurrence_frequency"
+                  defaultValue={job.recurrence_frequency || "Annually"}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                >
+                  <option value="Annually">Annually</option>
+                  <option value="Quarterly">Quarterly</option>
+                  <option value="Monthly">Monthly</option>
+                </select>
+              </div>
             </div>
 
-          </div>
-        </div>
-
-        {/* Status & Workflow */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">Status & Workflow</h2>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
-              <select
-                name="status"
-                defaultValue={job.status || "Draft"}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              >
-                <option>Draft</option>
-                <option>Active</option>
-                <option>On Hold</option>
-                <option>Completed</option>
-                <option>Cancelled</option>
-              </select>
+            {/* Notes */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900">Notes</h2>
+              <div className="mt-4">
+                <textarea
+                  name="notes"
+                  defaultValue={job.notes || ""}
+                  rows={4}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  placeholder="Any notes about this job"
+                />
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Workflow Stage</label>
-              <select
-                name="workflow_stage"
-                defaultValue={job.workflow_stage || "Not Started"}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              >
-                <option>Not Started</option>
-                <option>Waiting for Info</option>
-                <option>In Progress</option>
-                <option>Review</option>
-                <option>Awaiting Client Approval</option>
-                <option>Filing</option>
-                <option>Complete</option>
-              </select>
-            </div>
-
-          </div>
-        </div>
-
-        {/* Dates */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">Dates</h2>
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Period Start</label>
-              <input
-                name="period_start"
-                type="date"
-                defaultValue={job.period_start || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Period End</label>
-              <input
-                name="period_end"
-                type="date"
-                defaultValue={job.period_end || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Due Date</label>
-              <input
-                name="due_date"
-                type="date"
-                defaultValue={job.due_date || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              />
-            </div>
-
-          </div>
-        </div>
-
-        {/* Recurring Settings */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">Recurring Job Settings</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            When this job is marked Completed, the next occurrence will be created automatically.
-          </p>
-          <div className="mt-4 flex items-center gap-3">
-            <input
-              type="checkbox"
-              id="is_recurring"
-              name="is_recurring"
-              defaultChecked={job.is_recurring || false}
-              className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
-            />
-            <label htmlFor="is_recurring" className="text-sm font-medium text-slate-700">
-              Make this a recurring job
-            </label>
-          </div>
-          <div className="mt-3 max-w-xs">
-            <label className="block text-sm font-medium text-slate-700 mb-1">Recurs</label>
-            <select
-              name="recurrence_frequency"
-              defaultValue={job.recurrence_frequency || "Annually"}
-              className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+            <button
+              type="submit"
+              className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
             >
-              <option value="Annually">Annually</option>
-              <option value="Quarterly">Quarterly</option>
-              <option value="Monthly">Monthly</option>
-            </select>
+              Save Changes
+            </button>
+
+          </form>
+        </div>
+
+        {/* Right column — checklist */}
+        <div className="space-y-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Information Checklist</h2>
+              {checklistItems && checklistItems.length > 0 && (
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {receivedCount} of {checklistItems.length}
+                </span>
+              )}
+            </div>
+
+            {(!checklistItems || checklistItems.length === 0) ? (
+              <div className="mt-4">
+                <p className="text-sm text-slate-500 mb-3">
+                  No checklist attached yet. Pick a template to track what's been received from the client.
+                </p>
+                <form action={attachChecklistWithId} className="space-y-3">
+                  <select name="template_id" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Select a checklist template</option>
+                    {(templates || []).map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  <button type="submit"
+                    className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                    Attach Checklist
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-2">
+                {checklistItems.map((item) => (
+                  <form key={item.id} action={toggleChecklistItem.bind(null, id, item.id, item.is_received)}>
+                    <button
+                      type="submit"
+                      className={`w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                        item.is_received
+                          ? "border-green-100 bg-green-50 hover:bg-green-100"
+                          : "border-slate-100 hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className={`w-5 h-5 rounded-md border flex items-center justify-center text-xs flex-shrink-0 mt-0.5 ${
+                        item.is_received ? "bg-green-600 border-green-600 text-white" : "border-slate-300 text-transparent"
+                      }`}>
+                        ✓
+                      </span>
+                      <span className={`text-sm ${item.is_received ? "text-green-800 line-through" : "text-slate-700"}`}>
+                        {item.item_text}
+                      </span>
+                    </button>
+                  </form>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Notes */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">Notes</h2>
-          <div className="mt-4">
-            <textarea
-              name="notes"
-              defaultValue={job.notes || ""}
-              rows={4}
-              className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-              placeholder="Any notes about this job"
-            />
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
-        >
-          Save Changes
-        </button>
-
-      </form>
+      </div>
     </div>
   );
 }
