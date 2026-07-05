@@ -94,44 +94,51 @@ export default async function ChecklistsPage() {
           const addItemWithId = addTemplateItem.bind(null, template.id);
 
           return (
-            <div key={template.id} className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <div className="flex items-center justify-between">
+            <details key={template.id} className="rounded-2xl bg-white shadow-sm border border-slate-100 group">
+              <summary className="flex items-center justify-between p-6 cursor-pointer list-none">
                 <h2 className="text-lg font-bold text-slate-900">
                   {template.name} <span className="text-sm font-normal text-slate-400">({items.length} items)</span>
                 </h2>
-                <form action={deleteTemplate.bind(null, template.id)}>
-                  <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                    Delete Template
+                <span className="text-xs font-semibold text-blue-600 group-open:hidden">View →</span>
+                <span className="text-xs font-semibold text-slate-400 hidden group-open:inline">Close ↑</span>
+              </summary>
+
+              <div className="px-6 pb-6 border-t border-slate-100 pt-4">
+                <div className="flex justify-end -mt-2 mb-2">
+                  <form action={deleteTemplate.bind(null, template.id)}>
+                    <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                      Delete Template
+                    </button>
+                  </form>
+                </div>
+
+                <div className="space-y-2">
+                  {items.map((item: any) => (
+                    <div key={item.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-4 py-2">
+                      <p className="text-sm text-slate-700">{item.item_text}</p>
+                      <form action={deleteTemplateItem.bind(null, template.id, item.id)}>
+                        <button className="text-xs font-semibold text-red-500 hover:text-red-700 transition-colors">
+                          Remove
+                        </button>
+                      </form>
+                    </div>
+                  ))}
+                  {items.length === 0 && (
+                    <p className="text-sm text-slate-400 text-center py-4">No items yet.</p>
+                  )}
+                </div>
+
+                <form action={addItemWithId} className="mt-4 flex gap-3">
+                  <input name="item_text" required
+                    className="flex-1 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Add a new checklist item..." />
+                  <button type="submit"
+                    className="rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                    + Add Item
                   </button>
                 </form>
               </div>
-
-              <div className="mt-4 space-y-2">
-                {items.map((item: any) => (
-                  <div key={item.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-4 py-2">
-                    <p className="text-sm text-slate-700">{item.item_text}</p>
-                    <form action={deleteTemplateItem.bind(null, template.id, item.id)}>
-                      <button className="text-xs font-semibold text-red-500 hover:text-red-700 transition-colors">
-                        Remove
-                      </button>
-                    </form>
-                  </div>
-                ))}
-                {items.length === 0 && (
-                  <p className="text-sm text-slate-400 text-center py-4">No items yet.</p>
-                )}
-              </div>
-
-              <form action={addItemWithId} className="mt-4 flex gap-3">
-                <input name="item_text" required
-                  className="flex-1 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="Add a new checklist item..." />
-                <button type="submit"
-                  className="rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                  + Add Item
-                </button>
-              </form>
-            </div>
+            </details>
           );
         })}
 
