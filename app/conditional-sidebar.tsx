@@ -35,6 +35,7 @@ const navSections = [
     items: [
       { href: "/services", label: "Services", icon: "🏷️" },
       { href: "/checklists", label: "Checklists", icon: "✅" },
+      { href: "/staff", label: "Staff", icon: "🧑‍💼" },
     ],
   },
 ];
