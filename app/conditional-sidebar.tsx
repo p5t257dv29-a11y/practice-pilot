@@ -28,6 +28,7 @@ const navSections = [
       { href: "/jobs", label: "Jobs", icon: "💼" },
       { href: "/quotes", label: "Quotes", icon: "📋" },
       { href: "/invoices", label: "Invoices", icon: "🧾" },
+      { href: "/tax", label: "Tax", icon: "🧮" },
     ],
   },
   {
