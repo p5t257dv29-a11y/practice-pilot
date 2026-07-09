@@ -86,12 +86,26 @@ export default async function ClientDetailPage({
     { data: pscs },
     { data: shareholdings },
     { data: staff },
+    { data: jobs },
+    { data: quotes },
+    { data: invoices },
+    { data: engagementLetters },
+    { data: taxComputations },
+    { data: ctComputations },
+    { data: fixedAssets },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*").eq("client_id", id).order("is_active", { ascending: false }),
     supabase.from("company_pscs").select("*").eq("client_id", id).order("is_active", { ascending: false }),
     supabase.from("company_shareholdings").select("*").eq("client_id", id).order("created_at", { ascending: true }),
     supabase.from("staff").select("id, name").eq("is_active", true).order("name", { ascending: true }),
+    supabase.from("jobs").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("quotes").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("invoices").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("engagement_letters").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("tax_computations").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("corporation_tax_computations").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("fixed_assets").select("*").eq("client_id", id).order("acquisition_date", { ascending: false }),
   ]);
 
   if (error || !client) notFound();
@@ -99,8 +113,17 @@ export default async function ClientDetailPage({
   const updateWithId = updateClientRecord.bind(null, id);
   const addShareholdingWithId = addShareholding.bind(null, id);
 
+  const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
+  const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
+
   const tabs = [
     { key: "details", label: "Details" },
+    { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
+    { key: "quotes", label: `Quotes (${quotes?.length ?? 0})` },
+    { key: "invoices", label: `Invoices (${invoices?.length ?? 0})` },
+    { key: "engagement", label: `Engagement (${engagementLetters?.length ?? 0})` },
+    { key: "tax", label: `Tax (${(taxComputations?.length ?? 0) + (ctComputations?.length ?? 0)})` },
+    { key: "assets", label: `Fixed Assets (${fixedAssets?.length ?? 0})` },
     { key: "directors", label: `Directors (${officers?.filter(o => o.is_active).length ?? 0})` },
     { key: "pscs", label: `PSCs (${pscs?.filter(p => p.is_active).length ?? 0})` },
     { key: "shareholdings", label: `Shareholdings (${shareholdings?.length ?? 0})` },
@@ -371,6 +394,268 @@ export default async function ClientDetailPage({
               Save Changes
             </button>
           </form>
+        )}
+
+        {/* JOBS TAB */}
+        {tab === "jobs" && (
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">Active Jobs ({activeJobs.length})</h2>
+                <a href="/jobs"
+                  className="text-xs font-semibold text-blue-600 hover:underline">
+                  View all jobs →
+                </a>
+              </div>
+              <div className="mt-4 space-y-2">
+                {activeJobs.map((job) => (
+                  <a key={job.id} href={`/jobs/${job.id}`}
+                    className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-slate-900">{job.job_name}</p>
+                        {job.is_recurring && (
+                          <span className="rounded-full bg-purple-50 px-2 py-0.5 text-xs text-purple-600 font-medium">
+                            ↻ {job.recurrence_frequency}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-500 mt-0.5">
+                        {job.job_type || "No type"}
+                        {job.due_date && ` · Due ${new Date(job.due_date).toLocaleDateString("en-GB")}`}
+                        {job.assigned_to && ` · ${job.assigned_to}`}
+                      </p>
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      job.status === "Active" ? "bg-green-100 text-green-700"
+                      : job.status === "On Hold" ? "bg-yellow-100 text-yellow-700"
+                      : "bg-slate-100 text-slate-600"
+                    }`}>
+                      {job.status || "Draft"}
+                    </span>
+                  </a>
+                ))}
+                {activeJobs.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-6">No active jobs for this client.</p>
+                )}
+              </div>
+            </div>
+
+            {historicalJobs.length > 0 && (
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <h2 className="text-lg font-bold text-slate-900">Historical Jobs ({historicalJobs.length})</h2>
+                <div className="mt-4 space-y-2">
+                  {historicalJobs.map((job) => (
+                    <a key={job.id} href={`/jobs/${job.id}`}
+                      className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors opacity-70">
+                      <div>
+                        <p className="font-semibold text-slate-900">{job.job_name}</p>
+                        <p className="text-sm text-slate-500 mt-0.5">
+                          {job.job_type || "No type"}
+                          {job.due_date && ` · Due ${new Date(job.due_date).toLocaleDateString("en-GB")}`}
+                        </p>
+                      </div>
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                        job.status === "Completed" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"
+                      }`}>
+                        {job.status}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* QUOTES TAB */}
+        {tab === "quotes" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Quotes ({quotes?.length ?? 0})</h2>
+              <a href="/quotes" className="text-xs font-semibold text-blue-600 hover:underline">View all quotes →</a>
+            </div>
+            <div className="mt-4 space-y-2">
+              {(quotes || []).map((quote) => (
+                <a key={quote.id} href={`/quotes/${quote.id}`}
+                  className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                  <div>
+                    <p className="font-semibold text-slate-900">{quote.quote_number}</p>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                      {quote.quote_date ? new Date(quote.quote_date).toLocaleDateString("en-GB") : "No date"}
+                      {quote.valid_until && ` · Valid until ${new Date(quote.valid_until).toLocaleDateString("en-GB")}`}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <p className="font-bold text-slate-900">£{Number(quote.total || 0).toFixed(2)}</p>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      quote.status === "Accepted" ? "bg-green-100 text-green-700"
+                      : quote.status === "Sent" ? "bg-blue-100 text-blue-700"
+                      : quote.status === "Declined" ? "bg-red-100 text-red-700"
+                      : "bg-slate-100 text-slate-600"
+                    }`}>
+                      {quote.status || "Draft"}
+                    </span>
+                  </div>
+                </a>
+              ))}
+              {(!quotes || quotes.length === 0) && (
+                <p className="text-sm text-slate-500 text-center py-6">No quotes for this client yet.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* INVOICES TAB */}
+        {tab === "invoices" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Invoices ({invoices?.length ?? 0})</h2>
+              <a href="/invoices" className="text-xs font-semibold text-blue-600 hover:underline">View all invoices →</a>
+            </div>
+            <div className="mt-4 space-y-2">
+              {(invoices || []).map((invoice) => (
+                <a key={invoice.id} href="/invoices"
+                  className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                  <div>
+                    <p className="font-semibold text-slate-900">{invoice.invoice_number || invoice.number || "Invoice"}</p>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                      {invoice.invoice_date ? new Date(invoice.invoice_date).toLocaleDateString("en-GB") : "No date"}
+                      {invoice.due_date && ` · Due ${new Date(invoice.due_date).toLocaleDateString("en-GB")}`}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <p className="font-bold text-slate-900">£{Number(invoice.total || 0).toFixed(2)}</p>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      invoice.status === "Paid" ? "bg-green-100 text-green-700"
+                      : invoice.status === "Sent" ? "bg-blue-100 text-blue-700"
+                      : invoice.status === "Overdue" ? "bg-red-100 text-red-700"
+                      : "bg-slate-100 text-slate-600"
+                    }`}>
+                      {invoice.status || "Draft"}
+                    </span>
+                  </div>
+                </a>
+              ))}
+              {(!invoices || invoices.length === 0) && (
+                <p className="text-sm text-slate-500 text-center py-6">No invoices for this client yet.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ENGAGEMENT TAB */}
+        {tab === "engagement" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Engagement Letters ({engagementLetters?.length ?? 0})</h2>
+              <a href="/engagement" className="text-xs font-semibold text-blue-600 hover:underline">View all engagement letters →</a>
+            </div>
+            <div className="mt-4 space-y-2">
+              {(engagementLetters || []).map((letter) => (
+                <a key={letter.id} href="/engagement"
+                  className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                  <div>
+                    <p className="font-semibold text-slate-900">
+                      {letter.start_date ? new Date(letter.start_date).toLocaleDateString("en-GB") : "Engagement Letter"}
+                    </p>
+                    <p className="text-sm text-slate-500 mt-0.5 line-clamp-1">
+                      {letter.services_description ? letter.services_description.split("\n")[0] : "No services listed"}
+                    </p>
+                  </div>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    letter.status === "Signed" ? "bg-green-100 text-green-700"
+                    : letter.status === "Sent" ? "bg-blue-100 text-blue-700"
+                    : "bg-slate-100 text-slate-600"
+                  }`}>
+                    {letter.status || "Draft"}
+                  </span>
+                </a>
+              ))}
+              {(!engagementLetters || engagementLetters.length === 0) && (
+                <p className="text-sm text-slate-500 text-center py-6">No engagement letters for this client yet.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAX TAB — personal + corporation tax computations */}
+        {tab === "tax" && (
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">Personal Tax Computations ({taxComputations?.length ?? 0})</h2>
+                <a href="/tax" className="text-xs font-semibold text-blue-600 hover:underline">View all →</a>
+              </div>
+              <div className="mt-4 space-y-2">
+                {(taxComputations || []).map((comp) => (
+                  <a key={comp.id} href={`/tax/${comp.id}`}
+                    className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                    <p className="font-semibold text-slate-900">Tax Year {comp.tax_year}</p>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      comp.status === "Approved" ? "bg-green-100 text-green-700"
+                      : comp.status === "Sent" ? "bg-blue-100 text-blue-700"
+                      : comp.status === "Queried" ? "bg-yellow-100 text-yellow-700"
+                      : "bg-slate-100 text-slate-600"
+                    }`}>
+                      {comp.status || "Draft"}
+                    </span>
+                  </a>
+                ))}
+                {(!taxComputations || taxComputations.length === 0) && (
+                  <p className="text-sm text-slate-500 text-center py-6">No personal tax computations yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">Corporation Tax Computations ({ctComputations?.length ?? 0})</h2>
+                <a href="/corporation-tax" className="text-xs font-semibold text-blue-600 hover:underline">View all →</a>
+              </div>
+              <div className="mt-4 space-y-2">
+                {(ctComputations || []).map((comp) => (
+                  <a key={comp.id} href={`/corporation-tax/${comp.id}`}
+                    className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                    <p className="font-semibold text-slate-900">
+                      {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+                    </p>
+                    <p className="text-sm text-slate-500">£{Number(comp.accounting_profit || 0).toFixed(2)} profit</p>
+                  </a>
+                ))}
+                {(!ctComputations || ctComputations.length === 0) && (
+                  <p className="text-sm text-slate-500 text-center py-6">No corporation tax computations yet.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* FIXED ASSETS TAB */}
+        {tab === "assets" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Fixed Assets ({fixedAssets?.length ?? 0})</h2>
+              <a href="/fixed-assets" className="text-xs font-semibold text-blue-600 hover:underline">View register →</a>
+            </div>
+            <div className="mt-4 space-y-2">
+              {(fixedAssets || []).map((asset) => (
+                <div key={asset.id} className={`flex items-center justify-between rounded-xl border border-slate-100 p-4 ${asset.disposal_date ? "opacity-60" : ""}`}>
+                  <div>
+                    <p className="font-semibold text-slate-900">{asset.description}</p>
+                    <p className="text-sm text-slate-500 mt-0.5">
+                      {asset.category || "Uncategorised"} · Acquired {new Date(asset.acquisition_date).toLocaleDateString("en-GB")}
+                      {asset.disposal_date && ` · Disposed ${new Date(asset.disposal_date).toLocaleDateString("en-GB")}`}
+                    </p>
+                  </div>
+                  <p className="font-bold text-slate-900">£{Number(asset.cost).toFixed(2)}</p>
+                </div>
+              ))}
+              {(!fixedAssets || fixedAssets.length === 0) && (
+                <p className="text-sm text-slate-500 text-center py-6">No fixed assets for this client yet.</p>
+              )}
+            </div>
+          </div>
         )}
 
         {/* DIRECTORS TAB */}
