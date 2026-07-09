@@ -20,19 +20,23 @@ export function calculateCapitalAllowances(input: {
   periodEnd: string;
   mainPoolBfwd: number;
   specialRatePoolBfwd: number;
+  jobId?: string | null;
 }) {
-  const { assets, periodStart, periodEnd, mainPoolBfwd, specialRatePoolBfwd } = input;
+  const { assets, periodStart, periodEnd, mainPoolBfwd, specialRatePoolBfwd, jobId } = input;
 
   const start = new Date(periodStart);
   const end = new Date(periodEnd);
   const periodMonths = Math.max(1, Math.round((end.getTime() - start.getTime()) / (30.44 * 24 * 60 * 60 * 1000)));
   const aiaLimit = CA_RATES.aiaLimit * (periodMonths / 12);
 
-  // Additions within the period, split by pool
-  const additions = assets.filter((a) => {
-    const acq = new Date(a.acquisition_date);
-    return acq >= start && acq <= end;
-  });
+  // If a job is linked, additions are the assets tied to that job.
+  // Otherwise fall back to assets acquired within the date range.
+  const additions = jobId
+    ? assets.filter((a) => a.job_id === jobId)
+    : assets.filter((a) => {
+        const acq = new Date(a.acquisition_date);
+        return acq >= start && acq <= end;
+      });
 
   const specialRateAIAEligible = additions.filter((a) => a.capital_allowance_pool === "Special Rate Pool - AIA Eligible");
   const mainPoolAIAEligible = additions.filter((a) => a.capital_allowance_pool === "Main Pool - AIA Eligible");

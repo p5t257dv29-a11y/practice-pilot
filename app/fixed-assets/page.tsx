@@ -60,6 +60,7 @@ async function createAsset(formData: FormData) {
 
   await supabase.from("fixed_assets").insert({
     client_id,
+    job_id: get("job_id") || null,
     description,
     category: get("category") || null,
     capital_allowance_pool: get("capital_allowance_pool") || "Main Pool - AIA Eligible",
@@ -79,6 +80,7 @@ async function updateAsset(id: string, formData: FormData) {
 
   await supabase.from("fixed_assets").update({
     description: get("description"),
+    job_id: get("job_id") || null,
     category: get("category") || null,
     capital_allowance_pool: get("capital_allowance_pool"),
     acquisition_date: get("acquisition_date"),
@@ -106,15 +108,19 @@ export default async function FixedAssetsPage({
 }) {
   const { client: clientFilter, edit } = await searchParams;
 
-  const [{ data: assets, error }, { data: clients }] = await Promise.all([
+  const [{ data: assets, error }, { data: clients }, { data: jobs }] = await Promise.all([
     supabase
       .from("fixed_assets")
-      .select("*, clients(client_name)")
+      .select("*, clients(client_name), jobs(job_name)")
       .order("acquisition_date", { ascending: false }),
     supabase
       .from("clients")
       .select("id, client_name")
       .order("client_name", { ascending: true }),
+    supabase
+      .from("jobs")
+      .select("id, job_name, client_id, clients(client_name)")
+      .order("job_name", { ascending: true }),
   ]);
 
   const filteredAssets = clientFilter
@@ -216,6 +222,16 @@ export default async function FixedAssetsPage({
               </select>
             </div>
             <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Job (optional)</label>
+              <select name="job_id"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                <option value="">No linked job</option>
+                {(jobs || []).map((j) => (
+                  <option key={j.id} value={j.id}>{j.clients?.client_name} — {j.job_name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Capital Allowance Pool</label>
               <select name="capital_allowance_pool"
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
@@ -274,6 +290,7 @@ export default async function FixedAssetsPage({
                       <p className="font-semibold text-slate-900">{asset.description}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
                         {asset.clients?.client_name || "No client"} · {asset.category || "Uncategorised"} · {asset.capital_allowance_pool}
+                        {asset.jobs?.job_name && ` · Job: ${asset.jobs.job_name}`}
                       </p>
                       <p className="text-xs text-slate-400 mt-0.5">
                         Acquired {new Date(asset.acquisition_date).toLocaleDateString("en-GB")} · {asset.depreciation_method || "Straight Line"} @ {asset.depreciation_rate_pct}%
@@ -309,6 +326,16 @@ export default async function FixedAssetsPage({
                           <select name="category" defaultValue={asset.category || ""}
                             className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white">
                             {CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Job (optional)</label>
+                          <select name="job_id" defaultValue={asset.job_id || ""}
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white">
+                            <option value="">No linked job</option>
+                            {(jobs || []).map((j) => (
+                              <option key={j.id} value={j.id}>{j.clients?.client_name} — {j.job_name}</option>
+                            ))}
                           </select>
                         </div>
                         <div>

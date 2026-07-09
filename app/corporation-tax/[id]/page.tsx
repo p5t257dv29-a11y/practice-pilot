@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { calculateCorporationTax } from "../page";
+import { calculateCorporationTax, applyLossRelief } from "../page";
 import { calculateCapitalAllowances } from "../../fixed-assets/capital-allowances/page";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +19,7 @@ async function updateComputation(id: string, formData: FormData) {
   await supabase.from("corporation_tax_computations").update({
     period_start: get("period_start"),
     period_end: get("period_end"),
+    job_id: get("job_id") || null,
     accounting_profit: num("accounting_profit"),
     depreciation_addback: num("depreciation_addback"),
     disallowable_expenses: num("disallowable_expenses"),
@@ -43,7 +44,7 @@ export default async function CorporationTaxDetailPage({
 
   const { data: comp, error } = await supabase
     .from("corporation_tax_computations")
-    .select("*, clients(client_name)")
+    .select("*, clients(client_name), jobs(job_name)")
     .eq("id", id)
     .single();
 
@@ -54,24 +55,32 @@ export default async function CorporationTaxDetailPage({
     .select("*")
     .eq("client_id", comp.client_id);
 
+  const { data: jobs } = await supabase
+    .from("jobs")
+    .select("id, job_name")
+    .eq("client_id", comp.client_id)
+    .order("job_name", { ascending: true });
+
   const ca = calculateCapitalAllowances({
     assets: assets || [],
     periodStart: comp.period_start,
     periodEnd: comp.period_end,
     mainPoolBfwd: Number(comp.main_pool_bfwd),
     specialRatePoolBfwd: Number(comp.special_rate_pool_bfwd),
+    jobId: comp.job_id,
   });
 
-  const taxableProfit =
+  const taxableProfitBeforeLosses =
     Number(comp.accounting_profit) +
     Number(comp.depreciation_addback) +
     Number(comp.disallowable_expenses) -
     ca.totalCapitalAllowances -
-    Number(comp.other_allowable_deductions) -
-    Number(comp.brought_forward_losses);
+    Number(comp.other_allowable_deductions);
+
+  const loss = applyLossRelief(taxableProfitBeforeLosses, Number(comp.brought_forward_losses));
 
   const ct = calculateCorporationTax({
-    taxableProfit,
+    taxableProfit: loss.taxableProfitAfterLosses,
     periodStart: comp.period_start,
     periodEnd: comp.period_end,
     associatedCompanies: comp.associated_companies,
@@ -90,6 +99,7 @@ export default async function CorporationTaxDetailPage({
           <h1 className="text-2xl font-bold text-slate-900">{comp.clients?.client_name || "No client"}</h1>
           <p className="text-sm text-slate-500 mt-0.5">
             Accounting period {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+            {comp.jobs?.job_name && ` · Job: ${comp.jobs.job_name}`}
           </p>
         </div>
       </div>
@@ -109,10 +119,19 @@ export default async function CorporationTaxDetailPage({
                 <span className="font-medium text-red-600">({fmt(ca.totalCapitalAllowances)})</span>
               </div>
               <div className="flex justify-between"><span className="text-slate-500">Less: Other Allowable Deductions</span><span className="font-medium text-red-600">({fmt(Number(comp.other_allowable_deductions))})</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Less: Brought Forward Losses</span><span className="font-medium text-red-600">({fmt(Number(comp.brought_forward_losses))})</span></div>
+              <div className="border-t border-slate-100 pt-2 flex justify-between font-medium">
+                <span>Profit Before Loss Relief</span>
+                <span>{fmt(taxableProfitBeforeLosses)}</span>
+              </div>
+              <div className="flex justify-between"><span className="text-slate-500">Losses Brought Forward</span><span className="font-medium">{fmt(Number(comp.brought_forward_losses))}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Less: Losses Used This Period</span><span className="font-medium text-red-600">({fmt(loss.lossesUsed)})</span></div>
               <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
                 <span>Taxable Profit</span>
-                <span>{fmt(taxableProfit)}</span>
+                <span>{fmt(loss.taxableProfitAfterLosses)}</span>
+              </div>
+              <div className="flex justify-between text-slate-500 pt-2">
+                <span>Losses Carried Forward to Next Period</span>
+                <span className="font-medium">{fmt(loss.lossesCarriedForward)}</span>
               </div>
             </div>
           </div>
@@ -123,21 +142,77 @@ export default async function CorporationTaxDetailPage({
               <h2 className="text-lg font-bold text-slate-900">Capital Allowances</h2>
               <a href={`/fixed-assets/capital-allowances?client=${comp.client_id}&period_start=${comp.period_start}&period_end=${comp.period_end}&main_pool_bfwd=${comp.main_pool_bfwd}&special_rate_pool_bfwd=${comp.special_rate_pool_bfwd}`}
                 className="text-xs font-semibold text-blue-600 hover:underline">
-                View full breakdown →
+                Open standalone summary →
               </a>
             </div>
             <p className="text-xs text-slate-400 mt-1">
-              Pulled automatically from {ca.additions.length} asset addition{ca.additions.length !== 1 ? "s" : ""} in the Fixed Asset Register for this client and period.
+              {comp.job_id
+                ? `Pulled automatically from assets linked to the job "${comp.jobs?.job_name}" in the Fixed Asset Register.`
+                : "Pulled automatically from assets acquired within this date range in the Fixed Asset Register."}
+              {" "}AIA limit for this period: {fmt(ca.aiaLimit)}
             </p>
-            <div className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">AIA Claimed</span><span className="font-medium">{fmt(ca.totalAIAClaimed)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">First Year Allowance (Zero Emission Cars)</span><span className="font-medium">{fmt(ca.totalFYA)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Main Pool WDA (14%)</span><span className="font-medium">{fmt(ca.mainPoolWDA)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Special Rate Pool WDA (6%)</span><span className="font-medium">{fmt(ca.specialRateWDA)}</span></div>
-              <div className="border-t border-slate-100 pt-2 flex justify-between font-bold">
-                <span>Total Capital Allowances</span>
-                <span>{fmt(ca.totalCapitalAllowances)}</span>
+
+            {/* Additions in period */}
+            <div className="mt-4">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                Additions in Period ({ca.additions.length})
+              </p>
+              <div className="space-y-1">
+                {ca.additions.map((a: any) => (
+                  <div key={a.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-1.5">
+                    <div>
+                      <p className="text-sm text-slate-900">{a.description}</p>
+                      <p className="text-xs text-slate-400">{a.capital_allowance_pool}</p>
+                    </div>
+                    <p className="text-sm font-medium">{fmt(Number(a.cost))}</p>
+                  </div>
+                ))}
+                {ca.additions.length === 0 && (
+                  <p className="text-sm text-slate-400 text-center py-3">No asset additions in this period.</p>
+                )}
               </div>
+            </div>
+
+            {/* AIA & FYA allocation */}
+            <div className="mt-4 border-t border-slate-100 pt-4">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">AIA & First Year Allowances</p>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">AIA on Special Rate Pool additions (used first)</span><span className="font-medium">{fmt(ca.aiaOnSpecialRate)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">AIA on Main Pool additions</span><span className="font-medium">{fmt(ca.aiaOnMainPool)}</span></div>
+                <div className="flex justify-between font-medium border-t border-slate-100 pt-1"><span>Total AIA Claimed</span><span>{fmt(ca.totalAIAClaimed)}</span></div>
+                <div className="flex justify-between mt-1"><span className="text-slate-500">100% FYA — Zero Emission Cars</span><span className="font-medium">{fmt(ca.totalFYA)}</span></div>
+              </div>
+            </div>
+
+            {/* WDA pools */}
+            <div className="mt-4 border-t border-slate-100 pt-4 grid gap-4 md:grid-cols-2">
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Main Pool (14%)</p>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-500">Brought forward</span><span>{fmt(Number(comp.main_pool_bfwd))}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Additions not covered by AIA</span><span>{fmt(ca.mainPoolAdditionsAfterAIA)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Cars (Main Pool)</span><span>{fmt(ca.mainPoolCarsTotal)}</span></div>
+                  <div className="flex justify-between font-medium border-t border-slate-100 pt-1"><span>Pool balance</span><span>{fmt(ca.mainPoolBalance)}</span></div>
+                  <div className="flex justify-between text-green-700 font-bold"><span>WDA claimed (14%)</span><span>{fmt(ca.mainPoolWDA)}</span></div>
+                  <div className="flex justify-between text-slate-500"><span>Closing balance (c/fwd)</span><span>{fmt(ca.mainPoolClosingBalance)}</span></div>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Special Rate Pool (6%)</p>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-500">Brought forward</span><span>{fmt(Number(comp.special_rate_pool_bfwd))}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Additions not covered by AIA</span><span>{fmt(ca.specialRateAdditionsAfterAIA)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Cars (Special Rate)</span><span>{fmt(ca.specialRateCarsTotal)}</span></div>
+                  <div className="flex justify-between font-medium border-t border-slate-100 pt-1"><span>Pool balance</span><span>{fmt(ca.specialRateBalance)}</span></div>
+                  <div className="flex justify-between text-green-700 font-bold"><span>WDA claimed (6%)</span><span>{fmt(ca.specialRateWDA)}</span></div>
+                  <div className="flex justify-between text-slate-500"><span>Closing balance (c/fwd)</span><span>{fmt(ca.specialRateClosingBalance)}</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-slate-100 pt-4 flex justify-between font-bold">
+              <span>Total Capital Allowances</span>
+              <span>{fmt(ca.totalCapitalAllowances)}</span>
             </div>
           </div>
 
@@ -204,6 +279,16 @@ export default async function CorporationTaxDetailPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">Period End</label>
                 <input name="period_end" type="date" defaultValue={comp.period_end}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
+                <select name="job_id" defaultValue={comp.job_id || ""}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">No linked job (use date range)</option>
+                  {(jobs || []).map((j) => (
+                    <option key={j.id} value={j.id}>{j.job_name}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Profit (£)</label>
