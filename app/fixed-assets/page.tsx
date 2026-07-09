@@ -227,7 +227,7 @@ export default async function FixedAssetsPage({
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
                 <option value="">No linked job</option>
                 {(jobs || []).map((j) => (
-                  <option key={j.id} value={j.id}>{j.clients?.client_name} — {j.job_name}</option>
+                  <option key={j.id} value={j.id}>{(j.clients as any)?.client_name} — {j.job_name}</option>
                 ))}
               </select>
             </div>
@@ -334,7 +334,7 @@ export default async function FixedAssetsPage({
                             className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white">
                             <option value="">No linked job</option>
                             {(jobs || []).map((j) => (
-                              <option key={j.id} value={j.id}>{j.clients?.client_name} — {j.job_name}</option>
+                              <option key={j.id} value={j.id}>{(j.clients as any)?.client_name} — {j.job_name}</option>
                             ))}
                           </select>
                         </div>

@@ -347,8 +347,8 @@ export default async function CorporationTaxPage({
               <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
                 <a href={`/corporation-tax/${comp.id}`} className="flex-1">
                   <p className="font-semibold text-slate-900">
-                    {comp.clients?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
-                    {comp.jobs?.job_name && ` · ${comp.jobs.job_name}`}
+                    {(comp.clients as any)?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+                    {(comp.jobs as any)?.job_name && ` · ${(comp.jobs as any)?.job_name}`}
                   </p>
                   <p className="text-sm text-slate-500">
                     Taxable profit: £{loss.taxableProfitAfterLosses.toFixed(2)} · Capital allowances: £{ca.totalCapitalAllowances.toFixed(2)} · {ct.band}

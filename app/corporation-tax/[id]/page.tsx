@@ -96,10 +96,10 @@ export default async function CorporationTaxDetailPage({
           ← Back to Corporation Tax
         </a>
         <div className="mt-4">
-          <h1 className="text-2xl font-bold text-slate-900">{comp.clients?.client_name || "No client"}</h1>
+          <h1 className="text-2xl font-bold text-slate-900">{(comp.clients as any)?.client_name || "No client"}</h1>
           <p className="text-sm text-slate-500 mt-0.5">
             Accounting period {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
-            {comp.jobs?.job_name && ` · Job: ${comp.jobs.job_name}`}
+            {(comp.jobs as any)?.job_name && ` · Job: ${(comp.jobs as any)?.job_name}`}
           </p>
         </div>
       </div>
@@ -147,7 +147,7 @@ export default async function CorporationTaxDetailPage({
             </div>
             <p className="text-xs text-slate-400 mt-1">
               {comp.job_id
-                ? `Pulled automatically from assets linked to the job "${comp.jobs?.job_name}" in the Fixed Asset Register.`
+                ? `Pulled automatically from assets linked to the job "${(comp.jobs as any)?.job_name}" in the Fixed Asset Register.`
                 : "Pulled automatically from assets acquired within this date range in the Fixed Asset Register."}
               {" "}AIA limit for this period: {fmt(ca.aiaLimit)}
             </p>
