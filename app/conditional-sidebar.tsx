@@ -29,6 +29,8 @@ const navSections = [
       { href: "/quotes", label: "Quotes", icon: "📋" },
       { href: "/invoices", label: "Invoices", icon: "🧾" },
       { href: "/tax", label: "Tax", icon: "🧮" },
+      { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
+      { href: "/fixed-assets", label: "Fixed Assets", icon: "🏭" },
     ],
   },
   {

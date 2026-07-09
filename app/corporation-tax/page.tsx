@@ -1,0 +1,289 @@
+import { createClient } from "@supabase/supabase-js";
+import { revalidatePath } from "next/cache";
+import { calculateCapitalAllowances } from "../fixed-assets/capital-allowances/page";
+
+export const dynamic = "force-dynamic";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// 2026/27 Corporation Tax rates
+const CT_RATES = {
+  smallProfitsRate: 0.19,
+  mainRate: 0.25,
+  smallProfitsThreshold: 50000,
+  mainRateThreshold: 250000,
+  marginalReliefFraction: 3 / 200,
+};
+
+export function calculateCorporationTax(input: {
+  taxableProfit: number;
+  periodStart: string;
+  periodEnd: string;
+  associatedCompanies: number;
+}) {
+  const start = new Date(input.periodStart);
+  const end = new Date(input.periodEnd);
+  const periodMonths = Math.max(1, Math.round((end.getTime() - start.getTime()) / (30.44 * 24 * 60 * 60 * 1000)));
+
+  const divisor = input.associatedCompanies + 1;
+  const smallProfitsThreshold = (CT_RATES.smallProfitsThreshold * (periodMonths / 12)) / divisor;
+  const mainRateThreshold = (CT_RATES.mainRateThreshold * (periodMonths / 12)) / divisor;
+
+  const profit = Math.max(0, input.taxableProfit);
+  let corporationTax = 0;
+  let marginalRelief = 0;
+  let band = "";
+  let effectiveRate = 0;
+
+  if (profit <= smallProfitsThreshold) {
+    corporationTax = profit * CT_RATES.smallProfitsRate;
+    band = "Small Profits Rate";
+    effectiveRate = CT_RATES.smallProfitsRate;
+  } else if (profit >= mainRateThreshold) {
+    corporationTax = profit * CT_RATES.mainRate;
+    band = "Main Rate";
+    effectiveRate = CT_RATES.mainRate;
+  } else {
+    // Marginal relief band. Assumes augmented profits = taxable profits (no exempt group dividends).
+    const taxAtMainRate = profit * CT_RATES.mainRate;
+    marginalRelief = (mainRateThreshold - profit) * CT_RATES.marginalReliefFraction;
+    corporationTax = taxAtMainRate - marginalRelief;
+    band = "Marginal Relief";
+    effectiveRate = profit > 0 ? corporationTax / profit : 0;
+  }
+
+  return {
+    periodMonths,
+    smallProfitsThreshold,
+    mainRateThreshold,
+    profit,
+    corporationTax,
+    marginalRelief,
+    band,
+    effectiveRate,
+  };
+}
+
+async function createComputation(formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const num = (key: string) => parseFloat(get(key)) || 0;
+
+  const client_id = get("client_id");
+  if (!client_id) return;
+
+  await supabase.from("corporation_tax_computations").insert({
+    client_id,
+    period_start: get("period_start"),
+    period_end: get("period_end"),
+    accounting_profit: num("accounting_profit"),
+    depreciation_addback: num("depreciation_addback"),
+    disallowable_expenses: num("disallowable_expenses"),
+    other_allowable_deductions: num("other_allowable_deductions"),
+    brought_forward_losses: num("brought_forward_losses"),
+    associated_companies: parseInt(get("associated_companies")) || 0,
+    main_pool_bfwd: num("main_pool_bfwd"),
+    special_rate_pool_bfwd: num("special_rate_pool_bfwd"),
+    notes: get("notes"),
+  });
+
+  revalidatePath("/corporation-tax");
+}
+
+async function deleteComputation(id: string) {
+  "use server";
+  await supabase.from("corporation_tax_computations").delete().eq("id", id);
+  revalidatePath("/corporation-tax");
+}
+
+export default async function CorporationTaxPage() {
+  const [{ data: computations, error }, { data: clients }] = await Promise.all([
+    supabase
+      .from("corporation_tax_computations")
+      .select("*, clients(client_name)")
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("clients")
+      .select("id, client_name")
+      .order("client_name", { ascending: true }),
+  ]);
+
+  // Compute results for each row, pulling capital allowances live from the fixed asset register
+  const rows = await Promise.all(
+    (computations || []).map(async (comp) => {
+      const { data: assets } = await supabase
+        .from("fixed_assets")
+        .select("*")
+        .eq("client_id", comp.client_id);
+
+      const ca = calculateCapitalAllowances({
+        assets: assets || [],
+        periodStart: comp.period_start,
+        periodEnd: comp.period_end,
+        mainPoolBfwd: Number(comp.main_pool_bfwd),
+        specialRatePoolBfwd: Number(comp.special_rate_pool_bfwd),
+      });
+
+      const taxableProfit =
+        Number(comp.accounting_profit) +
+        Number(comp.depreciation_addback) +
+        Number(comp.disallowable_expenses) -
+        ca.totalCapitalAllowances -
+        Number(comp.other_allowable_deductions) -
+        Number(comp.brought_forward_losses);
+
+      const ct = calculateCorporationTax({
+        taxableProfit,
+        periodStart: comp.period_start,
+        periodEnd: comp.period_end,
+        associatedCompanies: comp.associated_companies,
+      });
+
+      return { comp, ca, taxableProfit, ct };
+    })
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <div className="bg-white border-b border-slate-200 px-8 py-6">
+        <h1 className="text-2xl font-bold text-slate-900">Corporation Tax</h1>
+        <p className="text-sm text-slate-500 mt-0.5">
+          Computes Corporation Tax liability using 2026/27 rates, pulling capital allowances live from the Fixed Asset Register.
+        </p>
+      </div>
+
+      <div className="p-8">
+        {error && (
+          <div className="mb-6 rounded-xl bg-red-100 p-3 text-sm text-red-700">
+            Could not load computations: {error.message}
+          </div>
+        )}
+
+        {/* New Computation Form */}
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <h2 className="text-lg font-bold text-slate-900">New Corporation Tax Computation</h2>
+          <p className="text-sm text-slate-500 mt-0.5">
+            Capital allowances are calculated automatically from assets acquired in this period in the Fixed Asset Register.
+          </p>
+
+          <form action={createComputation} className="mt-6 grid gap-4 md:grid-cols-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
+              <select name="client_id" required
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                <option value="">Select a client</option>
+                {(clients || []).map((c) => (
+                  <option key={c.id} value={c.id}>{c.client_name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Period Start *</label>
+              <input name="period_start" type="date" required
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Period End *</label>
+              <input name="period_end" type="date" required
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Profit (£)</label>
+              <input name="accounting_profit" type="number" step="0.01" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                placeholder="Pre-tax profit per accounts" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Depreciation Add-back (£)</label>
+              <input name="depreciation_addback" type="number" step="0.01" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                placeholder="Accounting depreciation charged" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Other Disallowable Expenses (£)</label>
+              <input name="disallowable_expenses" type="number" step="0.01" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                placeholder="e.g. client entertainment" />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Other Allowable Deductions (£)</label>
+              <input name="other_allowable_deductions" type="number" step="0.01" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Brought Forward Losses (£)</label>
+              <input name="brought_forward_losses" type="number" step="0.01" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Associated Companies</label>
+              <input name="associated_companies" type="number" step="1" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Main Pool Brought Forward (£)</label>
+              <input name="main_pool_bfwd" type="number" step="0.01" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Special Rate Pool Brought Forward (£)</label>
+              <input name="special_rate_pool_bfwd" type="number" step="0.01" min="0" defaultValue="0"
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+            <div className="md:col-span-3">
+              <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+              <textarea name="notes" rows={2}
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+            </div>
+
+            <div className="md:col-span-3">
+              <button type="submit"
+                className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Calculate & Save
+              </button>
+            </div>
+          </form>
+        </div>
+
+        {/* List */}
+        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <h2 className="text-lg font-bold text-slate-900">All Computations ({rows.length})</h2>
+          <div className="mt-4 space-y-3">
+            {rows.map(({ comp, ca, taxableProfit, ct }) => (
+              <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                <a href={`/corporation-tax/${comp.id}`} className="flex-1">
+                  <p className="font-semibold text-slate-900">
+                    {comp.clients?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+                  </p>
+                  <p className="text-sm text-slate-500">
+                    Taxable profit: £{taxableProfit.toFixed(2)} · Capital allowances: £{ca.totalCapitalAllowances.toFixed(2)} · {ct.band}
+                  </p>
+                </a>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="font-bold text-slate-900">£{ct.corporationTax.toFixed(2)}</p>
+                    <p className="text-xs text-slate-400">CT due</p>
+                  </div>
+                  <form action={deleteComputation.bind(null, comp.id)}>
+                    <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                      Delete
+                    </button>
+                  </form>
+                </div>
+              </div>
+            ))}
+            {rows.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-8">No computations yet. Create your first one above.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
