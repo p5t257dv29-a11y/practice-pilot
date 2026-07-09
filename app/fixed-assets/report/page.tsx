@@ -11,44 +11,76 @@ const supabase = createClient(
 export default async function FixedAssetReportPage({
   searchParams,
 }: {
-  searchParams: Promise<{ client?: string; period_start?: string; period_end?: string }>;
+  searchParams: Promise<{ job?: string; client?: string; period_start?: string; period_end?: string }>;
 }) {
-  const { client: clientId, period_start, period_end } = await searchParams;
+  const { job: jobId, client: manualClientId, period_start: manualPeriodStart, period_end: manualPeriodEnd } = await searchParams;
 
-  const { data: clients } = await supabase
-    .from("clients")
-    .select("id, client_name")
-    .order("client_name", { ascending: true });
+  const [{ data: clients }, { data: jobs }] = await Promise.all([
+    supabase
+      .from("clients")
+      .select("id, client_name")
+      .order("client_name", { ascending: true }),
+    supabase
+      .from("jobs")
+      .select("id, job_name, client_id, period_start, period_end, clients(client_name)")
+      .order("job_name", { ascending: true }),
+  ]);
 
   let clientName = "";
+  let clientId: string | null = null;
+  let periodStart: string | null = null;
+  let periodEnd: string | null = null;
+  let usingJob = false;
+  let selectedJobName = "";
   let additions: any[] = [];
   let disposals: any[] = [];
   let stillHeld: any[] = [];
 
-  if (clientId && period_start && period_end) {
+  if (jobId) {
+    const job = (jobs || []).find((j) => j.id === jobId);
+    if (job) {
+      usingJob = true;
+      selectedJobName = job.job_name;
+      clientId = job.client_id;
+      clientName = (job.clients as any)?.client_name || "";
+      periodStart = job.period_start;
+      periodEnd = job.period_end;
+    }
+  } else if (manualClientId && manualPeriodStart && manualPeriodEnd) {
+    clientId = manualClientId;
+    periodStart = manualPeriodStart;
+    periodEnd = manualPeriodEnd;
     const { data: client } = await supabase
       .from("clients")
       .select("client_name")
       .eq("id", clientId)
       .single();
     clientName = client?.client_name || "";
+  }
 
+  if (clientId) {
     const { data: assets } = await supabase
       .from("fixed_assets")
       .select("*")
       .eq("client_id", clientId)
       .order("acquisition_date", { ascending: true });
 
-    const start = new Date(period_start);
-    const end = new Date(period_end);
+    const start = periodStart ? new Date(periodStart) : null;
+    const end = periodEnd ? new Date(periodEnd) : null;
 
     (assets || []).forEach((asset) => {
       const acq = new Date(asset.acquisition_date);
-      const acquiredInPeriod = acq >= start && acq <= end;
+      // When linked to a job, additions are assets tied to that job (no date needed).
+      // Otherwise, match by acquisition date within the period.
+      const acquiredInPeriod = usingJob
+        ? asset.job_id === jobId
+        : !!(start && end && acq >= start && acq <= end);
 
       if (acquiredInPeriod) {
         additions.push(asset);
       }
+
+      if (!start || !end) return; // disposals/held need a date range
 
       if (asset.disposal_date) {
         const disp = new Date(asset.disposal_date);
@@ -69,6 +101,7 @@ export default async function FixedAssetReportPage({
   const totalAdditionsCost = additions.reduce((s, a) => s + Number(a.cost), 0);
   const totalDisposalProceeds = disposals.reduce((s, a) => s + Number(a.disposal_proceeds || 0), 0);
   const totalHeldNBV = stillHeld.reduce((s, a) => s + calculateNBV(a).nbv, 0);
+  const hasReport = !!clientId;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -83,13 +116,47 @@ export default async function FixedAssetReportPage({
       </div>
 
       <div className="p-8">
-        {/* Selection form */}
+        {/* Primary: select by Job */}
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">Select Client & Period</h2>
+          <h2 className="text-lg font-bold text-slate-900">Select by Job</h2>
+          <p className="text-sm text-slate-500 mt-0.5">
+            Period is taken automatically from the job's own dates — no manual entry needed.
+          </p>
+          <form method="get" className="mt-4 flex gap-2 items-end">
+            <div className="flex-1 max-w-md">
+              <label className="block text-sm font-medium text-slate-700 mb-1">Job</label>
+              <select name="job" required defaultValue={jobId || ""}
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                <option value="">Select a job</option>
+                {(jobs || []).map((j) => (
+                  <option key={j.id} value={j.id}>
+                    {(j.clients as any)?.client_name} — {j.job_name}
+                    {j.period_start && j.period_end && ` (${new Date(j.period_start).toLocaleDateString("en-GB")} – ${new Date(j.period_end).toLocaleDateString("en-GB")})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button type="submit"
+              className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              Generate Report
+            </button>
+          </form>
+          {usingJob && !periodStart && (
+            <p className="mt-3 text-xs text-yellow-700 bg-yellow-50 border border-yellow-100 rounded-lg p-2">
+              This job has no period dates set, so disposals and held-asset figures can't be calculated. Edit the job to add Period Start/End, or use manual selection below.
+            </p>
+          )}
+        </div>
+
+        {/* Fallback: manual client + date range, for assets not linked to a job */}
+        <details className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <summary className="text-sm font-semibold text-slate-600 cursor-pointer">
+            Or select by client and date range manually →
+          </summary>
           <form method="get" className="mt-4 grid gap-4 md:grid-cols-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
-              <select name="client" required defaultValue={clientId || ""}
+              <select name="client" required defaultValue={manualClientId || ""}
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
                 <option value="">Select a client</option>
                 {(clients || []).map((c) => (
@@ -99,29 +166,32 @@ export default async function FixedAssetReportPage({
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-              <input name="period_start" type="date" required defaultValue={period_start || ""}
+              <input name="period_start" type="date" required defaultValue={manualPeriodStart || ""}
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-              <input name="period_end" type="date" required defaultValue={period_end || ""}
+              <input name="period_end" type="date" required defaultValue={manualPeriodEnd || ""}
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
             </div>
             <div className="flex items-end">
               <button type="submit"
-                className="w-full rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                className="w-full rounded-xl bg-slate-100 px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
                 Generate Report
               </button>
             </div>
           </form>
-        </div>
+        </details>
 
-        {clientId && period_start && period_end && (
+        {hasReport && (
           <>
             <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-xl font-bold text-slate-900">{clientName}</h2>
               <p className="text-sm text-slate-500 mt-0.5">
-                Period: {new Date(period_start).toLocaleDateString("en-GB")} to {new Date(period_end).toLocaleDateString("en-GB")}
+                {usingJob && `Job: ${selectedJobName} · `}
+                {periodStart && periodEnd
+                  ? `Period: ${new Date(periodStart).toLocaleDateString("en-GB")} to ${new Date(periodEnd).toLocaleDateString("en-GB")}`
+                  : "No period set — disposals and held-asset figures unavailable"}
               </p>
             </div>
 
