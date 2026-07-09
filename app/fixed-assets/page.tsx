@@ -26,16 +26,21 @@ const CATEGORY_OPTIONS = [
   "Other",
 ];
 
-// Net book value for accounts purposes — supports both straight-line and reducing balance
+// Net book value for accounts purposes — supports both straight-line and reducing balance.
+// Pass asOfDate to calculate the position at a specific date (e.g. period start/end)
+// rather than today; useful for building fixed asset movement notes.
 export function calculateNBV(asset: {
   cost: number;
   depreciation_rate_pct: number;
   depreciation_method: string;
   acquisition_date: string;
   disposal_date: string | null;
-}) {
+}, asOfDate?: Date) {
   const start = new Date(asset.acquisition_date);
-  const end = asset.disposal_date ? new Date(asset.disposal_date) : new Date();
+  const disposal = asset.disposal_date ? new Date(asset.disposal_date) : null;
+  const reference = asOfDate || new Date();
+  // Depreciation stops at disposal, and never runs before the asset was acquired
+  const end = disposal && disposal < reference ? disposal : reference;
   const yearsElapsed = Math.max(0, (end.getTime() - start.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
   const rate = asset.depreciation_rate_pct / 100;
 

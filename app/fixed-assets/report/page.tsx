@@ -103,6 +103,82 @@ export default async function FixedAssetReportPage({
   const totalHeldNBV = stillHeld.reduce((s, a) => s + calculateNBV(a).nbv, 0);
   const hasReport = !!clientId;
 
+  // Cost / depreciation movement note, grouped by category — mirrors the standard
+  // UK statutory accounts fixed asset schedule. Only calculable with a period set.
+  type CategoryRow = {
+    category: string;
+    costStart: number; additionsAmt: number; disposalsAmt: number; costEnd: number;
+    depStart: number; charge: number; eliminated: number; depEnd: number;
+    nbvStart: number; nbvEnd: number;
+  };
+  const categoryRows: CategoryRow[] = [];
+
+  if (periodStart && periodEnd) {
+    const pStart = new Date(periodStart);
+    const pEnd = new Date(periodEnd);
+
+    // Unique set of assets relevant to this period (dedupe across additions/disposals/stillHeld)
+    const relevantAssets = new Map<string, any>();
+    [...additions, ...disposals, ...stillHeld].forEach((a) => relevantAssets.set(a.id, a));
+
+    const byCategory = new Map<string, CategoryRow>();
+
+    relevantAssets.forEach((asset) => {
+      const category = asset.category || "Uncategorised";
+      if (!byCategory.has(category)) {
+        byCategory.set(category, {
+          category, costStart: 0, additionsAmt: 0, disposalsAmt: 0, costEnd: 0,
+          depStart: 0, charge: 0, eliminated: 0, depEnd: 0, nbvStart: 0, nbvEnd: 0,
+        });
+      }
+      const row = byCategory.get(category)!;
+      const acq = new Date(asset.acquisition_date);
+      const disposedInPeriod = asset.disposal_date && new Date(asset.disposal_date) >= pStart && new Date(asset.disposal_date) <= pEnd;
+      const acquiredBeforeStart = acq < pStart;
+      const acquiredInPeriod = acq >= pStart && acq <= pEnd;
+      const cost = Number(asset.cost);
+
+      const costStart = acquiredBeforeStart ? cost : 0;
+      const additionsAmt = acquiredInPeriod ? cost : 0;
+      const disposalsAmt = disposedInPeriod ? cost : 0;
+      const costEnd = costStart + additionsAmt - disposalsAmt;
+
+      const depStart = acquiredBeforeStart ? calculateNBV(asset, pStart).accumulatedDepreciation : 0;
+      const depEndCalcDate = disposedInPeriod ? new Date(asset.disposal_date) : pEnd;
+      const depEndRaw = (acquiredBeforeStart || acquiredInPeriod) ? calculateNBV(asset, depEndCalcDate).accumulatedDepreciation : 0;
+      const eliminated = disposedInPeriod ? depEndRaw : 0;
+      const charge = depEndRaw - depStart;
+      const depEnd = disposedInPeriod ? 0 : depEndRaw;
+
+      row.costStart += costStart;
+      row.additionsAmt += additionsAmt;
+      row.disposalsAmt += disposalsAmt;
+      row.costEnd += costEnd;
+      row.depStart += depStart;
+      row.charge += charge;
+      row.eliminated += eliminated;
+      row.depEnd += depEnd;
+      row.nbvStart += costStart - depStart;
+      row.nbvEnd += costEnd - depEnd;
+    });
+
+    categoryRows.push(...Array.from(byCategory.values()).sort((a, b) => a.category.localeCompare(b.category)));
+  }
+
+  const totals: CategoryRow = categoryRows.reduce((t, r) => ({
+    category: "Total",
+    costStart: t.costStart + r.costStart,
+    additionsAmt: t.additionsAmt + r.additionsAmt,
+    disposalsAmt: t.disposalsAmt + r.disposalsAmt,
+    costEnd: t.costEnd + r.costEnd,
+    depStart: t.depStart + r.depStart,
+    charge: t.charge + r.charge,
+    eliminated: t.eliminated + r.eliminated,
+    depEnd: t.depEnd + r.depEnd,
+    nbvStart: t.nbvStart + r.nbvStart,
+    nbvEnd: t.nbvEnd + r.nbvEnd,
+  }), { category: "Total", costStart: 0, additionsAmt: 0, disposalsAmt: 0, costEnd: 0, depStart: 0, charge: 0, eliminated: 0, depEnd: 0, nbvStart: 0, nbvEnd: 0 });
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
@@ -213,6 +289,65 @@ export default async function FixedAssetReportPage({
                 <p className="text-xs text-slate-400 mt-1">{stillHeld.length} asset{stillHeld.length !== 1 ? "s" : ""}</p>
               </div>
             </div>
+
+            {/* Cost & Depreciation Movement Note */}
+            {periodStart && periodEnd && categoryRows.length > 0 && (
+              <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <h2 className="text-lg font-bold text-slate-900">Fixed Asset Movement Note</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Cost and depreciation movements by category, in the standard statutory accounts format.
+                </p>
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <th className="pb-2">Category</th>
+                        <th className="pb-2 text-right">Cost b/fwd</th>
+                        <th className="pb-2 text-right">Additions</th>
+                        <th className="pb-2 text-right">Disposals</th>
+                        <th className="pb-2 text-right">Cost c/fwd</th>
+                        <th className="pb-2 text-right">Dep. b/fwd</th>
+                        <th className="pb-2 text-right">Charge</th>
+                        <th className="pb-2 text-right">Eliminated</th>
+                        <th className="pb-2 text-right">Dep. c/fwd</th>
+                        <th className="pb-2 text-right">NBV c/fwd</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {categoryRows.map((r) => (
+                        <tr key={r.category}>
+                          <td className="py-2 font-medium text-slate-900">{r.category}</td>
+                          <td className="py-2 text-right">{fmt(r.costStart)}</td>
+                          <td className="py-2 text-right text-green-600">{r.additionsAmt > 0 ? fmt(r.additionsAmt) : "—"}</td>
+                          <td className="py-2 text-right text-red-600">{r.disposalsAmt > 0 ? `(${fmt(r.disposalsAmt)})` : "—"}</td>
+                          <td className="py-2 text-right font-medium">{fmt(r.costEnd)}</td>
+                          <td className="py-2 text-right">{fmt(r.depStart)}</td>
+                          <td className="py-2 text-right">{fmt(r.charge)}</td>
+                          <td className="py-2 text-right text-red-600">{r.eliminated > 0 ? `(${fmt(r.eliminated)})` : "—"}</td>
+                          <td className="py-2 text-right font-medium">{fmt(r.depEnd)}</td>
+                          <td className="py-2 text-right font-bold">{fmt(r.nbvEnd)}</td>
+                        </tr>
+                      ))}
+                      <tr className="border-t-2 border-slate-200 font-bold">
+                        <td className="py-2">{totals.category}</td>
+                        <td className="py-2 text-right">{fmt(totals.costStart)}</td>
+                        <td className="py-2 text-right text-green-600">{fmt(totals.additionsAmt)}</td>
+                        <td className="py-2 text-right text-red-600">{totals.disposalsAmt > 0 ? `(${fmt(totals.disposalsAmt)})` : "—"}</td>
+                        <td className="py-2 text-right">{fmt(totals.costEnd)}</td>
+                        <td className="py-2 text-right">{fmt(totals.depStart)}</td>
+                        <td className="py-2 text-right">{fmt(totals.charge)}</td>
+                        <td className="py-2 text-right text-red-600">{totals.eliminated > 0 ? `(${fmt(totals.eliminated)})` : "—"}</td>
+                        <td className="py-2 text-right">{fmt(totals.depEnd)}</td>
+                        <td className="py-2 text-right">{fmt(totals.nbvEnd)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-slate-400 mt-3">
+                  NBV brought forward: {fmt(totals.nbvStart)} · Depreciation charge for the period: {fmt(totals.charge)}
+                </p>
+              </div>
+            )}
 
             {/* Additions */}
             <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
