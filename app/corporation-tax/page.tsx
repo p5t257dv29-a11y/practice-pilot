@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { calculateCapitalAllowances } from "../fixed-assets/capital-allowances/page";
+import { calculateProfitAndLoss } from "../accounts-production/page";
 
 export const dynamic = "force-dynamic";
 
@@ -101,6 +102,7 @@ async function createComputation(formData: FormData) {
     job_id: get("job_id") || null,
     period_start: get("period_start"),
     period_end: get("period_end"),
+    turnover: num("turnover"),
     accounting_profit: num("accounting_profit"),
     depreciation_addback: num("depreciation_addback"),
     disallowable_expenses: num("disallowable_expenses"),
@@ -124,9 +126,9 @@ async function deleteComputation(id: string) {
 export default async function CorporationTaxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ client?: string }>;
+  searchParams: Promise<{ client?: string; job?: string }>;
 }) {
-  const { client: selectedClientId } = await searchParams;
+  const { client: selectedClientId, job: selectedJobId } = await searchParams;
 
   const [{ data: computations, error }, { data: clients }, { data: jobs }] = await Promise.all([
     supabase
@@ -195,6 +197,37 @@ export default async function CorporationTaxPage({
 
   const selectedClient = (clients || []).find((c) => c.id === selectedClientId);
 
+  // If a job is selected, look up its most recent linked trial balance and
+  // suggest Turnover / Accounting Profit / Depreciation from the accounts
+  let linkedTrialBalance: any = null;
+  let suggestedTurnover = 0;
+  let suggestedAccountingProfit = 0;
+  let suggestedDepreciation = 0;
+  let suggestedPeriodStart = "";
+  let suggestedPeriodEnd = "";
+
+  if (selectedJobId) {
+    const { data: tb } = await supabase
+      .from("trial_balances")
+      .select("*, trial_balance_lines(*)")
+      .eq("job_id", selectedJobId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (tb) {
+      linkedTrialBalance = tb;
+      const pl = calculateProfitAndLoss(tb.trial_balance_lines || []);
+      suggestedTurnover = pl.turnover;
+      suggestedAccountingProfit = pl.profitBeforeTax;
+      suggestedDepreciation = pl.depreciation;
+      suggestedPeriodStart = tb.period_start;
+      suggestedPeriodEnd = tb.period_end;
+    }
+  }
+
+  const selectedJobRecord = selectedJobId ? (jobs || []).find((j) => j.id === selectedJobId) : null;
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
@@ -236,7 +269,36 @@ export default async function CorporationTaxPage({
             </button>
           </form>
 
-          {selectedClientId && selectedClient && (
+          {selectedClientId && selectedClient && selectedJobId === undefined && (
+            <div className="mt-4">
+              <form method="get" className="flex gap-2 items-end">
+                <input type="hidden" name="client" value={selectedClientId} />
+                <div className="flex-1 max-w-sm">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
+                  <select name="job" defaultValue=""
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                    <option value="">No linked job</option>
+                    {(jobs || []).filter((j) => j.client_id === selectedClientId).map((j) => (
+                      <option key={j.id} value={j.id}>{j.job_name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-400 mt-1">
+                    If linked, capital allowances pull from that job's assets, and Turnover/Accounting Profit/Depreciation pre-fill from any linked trial balance.
+                  </p>
+                </div>
+                <button type="submit"
+                  className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                  Continue
+                </button>
+              </form>
+              <a href={`/corporation-tax?client=${selectedClientId}&job=`}
+                className="inline-block mt-2 text-xs font-semibold text-blue-600 hover:underline">
+                Skip — continue without a job →
+              </a>
+            </div>
+          )}
+
+          {selectedClientId && selectedClient && selectedJobId !== undefined && (
             <>
               {priorComputation && (
                 <div className="mt-4 rounded-xl bg-blue-50 border border-blue-100 p-3 text-sm text-blue-800">
@@ -245,28 +307,26 @@ export default async function CorporationTaxPage({
                 </div>
               )}
 
+              {linkedTrialBalance && (
+                <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
+                  Trial balance found for this job, period {new Date(suggestedPeriodStart).toLocaleDateString("en-GB")} to {new Date(suggestedPeriodEnd).toLocaleDateString("en-GB")}:
+                  {" "}Turnover, Accounting Profit, and Depreciation have been pre-filled from the accounts below.
+                </div>
+              )}
+
               <form action={createComputation} className="mt-4 grid gap-4 md:grid-cols-3">
                 <input type="hidden" name="client_id" value={selectedClientId} />
+                <input type="hidden" name="job_id" value={selectedJobId || ""} />
                 <div className="md:col-span-3 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
-                  <span className="text-sm font-medium text-slate-700">Client: {selectedClient.client_name}</span>
+                  <span className="text-sm font-medium text-slate-700">
+                    Client: {selectedClient.client_name}
+                    {selectedJobRecord && ` · Job: ${selectedJobRecord.job_name}`}
+                  </span>
                   <a href="/corporation-tax" className="text-xs font-semibold text-blue-600 hover:underline">Change client</a>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
-                  <select name="job_id"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                    <option value="">No linked job (use date range for capital allowances)</option>
-                    {(jobs || []).filter((j) => j.client_id === selectedClientId).map((j) => (
-                      <option key={j.id} value={j.id}>{j.job_name}</option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-slate-400 mt-1">
-                    If linked, capital allowances are pulled from assets tied to this job in the Fixed Asset Register.
-                  </p>
-                </div>
-                <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Period Start *</label>
-                  <input name="period_start" type="date" required
+                  <input name="period_start" type="date" required defaultValue={suggestedPeriodStart || ""}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
                 <div>
@@ -276,14 +336,26 @@ export default async function CorporationTaxPage({
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Profit (£)</label>
-                  <input name="accounting_profit" type="number" step="0.01" defaultValue="0"
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Turnover (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                  </label>
+                  <input name="turnover" type="number" step="0.01" min="0" defaultValue={suggestedTurnover || 0}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Total trading turnover, for CT600 Box 145" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Accounting Profit (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                  </label>
+                  <input name="accounting_profit" type="number" step="0.01" defaultValue={suggestedAccountingProfit || 0}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                     placeholder="Pre-tax profit per accounts" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Depreciation Add-back (£)</label>
-                  <input name="depreciation_addback" type="number" step="0.01" min="0" defaultValue="0"
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Depreciation Add-back (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                  </label>
+                  <input name="depreciation_addback" type="number" step="0.01" min="0" defaultValue={suggestedDepreciation || 0}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                     placeholder="Accounting depreciation charged" />
                 </div>

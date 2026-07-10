@@ -20,6 +20,7 @@ async function updateComputation(id: string, formData: FormData) {
     period_start: get("period_start"),
     period_end: get("period_end"),
     job_id: get("job_id") || null,
+    turnover: num("turnover"),
     accounting_profit: num("accounting_profit"),
     depreciation_addback: num("depreciation_addback"),
     disallowable_expenses: num("disallowable_expenses"),
@@ -44,7 +45,7 @@ export default async function CorporationTaxDetailPage({
 
   const { data: comp, error } = await supabase
     .from("corporation_tax_computations")
-    .select("*, clients(client_name), jobs(job_name)")
+    .select("*, clients(client_name, company_number, corporation_tax_reference), jobs(job_name)")
     .eq("id", id)
     .single();
 
@@ -92,9 +93,15 @@ export default async function CorporationTaxDetailPage({
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <a href="/corporation-tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
-          ← Back to Corporation Tax
-        </a>
+        <div className="flex items-center justify-between">
+          <a href="/corporation-tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+            ← Back to Corporation Tax
+          </a>
+          <a href={`/corporation-tax/${id}/ct600`}
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+            View CT600 Summary →
+          </a>
+        </div>
         <div className="mt-4">
           <h1 className="text-2xl font-bold text-slate-900">{(comp.clients as any)?.client_name || "No client"}</h1>
           <p className="text-sm text-slate-500 mt-0.5">
@@ -289,6 +296,11 @@ export default async function CorporationTaxDetailPage({
                     <option key={j.id} value={j.id}>{j.job_name}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Turnover (£)</label>
+                <input name="turnover" type="number" step="0.01" min="0" defaultValue={comp.turnover}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Accounting Profit (£)</label>

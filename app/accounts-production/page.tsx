@@ -51,6 +51,48 @@ export const BS_CATEGORIES = [
 
 export const ALL_CATEGORIES = [...PL_CATEGORIES, ...BS_CATEGORIES];
 
+// Categories that are naturally CREDIT balances (income, liabilities, equity).
+// Everything else is treated as a naturally DEBIT balance (assets, expenses).
+export const CREDIT_NORMAL = new Set([
+  "Turnover", "Interest Receivable",
+  "Trade Creditors", "Accruals and Deferred Income", "VAT Liability", "PAYE/NI Liability",
+  "Corporation Tax Liability", "Bank Loans - Due Within One Year", "Bank Loans - Due After One Year",
+  "Called Up Share Capital", "Profit and Loss Reserve",
+]);
+
+const ADMIN_EXPENSE_CATEGORIES = [
+  "Gross Wages and Salaries", "Employer's NI and Pension Costs", "Rent and Rates",
+  "Motor Expenses", "Travel and Subsistence", "Repairs and Renewals", "Insurance",
+  "Telephone and Internet", "Printing, Postage and Stationery", "Professional Fees",
+  "Depreciation", "Other Administrative Expenses",
+];
+
+// Computes a Profit & Loss summary from a set of mapped trial balance lines.
+// Shared by the formatted accounts page and the Corporation Tax auto-fill.
+export function calculateProfitAndLoss(lines: any[]) {
+  const totals = new Map<string, number>();
+  (lines || []).forEach((l) => {
+    if (!l.category) return;
+    const net = CREDIT_NORMAL.has(l.category)
+      ? Number(l.credit) - Number(l.debit)
+      : Number(l.debit) - Number(l.credit);
+    totals.set(l.category, (totals.get(l.category) || 0) + net);
+  });
+  const get = (cat: string) => totals.get(cat) || 0;
+
+  const turnover = get("Turnover");
+  const costOfSales = get("Cost of Sales");
+  const grossProfit = turnover - costOfSales;
+  const depreciation = get("Depreciation");
+  const adminExpenses = ADMIN_EXPENSE_CATEGORIES.reduce((s, c) => s + get(c), 0);
+  const operatingProfit = grossProfit - adminExpenses;
+  const interestReceivable = get("Interest Receivable");
+  const interestPayable = get("Bank Charges and Interest Payable");
+  const profitBeforeTax = operatingProfit + interestReceivable - interestPayable;
+
+  return { totals, turnover, costOfSales, grossProfit, depreciation, adminExpenses, operatingProfit, interestReceivable, interestPayable, profitBeforeTax };
+}
+
 // Simple CSV line parser handling quoted fields with commas inside them
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
