@@ -30,6 +30,7 @@ const navSections = [
       { href: "/invoices", label: "Invoices", icon: "🧾" },
       { href: "/tax", label: "Tax", icon: "🧮" },
       { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
+      { href: "/accounts-production", label: "Accounts Production", icon: "📊" },
       { href: "/fixed-assets", label: "Fixed Assets", icon: "🏭" },
     ],
   },
@@ -39,6 +40,7 @@ const navSections = [
       { href: "/services", label: "Services", icon: "🏷️" },
       { href: "/checklists", label: "Checklists", icon: "✅" },
       { href: "/staff", label: "Staff", icon: "🧑‍💼" },
+      { href: "/chart-of-accounts", label: "Chart of Accounts", icon: "📖" },
     ],
   },
 ];
