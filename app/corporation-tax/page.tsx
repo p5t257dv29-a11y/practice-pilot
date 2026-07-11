@@ -111,6 +111,7 @@ async function createComputation(formData: FormData) {
     associated_companies: parseInt(get("associated_companies")) || 0,
     main_pool_bfwd: num("main_pool_bfwd"),
     special_rate_pool_bfwd: num("special_rate_pool_bfwd"),
+    tax_paid_on_account: num("tax_paid_on_account"),
     notes: get("notes"),
   });
 
@@ -393,6 +394,12 @@ export default async function CorporationTaxPage({
                   <label className="block text-sm font-medium text-slate-700 mb-1">Special Rate Pool Brought Forward (£)</label>
                   <input name="special_rate_pool_bfwd" type="number" step="0.01" min="0" defaultValue={priorComputation?.ca.specialRateClosingBalance || 0}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Tax Paid on Account (£)</label>
+                  <input name="tax_paid_on_account" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Instalment payments already made" />
                 </div>
                 <div className="md:col-span-3">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>

@@ -36,6 +36,14 @@ async function saveMappings(trialBalanceId: string, clientId: string, formData: 
   revalidatePath("/accounts-production");
 }
 
+async function reverseJournal(trialBalanceId: string, journalId: string) {
+  "use server";
+  // Cascade delete removes the journal's trial_balance_lines automatically
+  await supabase.from("journals").delete().eq("id", journalId);
+  revalidatePath(`/accounts-production/${trialBalanceId}`);
+  revalidatePath("/accounts-production");
+}
+
 export default async function TrialBalanceDetailPage({
   params,
 }: {
@@ -51,11 +59,10 @@ export default async function TrialBalanceDetailPage({
 
   if (error || !tb) notFound();
 
-  const { data: lines } = await supabase
-    .from("trial_balance_lines")
-    .select("*")
-    .eq("trial_balance_id", id)
-    .order("nominal_code", { ascending: true });
+  const [{ data: lines }, { data: journals }] = await Promise.all([
+    supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", id).order("nominal_code", { ascending: true }),
+    supabase.from("journals").select("*").eq("trial_balance_id", id).order("created_at", { ascending: false }),
+  ]);
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const totalDebit = (lines || []).reduce((s, l) => s + Number(l.debit), 0);
@@ -84,10 +91,20 @@ export default async function TrialBalanceDetailPage({
           <a href="/accounts-production" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
             ← Back to Accounts Production
           </a>
-          <a href={`/accounts-production/${id}/accounts`}
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-            View Draft Accounts →
-          </a>
+          <div className="flex gap-3">
+            <a href={`/accounts-production/${id}/journal`}
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              + Post Journal
+            </a>
+            <a href={`/accounts-production/${id}/accounts`}
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              View Draft Accounts →
+            </a>
+            <a href={`/accounts-production/${id}/frs105`}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              FRS 105 Accounts →
+            </a>
+          </div>
         </div>
         <div className="mt-4">
           <h1 className="text-2xl font-bold text-slate-900">{(tb.clients as any)?.client_name || "No client"}</h1>
@@ -114,6 +131,54 @@ export default async function TrialBalanceDetailPage({
             </div>
           </div>
         </div>
+
+        {/* Journals posted */}
+        {journals && journals.length > 0 && (
+          <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Journals Posted ({journals.length})</h2>
+            <div className="mt-4 space-y-2">
+              {journals.map((j) => {
+                const journalLines = (lines || []).filter((l) => l.journal_id === j.id);
+                const jDebit = journalLines.reduce((s, l) => s + Number(l.debit), 0);
+                return (
+                  <div key={j.id} className="rounded-xl border border-slate-100 p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">
+                          {j.reference && <span className="font-mono text-slate-400 mr-2">{j.reference}</span>}
+                          {j.description}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {j.journal_date && `${new Date(j.journal_date).toLocaleDateString("en-GB")} · `}
+                          {journalLines.length} lines · {fmt(jDebit)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <a href={`/accounts-production/${id}/journal/${j.id}`}
+                          className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                          Edit
+                        </a>
+                        <form action={reverseJournal.bind(null, id, j.id)}>
+                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                            Reverse
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      {journalLines.map((l) => (
+                        <div key={l.id} className="flex justify-between text-xs text-slate-500 pl-2">
+                          <span>{l.description} ({l.category})</span>
+                          <span>{Number(l.debit) > 0 ? `Dr ${fmt(Number(l.debit))}` : `Cr ${fmt(Number(l.credit))}`}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Unmapped lines — need categorising */}
         {unmappedLines.length > 0 && (
@@ -212,20 +277,33 @@ export default async function TrialBalanceDetailPage({
                   <th className="pb-2">Code</th>
                   <th className="pb-2">Description</th>
                   <th className="pb-2">Category</th>
+                  <th className="pb-2">Source</th>
                   <th className="pb-2 text-right">Debit</th>
                   <th className="pb-2 text-right">Credit</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {(lines || []).map((l) => (
-                  <tr key={l.id}>
-                    <td className="py-2 font-mono text-slate-500">{l.nominal_code || "—"}</td>
-                    <td className="py-2 text-slate-900">{l.description}</td>
-                    <td className="py-2 text-slate-600">{l.category || <span className="text-yellow-600">Unmapped</span>}</td>
-                    <td className="py-2 text-right">{Number(l.debit) > 0 ? fmt(Number(l.debit)) : "—"}</td>
-                    <td className="py-2 text-right">{Number(l.credit) > 0 ? fmt(Number(l.credit)) : "—"}</td>
-                  </tr>
-                ))}
+                {(lines || []).map((l) => {
+                  const journal = l.journal_id ? journals?.find((j) => j.id === l.journal_id) : null;
+                  return (
+                    <tr key={l.id}>
+                      <td className="py-2 font-mono text-slate-500">{l.nominal_code || "—"}</td>
+                      <td className="py-2 text-slate-900">{l.description}</td>
+                      <td className="py-2 text-slate-600">{l.category || <span className="text-yellow-600">Unmapped</span>}</td>
+                      <td className="py-2 text-xs">
+                        {journal ? (
+                          <span className="rounded-full bg-purple-50 px-2 py-0.5 text-purple-600 font-medium">
+                            {journal.reference || "Journal"}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Upload</span>
+                        )}
+                      </td>
+                      <td className="py-2 text-right">{Number(l.debit) > 0 ? fmt(Number(l.debit)) : "—"}</td>
+                      <td className="py-2 text-right">{Number(l.credit) > 0 ? fmt(Number(l.credit)) : "—"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
