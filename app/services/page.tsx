@@ -14,7 +14,7 @@ async function createService(formData: FormData) {
   await supabase.from("services").insert({
     service_name: get("service_name"),
     description: get("description"),
-    default_price: parseFloat(get("default_price")) || 0,
+    default_price: 0,
     vat_rate: parseFloat(get("vat_rate")) || 20,
     job_template: get("job_template"),
     is_active: true,
@@ -28,7 +28,6 @@ async function updateService(id: string, formData: FormData) {
   await supabase.from("services").update({
     service_name: get("service_name"),
     description: get("description"),
-    default_price: parseFloat(get("default_price")) || 0,
     vat_rate: parseFloat(get("vat_rate")) || 20,
     job_template: get("job_template"),
   }).eq("id", id);
@@ -70,7 +69,7 @@ export default async function ServicesPage({
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Services</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Manage your practice service price list.
+            Manage your practice service list. Pricing is set per quote, not here.
           </p>
         </div>
       </div>
@@ -88,7 +87,7 @@ export default async function ServicesPage({
           <div className="lg:col-span-1">
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 sticky top-8">
               <h2 className="text-lg font-bold text-slate-900">Add Service</h2>
-              <p className="text-sm text-slate-500 mt-0.5">Add to your price list.</p>
+              <p className="text-sm text-slate-500 mt-0.5">Add to your service list.</p>
 
               <form action={createService} className="mt-6 space-y-4">
                 <div>
@@ -103,12 +102,6 @@ export default async function ServicesPage({
                   <textarea name="description" rows={2}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                     placeholder="Brief description" />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Default Price (£)</label>
-                  <input name="default_price" type="number" defaultValue="0" step="0.01" min="0"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
 
                 <div>
@@ -135,6 +128,9 @@ export default async function ServicesPage({
                     <option>Management Accounts</option>
                     <option>Companies House Filing</option>
                   </select>
+                  <p className="text-xs text-slate-400 mt-1">
+                    When this service is used on a quote and converted to a job, this sets the job's type automatically.
+                  </p>
                 </div>
 
                 <button type="submit"
@@ -175,30 +171,23 @@ export default async function ServicesPage({
                         <p className="text-xs text-slate-400 mt-1">VAT: {service.vat_rate}%</p>
                       </div>
 
-                      <div className="flex items-center gap-4">
-                        <div className="text-right">
-                          <p className="font-bold text-slate-900">£{Number(service.default_price).toFixed(2)}</p>
-                          <p className="text-xs text-slate-400">default price</p>
-                        </div>
-
-                        <div className="flex gap-2">
-                          <a
-                            href={edit === service.id ? "/services" : `/services?edit=${service.id}`}
-                            className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
-                          >
-                            {edit === service.id ? "Cancel" : "Edit"}
-                          </a>
-                          <form action={toggleActive.bind(null, service.id, service.is_active)}>
-                            <button className="rounded-lg bg-yellow-50 px-3 py-1 text-xs font-semibold text-yellow-600 hover:bg-yellow-100 transition-colors">
-                              Deactivate
-                            </button>
-                          </form>
-                          <form action={deleteService.bind(null, service.id)}>
-                            <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                              Delete
-                            </button>
-                          </form>
-                        </div>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href={edit === service.id ? "/services" : `/services?edit=${service.id}`}
+                          className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
+                        >
+                          {edit === service.id ? "Cancel" : "Edit"}
+                        </a>
+                        <form action={toggleActive.bind(null, service.id, service.is_active)}>
+                          <button className="rounded-lg bg-yellow-50 px-3 py-1 text-xs font-semibold text-yellow-600 hover:bg-yellow-100 transition-colors">
+                            Deactivate
+                          </button>
+                        </form>
+                        <form action={deleteService.bind(null, service.id)}>
+                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                            Delete
+                          </button>
+                        </form>
                       </div>
                     </div>
 
@@ -208,16 +197,9 @@ export default async function ServicesPage({
                         <h3 className="text-sm font-bold text-slate-900 mb-4">Edit Service</h3>
                         <form action={updateService.bind(null, service.id)} className="grid gap-4 md:grid-cols-2">
 
-                          <div>
+                          <div className="md:col-span-2">
                             <label className="block text-sm font-medium text-slate-700 mb-1">Service Name *</label>
                             <input name="service_name" required defaultValue={service.service_name}
-                              className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
-                          </div>
-
-                          <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-1">Default Price (£)</label>
-                            <input name="default_price" type="number" step="0.01" min="0"
-                              defaultValue={service.default_price}
                               className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
                           </div>
 
@@ -290,9 +272,9 @@ export default async function ServicesPage({
                       className="flex items-center justify-between rounded-xl border border-slate-100 p-4 opacity-60">
                       <div className="flex-1">
                         <p className="font-semibold text-slate-900">{service.service_name}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          £{Number(service.default_price).toFixed(2)} · VAT: {service.vat_rate}%
-                        </p>
+                        {service.job_template && (
+                          <p className="text-xs text-slate-400 mt-0.5">{service.job_template}</p>
+                        )}
                       </div>
                       <div className="flex gap-2">
                         <form action={toggleActive.bind(null, service.id, service.is_active)}>

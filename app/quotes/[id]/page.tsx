@@ -187,7 +187,7 @@ export default async function QuoteDetailPage({
     { data: clients },
   ] = await Promise.all([
     supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single(),
-    supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id).order("created_at", { ascending: true }),
+    supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id),
     supabase.from("services").select("*").eq("is_active", true).order("service_name", { ascending: true }),
     supabase.from("jobs").select("id, job_name").order("job_name", { ascending: true }),
     supabase.from("engagement_letters").select("id, status").eq("quote_id", id).maybeSingle(),
@@ -214,17 +214,43 @@ export default async function QuoteDetailPage({
             <p className="text-sm text-slate-500 mt-0.5">
               {quote.clients?.client_name || "No client"}
             </p>
+            <span className={`inline-block mt-2 rounded-full px-4 py-1.5 text-sm font-semibold ${
+              quote.status === "Accepted" ? "bg-green-100 text-green-700"
+              : quote.status === "Sent" ? "bg-blue-100 text-blue-700"
+              : quote.status === "Declined" ? "bg-red-100 text-red-700"
+              : quote.status === "Expired" ? "bg-orange-100 text-orange-700"
+              : "bg-slate-100 text-slate-600"
+            }`}>
+              {quote.status || "Draft"}
+            </span>
           </div>
 
-          <span className={`rounded-full px-4 py-2 text-sm font-semibold ${
-            quote.status === "Accepted" ? "bg-green-100 text-green-700"
-            : quote.status === "Sent" ? "bg-blue-100 text-blue-700"
-            : quote.status === "Declined" ? "bg-red-100 text-red-700"
-            : quote.status === "Expired" ? "bg-orange-100 text-orange-700"
-            : "bg-slate-100 text-slate-600"
-          }`}>
-            {quote.status || "Draft"}
-          </span>
+          <div className="text-right max-w-md">
+            {lines && lines.length > 0 && (
+              <div className="mb-3 space-y-1">
+                {lines.map((line) => (
+                  <div key={line.id} className="flex justify-between gap-4 text-xs text-slate-500">
+                    <span className="truncate">{line.description}</span>
+                    <span className="flex-shrink-0">£{Number(line.line_total).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-6 border-t border-slate-100 pt-2">
+              <div>
+                <p className="text-xs text-slate-400">Subtotal</p>
+                <p className="text-sm font-semibold text-slate-700">£{Number(quote.subtotal || 0).toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">VAT</p>
+                <p className="text-sm font-semibold text-slate-700">£{Number(quote.vat || 0).toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">Total</p>
+                <p className="text-xl font-bold text-slate-900">£{Number(quote.total || 0).toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -327,7 +353,7 @@ export default async function QuoteDetailPage({
                     <option value="">Select a service or enter manually</option>
                     {(services || []).map((service) => (
                       <option key={service.id} value={service.id}>
-                        {service.service_name} — £{Number(service.default_price).toFixed(2)}
+                        {service.service_name}
                       </option>
                     ))}
                   </select>
@@ -372,25 +398,6 @@ export default async function QuoteDetailPage({
 
         {/* Right - Totals & Settings */}
         <div className="space-y-6">
-
-          {/* Totals */}
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Quote Total</h2>
-            <div className="mt-4 space-y-3">
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">Subtotal</span>
-                <span className="font-medium text-slate-900">£{Number(quote.subtotal || 0).toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">VAT</span>
-                <span className="font-medium text-slate-900">£{Number(quote.vat || 0).toFixed(2)}</span>
-              </div>
-              <div className="border-t border-slate-100 pt-3 flex justify-between">
-                <span className="font-bold text-slate-900">Total</span>
-                <span className="font-bold text-slate-900 text-lg">£{Number(quote.total || 0).toFixed(2)}</span>
-              </div>
-            </div>
-          </div>
 
           {/* Linked Engagement Letter */}
           {engagementLetter && (

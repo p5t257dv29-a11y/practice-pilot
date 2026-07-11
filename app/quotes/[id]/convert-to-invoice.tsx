@@ -87,7 +87,7 @@ export default function ConvertToInvoiceButton({
             Create a job for each line item
           </span>
           <span className="block text-xs text-slate-500 mt-0.5">
-            One job per quote line, named from its description. Job type is guessed where possible — review and adjust on each job afterwards.
+            One job per quote line, named from its description. Job type comes from the service's Job Type Link where set, otherwise guessed from the description — review and adjust on each job afterwards.
           </span>
         </span>
       </label>

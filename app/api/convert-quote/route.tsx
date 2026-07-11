@@ -35,10 +35,11 @@ export async function POST(request: NextRequest) {
 
   const invoiceNumber = `INV-${String((count || 0) + 1).padStart(4, "0")}`;
 
-  // Get quote lines to copy to invoice
+  // Get quote lines to copy to invoice — include the linked service (if any) so
+  // job creation can use its real Job Type Link rather than guessing from text
   const { data: quoteLines } = await supabase
     .from("quote_lines")
-    .select("*")
+    .select("*, services(job_template)")
     .eq("quote_id", quoteId);
 
   // Optionally create a job for each quote line item
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest) {
         quoteLines.map((line) => ({
           client_id: clientId,
           job_name: line.description,
-          job_type: guessJobType(line.description),
+          job_type: (line.services as any)?.job_template || guessJobType(line.description),
           status: "Draft",
           workflow_stage: "Not Started",
           due_date: dueDate || null,
