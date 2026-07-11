@@ -20,18 +20,18 @@ const navSections = [
       { href: "/clients", label: "Clients", icon: "👥" },
       { href: "/onboarding", label: "Onboarding", icon: "🚀" },
       { href: "/engagement", label: "Engagement", icon: "📝" },
+      { href: "/quotes", label: "Quotes", icon: "📋" },
+      { href: "/invoices", label: "Invoices", icon: "🧾" },
     ],
   },
   {
     label: "Work",
     items: [
       { href: "/jobs", label: "Jobs", icon: "💼" },
-      { href: "/quotes", label: "Quotes", icon: "📋" },
-      { href: "/invoices", label: "Invoices", icon: "🧾" },
-      { href: "/tax", label: "Tax", icon: "🧮" },
-      { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
       { href: "/accounts-production", label: "Accounts Production", icon: "📊" },
       { href: "/fixed-assets", label: "Fixed Assets", icon: "🏭" },
+      { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
+      { href: "/tax", label: "Personal Tax", icon: "🧮" },
     ],
   },
   {
