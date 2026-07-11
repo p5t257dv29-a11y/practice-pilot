@@ -36,20 +36,40 @@ async function saveMappings(trialBalanceId: string, clientId: string, formData: 
   revalidatePath("/accounts-production");
 }
 
-async function reverseJournal(trialBalanceId: string, journalId: string) {
+async function updateLine(trialBalanceId: string, clientId: string, lineId: string, formData: FormData) {
   "use server";
-  // Cascade delete removes the journal's trial_balance_lines automatically
-  await supabase.from("journals").delete().eq("id", journalId);
+
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const nominal_code = get("nominal_code") || null;
+  const description = get("description");
+  const category = get("category") || null;
+  const debit = parseFloat(get("debit")) || 0;
+  const credit = parseFloat(get("credit")) || 0;
+
+  await supabase.from("trial_balance_lines").update({
+    nominal_code, description, category, debit, credit,
+  }).eq("id", lineId);
+
+  if (nominal_code && category) {
+    await supabase.from("nominal_code_mappings").upsert(
+      { client_id: clientId, nominal_code, category },
+      { onConflict: "client_id,nominal_code" }
+    );
+  }
+
   revalidatePath(`/accounts-production/${trialBalanceId}`);
   revalidatePath("/accounts-production");
 }
 
 export default async function TrialBalanceDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ line_edit?: string }>;
 }) {
   const { id } = await params;
+  const { line_edit } = await searchParams;
 
   const { data: tb, error } = await supabase
     .from("trial_balances")
@@ -61,7 +81,7 @@ export default async function TrialBalanceDetailPage({
 
   const [{ data: lines }, { data: journals }] = await Promise.all([
     supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", id).order("nominal_code", { ascending: true }),
-    supabase.from("journals").select("*").eq("trial_balance_id", id).order("created_at", { ascending: false }),
+    supabase.from("journals").select("*").eq("trial_balance_id", id),
   ]);
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -83,6 +103,7 @@ export default async function TrialBalanceDetailPage({
   });
 
   const saveMappingsWithIds = saveMappings.bind(null, id, tb.client_id);
+  const updateLineWithIds = updateLine.bind(null, id, tb.client_id);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -94,7 +115,7 @@ export default async function TrialBalanceDetailPage({
           <div className="flex gap-3">
             <a href={`/accounts-production/${id}/journal`}
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              + Post Journal
+              Journals {journals && journals.length > 0 ? `(${journals.length})` : ""} →
             </a>
             <a href={`/accounts-production/${id}/accounts`}
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
@@ -132,51 +153,50 @@ export default async function TrialBalanceDetailPage({
           </div>
         </div>
 
-        {/* Journals posted */}
-        {journals && journals.length > 0 && (
+        {/* Trial Balance snapshot */}
+        {categoryTotals.size > 0 && (
           <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Journals Posted ({journals.length})</h2>
-            <div className="mt-4 space-y-2">
-              {journals.map((j) => {
-                const journalLines = (lines || []).filter((l) => l.journal_id === j.id);
-                const jDebit = journalLines.reduce((s, l) => s + Number(l.debit), 0);
-                return (
-                  <div key={j.id} className="rounded-xl border border-slate-100 p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">
-                          {j.reference && <span className="font-mono text-slate-400 mr-2">{j.reference}</span>}
-                          {j.description}
-                        </p>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          {j.journal_date && `${new Date(j.journal_date).toLocaleDateString("en-GB")} · `}
-                          {journalLines.length} lines · {fmt(jDebit)}
-                        </p>
+            <h2 className="text-lg font-bold text-slate-900">Trial Balance</h2>
+            <p className="text-xs text-slate-400 mt-0.5">A snapshot of category totals, including any posted journals.</p>
+            <div className="mt-4 grid gap-6 md:grid-cols-2">
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Profit & Loss</p>
+                <div className="space-y-1 text-sm">
+                  {PL_CATEGORIES.filter((c) => categoryTotals.has(c)).map((c) => {
+                    const t = categoryTotals.get(c)!;
+                    return (
+                      <div key={c} className="flex justify-between">
+                        <span className="text-slate-600">{c}</span>
+                        <span className="font-medium">{fmt(t.debit - t.credit)}</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <a href={`/accounts-production/${id}/journal/${j.id}`}
-                          className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
-                          Edit
-                        </a>
-                        <form action={reverseJournal.bind(null, id, j.id)}>
-                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                            Reverse
-                          </button>
-                        </form>
+                    );
+                  })}
+                  {PL_CATEGORIES.filter((c) => categoryTotals.has(c)).length === 0 && (
+                    <p className="text-xs text-slate-400">No P&L lines mapped yet.</p>
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Balance Sheet</p>
+                <div className="space-y-1 text-sm">
+                  {BS_CATEGORIES.filter((c) => categoryTotals.has(c)).map((c) => {
+                    const t = categoryTotals.get(c)!;
+                    return (
+                      <div key={c} className="flex justify-between">
+                        <span className="text-slate-600">{c}</span>
+                        <span className="font-medium">{fmt(t.debit - t.credit)}</span>
                       </div>
-                    </div>
-                    <div className="mt-2 space-y-1">
-                      {journalLines.map((l) => (
-                        <div key={l.id} className="flex justify-between text-xs text-slate-500 pl-2">
-                          <span>{l.description} ({l.category})</span>
-                          <span>{Number(l.debit) > 0 ? `Dr ${fmt(Number(l.debit))}` : `Cr ${fmt(Number(l.credit))}`}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                  {BS_CATEGORIES.filter((c) => categoryTotals.has(c)).length === 0 && (
+                    <p className="text-xs text-slate-400">No Balance Sheet lines mapped yet.</p>
+                  )}
+                </div>
+              </div>
             </div>
+            <p className="text-xs text-slate-400 mt-4">
+              Figures shown as Debit − Credit. See "View Draft Accounts" for formatted Profit &amp; Loss and Balance Sheet statements.
+            </p>
           </div>
         )}
 
@@ -221,55 +241,10 @@ export default async function TrialBalanceDetailPage({
           </div>
         )}
 
-        {/* Category totals */}
-        {categoryTotals.size > 0 && (
-          <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Category Totals</h2>
-            <div className="mt-4 grid gap-6 md:grid-cols-2">
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Profit & Loss</p>
-                <div className="space-y-1 text-sm">
-                  {PL_CATEGORIES.filter((c) => categoryTotals.has(c)).map((c) => {
-                    const t = categoryTotals.get(c)!;
-                    return (
-                      <div key={c} className="flex justify-between">
-                        <span className="text-slate-600">{c}</span>
-                        <span className="font-medium">{fmt(t.debit - t.credit)}</span>
-                      </div>
-                    );
-                  })}
-                  {PL_CATEGORIES.filter((c) => categoryTotals.has(c)).length === 0 && (
-                    <p className="text-xs text-slate-400">No P&L lines mapped yet.</p>
-                  )}
-                </div>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Balance Sheet</p>
-                <div className="space-y-1 text-sm">
-                  {BS_CATEGORIES.filter((c) => categoryTotals.has(c)).map((c) => {
-                    const t = categoryTotals.get(c)!;
-                    return (
-                      <div key={c} className="flex justify-between">
-                        <span className="text-slate-600">{c}</span>
-                        <span className="font-medium">{fmt(t.debit - t.credit)}</span>
-                      </div>
-                    );
-                  })}
-                  {BS_CATEGORIES.filter((c) => categoryTotals.has(c)).length === 0 && (
-                    <p className="text-xs text-slate-400">No Balance Sheet lines mapped yet.</p>
-                  )}
-                </div>
-              </div>
-            </div>
-            <p className="text-xs text-slate-400 mt-4">
-              Figures shown as Debit − Credit. Formatted Profit &amp; Loss and Balance Sheet statements are the next stage of this module.
-            </p>
-          </div>
-        )}
-
-        {/* All lines (reference) */}
+        {/* All lines — now editable inline */}
         <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">All Lines ({lines?.length ?? 0})</h2>
+          <p className="text-xs text-slate-400 mt-0.5">Edit a line directly for quick corrections — no need to post a journal for simple fixes.</p>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -280,13 +255,53 @@ export default async function TrialBalanceDetailPage({
                   <th className="pb-2">Source</th>
                   <th className="pb-2 text-right">Debit</th>
                   <th className="pb-2 text-right">Credit</th>
+                  <th className="pb-2"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {(lines || []).map((l) => {
                   const journal = l.journal_id ? journals?.find((j) => j.id === l.journal_id) : null;
+                  const isEditing = line_edit === l.id;
+
+                  if (isEditing) {
+                    return (
+                      <tr key={l.id} className="bg-slate-50">
+                        <td colSpan={7} className="py-3">
+                          <form action={updateLineWithIds.bind(null, l.id)} className="flex flex-wrap items-center gap-2 px-1">
+                            <input name="nominal_code" defaultValue={l.nominal_code || ""} placeholder="Code"
+                              className="w-24 rounded-xl border border-slate-200 p-2 text-sm" />
+                            <input name="description" defaultValue={l.description} placeholder="Description"
+                              className="flex-1 min-w-[200px] rounded-xl border border-slate-200 p-2 text-sm" />
+                            <select name="category" defaultValue={l.category || ""}
+                              className="w-56 rounded-xl border border-slate-200 p-2 text-sm bg-white">
+                              <option value="">No category</option>
+                              <optgroup label="Profit & Loss">
+                                {PL_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                              </optgroup>
+                              <optgroup label="Balance Sheet">
+                                {BS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                              </optgroup>
+                            </select>
+                            <input name="debit" type="number" step="0.01" min="0" defaultValue={l.debit} placeholder="Debit"
+                              className="w-28 rounded-xl border border-slate-200 p-2 text-sm text-right" />
+                            <input name="credit" type="number" step="0.01" min="0" defaultValue={l.credit} placeholder="Credit"
+                              className="w-28 rounded-xl border border-slate-200 p-2 text-sm text-right" />
+                            <button type="submit"
+                              className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                              Save
+                            </button>
+                            <a href={`/accounts-production/${id}`}
+                              className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                              Cancel
+                            </a>
+                          </form>
+                        </td>
+                      </tr>
+                    );
+                  }
+
                   return (
-                    <tr key={l.id}>
+                    <tr key={l.id} className="hover:bg-slate-50">
                       <td className="py-2 font-mono text-slate-500">{l.nominal_code || "—"}</td>
                       <td className="py-2 text-slate-900">{l.description}</td>
                       <td className="py-2 text-slate-600">{l.category || <span className="text-yellow-600">Unmapped</span>}</td>
@@ -301,6 +316,12 @@ export default async function TrialBalanceDetailPage({
                       </td>
                       <td className="py-2 text-right">{Number(l.debit) > 0 ? fmt(Number(l.debit)) : "—"}</td>
                       <td className="py-2 text-right">{Number(l.credit) > 0 ? fmt(Number(l.credit)) : "—"}</td>
+                      <td className="py-2 text-right">
+                        <a href={`/accounts-production/${id}?line_edit=${l.id}`}
+                          className="text-xs font-semibold text-blue-600 hover:underline">
+                          Edit
+                        </a>
+                      </td>
                     </tr>
                   );
                 })}

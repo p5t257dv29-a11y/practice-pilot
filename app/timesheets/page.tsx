@@ -31,6 +31,29 @@ async function createTimeEntry(formData: FormData) {
   revalidatePath("/timesheets");
 }
 
+async function updateTimeEntry(id: string, formData: FormData) {
+  "use server";
+
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  const { error } = await supabase.from("time_entries").update({
+    client_id: get("client_id") || null,
+    job_id: get("job_id") || null,
+    user_name: get("user_name") || "Paul Robinson",
+    date: get("date"),
+    hours: parseFloat(get("hours")) || 0,
+    description: get("description"),
+    billable: formData.get("billable") === "on",
+    hourly_rate: parseFloat(get("hourly_rate")) || 0,
+  }).eq("id", id);
+
+  if (error) {
+    console.error("Could not update time entry:", error.message);
+  }
+
+  revalidatePath("/timesheets");
+}
+
 async function deleteTimeEntry(id: string) {
   "use server";
 
@@ -38,7 +61,12 @@ async function deleteTimeEntry(id: string) {
   revalidatePath("/timesheets");
 }
 
-export default async function TimesheetsPage() {
+export default async function TimesheetsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ edit?: string }>;
+}) {
+  const { edit } = await searchParams;
   const today = new Date().toISOString().split("T")[0];
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
@@ -215,45 +243,120 @@ export default async function TimesheetsPage() {
                 </div>
 
                 <div className="space-y-3">
-                  {(dateEntries || []).map((entry) => (
-                    <div key={entry.id}
-                      className="flex items-start justify-between rounded-xl border border-slate-100 p-4">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-semibold text-slate-900">
-                            {entry.clients?.client_name || "No client"}
-                          </p>
-                          {entry.jobs?.job_name && (
-                            <span className="text-xs text-slate-400">· {entry.jobs.job_name}</span>
-                          )}
-                          {entry.billable ? (
-                            <span className="rounded-full bg-green-100 text-green-700 px-2 py-0.5 text-xs font-semibold">Billable</span>
-                          ) : (
-                            <span className="rounded-full bg-slate-100 text-slate-500 px-2 py-0.5 text-xs font-semibold">Non-billable</span>
-                          )}
-                        </div>
-                        <p className="text-sm text-slate-600 mt-0.5">{entry.description}</p>
-                        <p className="text-xs text-slate-400 mt-1">{entry.user_name}</p>
-                      </div>
+                  {(dateEntries || []).map((entry) => {
+                    const isEditing = edit === entry.id;
+                    const entryJobs = (jobs || []).filter((j) => !entry.client_id || j.client_id === entry.client_id);
 
-                      <div className="flex items-center gap-4 ml-4">
-                        <div className="text-right">
-                          <p className="font-bold text-slate-900">{Number(entry.hours).toFixed(1)}h</p>
-                          {entry.billable && Number(entry.hourly_rate) > 0 && (
-                            <p className="text-xs text-green-600">
-                              £{(Number(entry.hours) * Number(entry.hourly_rate)).toFixed(2)}
-                            </p>
-                          )}
+                    return (
+                      <div key={entry.id} className="rounded-xl border border-slate-100">
+                        <div className="flex items-start justify-between p-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm font-semibold text-slate-900">
+                                {entry.clients?.client_name || "No client"}
+                              </p>
+                              {entry.jobs?.job_name ? (
+                                <span className="text-xs text-slate-400">· {entry.jobs.job_name}</span>
+                              ) : (
+                                <span className="rounded-full bg-yellow-100 text-yellow-700 px-2 py-0.5 text-xs font-semibold">No job</span>
+                              )}
+                              {entry.billable ? (
+                                <span className="rounded-full bg-green-100 text-green-700 px-2 py-0.5 text-xs font-semibold">Billable</span>
+                              ) : (
+                                <span className="rounded-full bg-slate-100 text-slate-500 px-2 py-0.5 text-xs font-semibold">Non-billable</span>
+                              )}
+                            </div>
+                            <p className="text-sm text-slate-600 mt-0.5">{entry.description}</p>
+                            <p className="text-xs text-slate-400 mt-1">{entry.user_name}</p>
+                          </div>
+
+                          <div className="flex items-center gap-3 ml-4">
+                            <div className="text-right">
+                              <p className="font-bold text-slate-900">{Number(entry.hours).toFixed(1)}h</p>
+                              {entry.billable && Number(entry.hourly_rate) > 0 && (
+                                <p className="text-xs text-green-600">
+                                  £{(Number(entry.hours) * Number(entry.hourly_rate)).toFixed(2)}
+                                </p>
+                              )}
+                            </div>
+
+                            <a href={isEditing ? "/timesheets" : `/timesheets?edit=${entry.id}`}
+                              className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                              {isEditing ? "Close" : "Edit"}
+                            </a>
+
+                            <form action={deleteTimeEntry.bind(null, entry.id)}>
+                              <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                                Delete
+                              </button>
+                            </form>
+                          </div>
                         </div>
 
-                        <form action={deleteTimeEntry.bind(null, entry.id)}>
-                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                            Delete
-                          </button>
-                        </form>
+                        {isEditing && (
+                          <div className="border-t border-slate-100 p-4 bg-slate-50">
+                            <form action={updateTimeEntry.bind(null, entry.id)} className="grid gap-3 md:grid-cols-2">
+                              <div>
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Date</label>
+                                <input name="date" type="date" defaultValue={entry.date}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Hours</label>
+                                <input name="hours" type="number" step="0.25" min="0.25" defaultValue={entry.hours}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Client</label>
+                                <select name="client_id" defaultValue={entry.client_id || ""}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white">
+                                  <option value="">Select a client</option>
+                                  {(clients || []).map((c) => (
+                                    <option key={c.id} value={c.id}>{c.client_name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Job</label>
+                                <select name="job_id" defaultValue={entry.job_id || ""}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white">
+                                  <option value="">No job</option>
+                                  {entryJobs.map((j) => (
+                                    <option key={j.id} value={j.id}>{j.job_name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="md:col-span-2">
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Description</label>
+                                <textarea name="description" defaultValue={entry.description} rows={2}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Staff Member</label>
+                                <input name="user_name" defaultValue={entry.user_name}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-slate-700 mb-1">Hourly Rate (£)</label>
+                                <input name="hourly_rate" type="number" step="0.01" min="0" defaultValue={entry.hourly_rate}
+                                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                              </div>
+                              <label className="flex items-center gap-2 cursor-pointer md:col-span-2">
+                                <input name="billable" type="checkbox" defaultChecked={entry.billable} className="w-4 h-4 rounded" />
+                                <span className="text-sm font-medium text-slate-700">Billable</span>
+                              </label>
+                              <div className="md:col-span-2">
+                                <button type="submit"
+                                  className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                                  Save Changes
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );

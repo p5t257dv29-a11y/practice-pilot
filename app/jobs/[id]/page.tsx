@@ -138,7 +138,15 @@ export default async function JobDetailPage({
 }) {
   const { id } = await params;
 
-  const [{ data: job, error }, { data: clients }, { data: checklistItems }, { data: templates }, { data: staff }] = await Promise.all([
+  const [
+    { data: job, error },
+    { data: clients },
+    { data: checklistItems },
+    { data: templates },
+    { data: staff },
+    { data: timeEntries },
+    { data: trialBalance },
+  ] = await Promise.all([
     supabase
       .from("jobs")
       .select("*, clients(client_name)")
@@ -162,6 +170,18 @@ export default async function JobDetailPage({
       .select("id, name")
       .eq("is_active", true)
       .order("name", { ascending: true }),
+    supabase
+      .from("time_entries")
+      .select("*")
+      .eq("job_id", id)
+      .order("date", { ascending: false }),
+    supabase
+      .from("trial_balances")
+      .select("id")
+      .eq("job_id", id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   if (error || !job) notFound();
@@ -169,6 +189,17 @@ export default async function JobDetailPage({
   const updateWithId = updateJobRecord.bind(null, id);
   const attachChecklistWithId = attachChecklist.bind(null, id);
   const receivedCount = (checklistItems || []).filter((i) => i.is_received).length;
+
+  // Time logged against this job
+  const totalHours = (timeEntries || []).reduce((sum, e) => sum + Number(e.hours), 0);
+  const billableHours = (timeEntries || []).filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
+  const chargeOutValue = (timeEntries || []).filter((e) => e.billable).reduce((sum, e) => sum + (Number(e.hours) * Number(e.hourly_rate)), 0);
+
+  // Where the Accounts Production link should go: straight to the existing
+  // trial balance if one's linked to this job, otherwise the job-first upload screen
+  const accountsProductionHref = trialBalance
+    ? `/accounts-production/${trialBalance.id}`
+    : `/accounts-production?job=${id}`;
 
   return (
     <div className="p-8">
@@ -196,7 +227,12 @@ export default async function JobDetailPage({
           </p>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <a href={accountsProductionHref}
+            className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+            {trialBalance ? "View Accounts →" : "Prepare Accounts →"}
+          </a>
+
           <span
             className={`rounded-full px-4 py-2 text-sm font-semibold ${
               job.status === "Active"
@@ -434,8 +470,52 @@ export default async function JobDetailPage({
           </form>
         </div>
 
-        {/* Right column — checklist */}
+        {/* Right column — checklist + time logged */}
         <div className="space-y-6">
+
+          {/* Time Logged */}
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">Time Logged</h2>
+              <a href="/timesheets" className="text-xs font-semibold text-blue-600 hover:underline">
+                Log time →
+              </a>
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+              <div>
+                <p className="text-xl font-bold text-slate-900">{totalHours.toFixed(1)}h</p>
+                <p className="text-xs text-slate-500">Total</p>
+              </div>
+              <div>
+                <p className="text-xl font-bold text-blue-600">{billableHours.toFixed(1)}h</p>
+                <p className="text-xs text-slate-500">Billable</p>
+              </div>
+              <div>
+                <p className="text-xl font-bold text-green-600">£{chargeOutValue.toFixed(2)}</p>
+                <p className="text-xs text-slate-500">Value</p>
+              </div>
+            </div>
+
+            {timeEntries && timeEntries.length > 0 ? (
+              <div className="mt-4 space-y-2 max-h-64 overflow-y-auto">
+                {timeEntries.map((entry) => (
+                  <div key={entry.id} className="flex items-start justify-between rounded-lg border border-slate-100 p-2.5">
+                    <div className="flex-1">
+                      <p className="text-xs text-slate-700">{entry.description}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {new Date(entry.date + "T00:00:00").toLocaleDateString("en-GB")} · {entry.user_name}
+                      </p>
+                    </div>
+                    <p className="text-xs font-bold text-slate-900 ml-2">{Number(entry.hours).toFixed(1)}h</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-sm text-slate-400 text-center py-2">No time logged against this job yet.</p>
+            )}
+          </div>
+
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">Information Checklist</h2>
