@@ -54,6 +54,7 @@ async function updateQuote(id: string, formData: FormData) {
   const get = (key: string) => String(formData.get(key) || "").trim();
 
   await supabase.from("quotes").update({
+    client_id: get("client_id"),
     status: get("status"),
     quote_date: get("quote_date") || null,
     valid_until: get("valid_until") || null,
@@ -169,10 +170,13 @@ async function deleteLineItem(quoteId: string, lineId: string) {
 
 export default async function QuoteDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ edit_line?: string }>;
 }) {
   const { id } = await params;
+  const { edit_line } = await searchParams;
 
   const [
     { data: quote, error },
@@ -180,12 +184,14 @@ export default async function QuoteDetailPage({
     { data: services },
     { data: jobs },
     { data: engagementLetter },
+    { data: clients },
   ] = await Promise.all([
     supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single(),
     supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id).order("created_at", { ascending: true }),
     supabase.from("services").select("*").eq("is_active", true).order("service_name", { ascending: true }),
     supabase.from("jobs").select("id, job_name").order("job_name", { ascending: true }),
     supabase.from("engagement_letters").select("id, status").eq("quote_id", id).maybeSingle(),
+    supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
   ]);
 
   if (error || !quote) notFound();
@@ -228,11 +234,65 @@ export default async function QuoteDetailPage({
         <div className="lg:col-span-2 space-y-6">
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Line Items</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Change price, quantity, or description — or remove a service — using Edit on any line.</p>
 
             <div className="mt-4 space-y-2">
-              {(lines || []).map((line) => (
-                <details key={line.id} className="rounded-xl border border-slate-100 group">
-                  <summary className="flex items-center justify-between p-4 cursor-pointer list-none">
+              {(lines || []).map((line) => {
+                const isEditing = edit_line === line.id;
+
+                if (isEditing) {
+                  return (
+                    <div key={line.id} className="rounded-xl border-2 border-slate-900 bg-slate-50 p-4">
+                      <form action={updateLineItem.bind(null, id, line.id)} className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
+                          <input name="description" required defaultValue={line.description}
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
+                        <div className="grid grid-cols-3 gap-4">
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Qty</label>
+                            <input name="qty" type="number" defaultValue={line.qty} step="0.01" min="0"
+                              className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Price (£)</label>
+                            <input name="price" type="number" defaultValue={line.price} step="0.01" min="0"
+                              className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">VAT %</label>
+                            <select name="vat_rate" defaultValue={line.vat_rate}
+                              className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
+                              <option value="20">20%</option>
+                              <option value="5">5%</option>
+                              <option value="0">0%</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div className="flex gap-3">
+                          <button type="submit"
+                            className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                            Save Changes
+                          </button>
+                          <a href={`/quotes/${id}`}
+                            className="rounded-xl bg-white border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
+                            Cancel
+                          </a>
+                        </div>
+                      </form>
+
+                      <form action={deleteLineItem.bind(null, id, line.id)} className="mt-3 pt-3 border-t border-slate-200">
+                        <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                          Remove This Line Item
+                        </button>
+                      </form>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={line.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
                     <div className="flex-1">
                       <p className="text-sm font-semibold text-slate-900">{line.description}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
@@ -241,55 +301,14 @@ export default async function QuoteDetailPage({
                     </div>
                     <div className="flex items-center gap-4">
                       <p className="font-bold text-slate-900">£{Number(line.line_total).toFixed(2)}</p>
-                      <span className="text-xs font-semibold text-blue-600 group-open:hidden">Edit</span>
-                      <span className="text-xs font-semibold text-slate-400 hidden group-open:inline">Close</span>
+                      <a href={`/quotes/${id}?edit_line=${line.id}`}
+                        className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                        Edit
+                      </a>
                     </div>
-                  </summary>
-
-                  <div className="border-t border-slate-100 p-4 space-y-4">
-                    <form action={updateLineItem.bind(null, id, line.id)} className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
-                        <input name="description" required defaultValue={line.description}
-                          className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                      </div>
-                      <div className="grid grid-cols-3 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Qty</label>
-                          <input name="qty" type="number" defaultValue={line.qty} step="0.01" min="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Price (£)</label>
-                          <input name="price" type="number" defaultValue={line.price} step="0.01" min="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">VAT %</label>
-                          <select name="vat_rate" defaultValue={line.vat_rate}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                            <option value="20">20%</option>
-                            <option value="5">5%</option>
-                            <option value="0">0%</option>
-                          </select>
-                        </div>
-                      </div>
-                      <div className="flex gap-3">
-                        <button type="submit"
-                          className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                          Save Changes
-                        </button>
-                      </div>
-                    </form>
-
-                    <form action={deleteLineItem.bind(null, id, line.id)}>
-                      <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                        Remove Line Item
-                      </button>
-                    </form>
                   </div>
-                </details>
-              ))}
+                );
+              })}
 
               {lines && lines.length === 0 && (
                 <p className="text-sm text-slate-500 text-center py-6">
@@ -434,6 +453,17 @@ export default async function QuoteDetailPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Quote Details</h2>
             <form action={updateWithId} className="mt-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Client</label>
+                <select name="client_id" defaultValue={quote.client_id || ""}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">Select a client</option>
+                  {(clients || []).map((c) => (
+                    <option key={c.id} value={c.id}>{c.client_name}</option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
                 <select name="status" defaultValue={quote.status || "Draft"}

@@ -22,6 +22,7 @@ export default function ConvertToInvoiceButton({
 }) {
   const [jobId, setJobId] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [createJobs, setCreateJobs] = useState(false);
   const [converting, setConverting] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
@@ -37,7 +38,8 @@ export default function ConvertToInvoiceButton({
         body: JSON.stringify({
           quoteId,
           clientId,
-          jobId: jobId || null,
+          jobId: !createJobs && jobId ? jobId : null,
+          createJobs,
           dueDate: dueDate || null,
           subtotal,
           vat,
@@ -73,23 +75,42 @@ export default function ConvertToInvoiceButton({
 
   return (
     <div className="space-y-3">
-      <div>
-        <label className="block text-sm font-medium text-slate-700 mb-1">
-          Link to Job (optional)
-        </label>
-        <select
-          value={jobId}
-          onChange={(e) => setJobId(e.target.value)}
-          className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-        >
-          <option value="">Select a job</option>
-          {jobs.map((job) => (
-            <option key={job.id} value={job.id}>
-              {job.job_name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <label className="flex items-start gap-2 cursor-pointer rounded-xl border border-slate-100 p-3 hover:bg-slate-50 transition-colors">
+        <input
+          type="checkbox"
+          checked={createJobs}
+          onChange={(e) => setCreateJobs(e.target.checked)}
+          className="w-4 h-4 rounded mt-0.5"
+        />
+        <span>
+          <span className="block text-sm font-medium text-slate-700">
+            Create a job for each line item
+          </span>
+          <span className="block text-xs text-slate-500 mt-0.5">
+            One job per quote line, named from its description. Job type is guessed where possible — review and adjust on each job afterwards.
+          </span>
+        </span>
+      </label>
+
+      {!createJobs && (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            Link to Existing Job (optional)
+          </label>
+          <select
+            value={jobId}
+            onChange={(e) => setJobId(e.target.value)}
+            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+          >
+            <option value="">Select a job</option>
+            {jobs.map((job) => (
+              <option key={job.id} value={job.id}>
+                {job.job_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1">
