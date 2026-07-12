@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import SignOutButton from "./signout-button";
+import GlobalSearch from "./global-search";
 
 const navSections = [
   {
@@ -32,6 +33,7 @@ const navSections = [
       { href: "/fixed-assets", label: "Fixed Assets", icon: "🏭" },
       { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
       { href: "/tax", label: "Personal Tax", icon: "🧮" },
+      { href: "/capital-gains", label: "Capital Gains", icon: "📈" },
     ],
   },
   {
@@ -73,6 +75,9 @@ export default function ConditionalSidebar({
             </div>
           </div>
         </div>
+
+        {/* Global Search */}
+        <GlobalSearch />
 
         {/* Navigation */}
         <nav className="flex-1 p-4 space-y-6">
