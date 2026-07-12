@@ -32,8 +32,9 @@ const navSections = [
       { href: "/accounts-production", label: "Accounts Production", icon: "📊" },
       { href: "/fixed-assets", label: "Fixed Assets", icon: "🏭" },
       { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
-      { href: "/tax", label: "Personal Tax", icon: "🧮" },
       { href: "/capital-gains", label: "Capital Gains", icon: "📈" },
+      { href: "/tax", label: "Personal Tax", icon: "🧮" },
+      { href: "/partnership-tax", label: "Partnership Tax", icon: "🤝" },
     ],
   },
   {

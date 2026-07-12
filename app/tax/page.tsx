@@ -216,7 +216,13 @@ async function deleteComputation(id: string) {
   revalidatePath("/tax");
 }
 
-export default async function AccountsProductionPage() {
+export default async function AccountsProductionPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ client?: string; self_employment?: string }>;
+}) {
+  const { client: prefillClient, self_employment: prefillSelfEmployment } = await searchParams;
+
   const [{ data: computations, error }, { data: clients }] = await Promise.all([
     supabase
       .from("tax_computations")
@@ -251,11 +257,17 @@ export default async function AccountsProductionPage() {
             Enter gross income figures for the tax year. All bands, allowances, and Class 4 NI are calculated automatically using 2026/27 rates.
           </p>
 
+          {prefillSelfEmployment && (
+            <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
+              Self-Employment Profit has been pre-filled with £{parseFloat(prefillSelfEmployment).toLocaleString("en-GB", { minimumFractionDigits: 2 })} from a linked Partnership Tax profit share.
+            </div>
+          )}
+
           <form action={createComputation} className="mt-6">
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
-                <select name="client_id" required
+                <select name="client_id" required defaultValue={prefillClient || ""}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
                   <option value="">Select a client</option>
                   {(clients || []).map((client) => (
@@ -280,8 +292,11 @@ export default async function AccountsProductionPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Self-Employment Profit (£)</label>
-                <input name="self_employment_income" type="number" step="0.01" min="0" defaultValue="0"
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Self-Employment Profit (£) {prefillSelfEmployment && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                </label>
+                <input name="self_employment_income" type="number" step="0.01" min="0"
+                  defaultValue={prefillSelfEmployment || "0"}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                   placeholder="Net profit after expenses" />
               </div>
