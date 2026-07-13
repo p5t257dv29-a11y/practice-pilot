@@ -60,6 +60,8 @@ export default async function PublicTaxComputationPage({
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  const fmtDateTime = (d: string) =>
+    `${new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -87,6 +89,11 @@ export default async function PublicTaxComputationPage({
             <p className="text-green-600 text-sm mt-1">
               Thank you! We'll proceed to file your return.
             </p>
+            {comp.approved_at && (
+              <p className="text-green-500 text-xs mt-2">
+                Approved on {fmtDateTime(comp.approved_at)}
+              </p>
+            )}
           </div>
         )}
 
@@ -96,6 +103,11 @@ export default async function PublicTaxComputationPage({
             <p className="text-yellow-600 text-sm mt-1">
               Thanks for letting us know. We'll be in touch to go through it with you.
             </p>
+            {comp.queried_at && (
+              <p className="text-yellow-500 text-xs mt-2">
+                Raised on {fmtDateTime(comp.queried_at)}
+              </p>
+            )}
           </div>
         )}
 

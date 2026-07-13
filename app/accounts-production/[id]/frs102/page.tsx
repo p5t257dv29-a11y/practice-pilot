@@ -12,16 +12,23 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+async function updateEmployeeCount(trialBalanceId: string, formData: FormData) {
+  "use server";
+  const count = parseInt(String(formData.get("average_employees") || "").trim());
+  await supabase.from("trial_balances").update({ average_employees: isNaN(count) ? null : count }).eq("id", trialBalanceId);
+  revalidatePath(`/accounts-production/${trialBalanceId}/frs102`);
+}
+
 async function updateNote(trialBalanceId: string, field: string, formData: FormData) {
   "use server";
   const text = String(formData.get("note_text") || "").trim();
   await supabase.from("trial_balances").update({ [field]: text || null }).eq("id", trialBalanceId);
-  revalidatePath(`/accounts-production/${trialBalanceId}/frs105`);
+  revalidatePath(`/accounts-production/${trialBalanceId}/frs102`);
 }
 
 // Computes the full Balance Sheet position from a set of trial balance lines
 // and, if available, the Fixed Asset Register (for a more accurate NBV).
-export async function computeBalanceSheet(clientId: string, jobId: string | null, periodEnd: string, lines: any[]) {
+async function computeBalanceSheet(clientId: string, jobId: string | null, periodEnd: string, lines: any[]) {
   const totals = new Map<string, number>();
   lines.forEach((l) => {
     if (!l.category) return;
@@ -64,7 +71,7 @@ export async function computeBalanceSheet(clientId: string, jobId: string | null
   return { fixedAssetsNBV, currentAssets, creditors1yr, netCurrentAssets, totalAssetsLessCurrentLiabilities, creditorsAfter1yr, netAssets, shareCapital, plReserveCfwd, shareholdersFunds, pl, dla };
 }
 
-export default async function FRS105AccountsPage({
+export default async function FRS102AccountsPage({
   params,
   searchParams,
 }: {
@@ -157,6 +164,21 @@ export default async function FRS105AccountsPage({
   const currentYearLabel = new Date(tb.period_end).getFullYear();
   const priorYearLabel = priorTb ? new Date(priorTb.period_end).getFullYear() : null;
 
+  // Note numbering: General Info, Accounting Policies, [Fixed Assets if any], Share Capital, Employees, Directors' Advances
+  let noteNum = 1;
+  const nGeneral = noteNum++;
+  const nPolicies = noteNum++;
+  const nFixedAssets = categoryRows.length > 0 ? noteNum++ : null;
+  const nShareCapital = noteNum++;
+  const nEmployees = noteNum++;
+  const nDirectors = noteNum++;
+
+  const updateEmployeeCountWithId = updateEmployeeCount.bind(null, id);
+
+  const generalInfoDefault = `${client?.client_name} is a private company limited by shares, incorporated in England and Wales, registration number ${client?.company_number || "________"}.${client?.address ? ` The registered office is ${client.address}.` : ""}\n\nThese financial statements have been prepared in accordance with Section 1A of FRS 102, the Financial Reporting Standard applicable in the UK and Republic of Ireland, and the Companies Act 2006, as applicable to companies subject to the small companies regime. The financial statements are presented in Sterling (£).`;
+
+  const accountingPoliciesDefault = `Basis of preparation\nThese financial statements have been prepared under the historical cost convention and in accordance with Section 1A of FRS 102 as issued by the Financial Reporting Council.\n\nTurnover\nTurnover represents amounts receivable for goods and services provided in the normal course of business, net of value added tax and trade discounts.\n\nTangible fixed assets and depreciation\nTangible fixed assets are stated at cost less accumulated depreciation. Depreciation is provided on all tangible fixed assets at rates calculated to write off the cost of each asset over its expected useful life.\n\nTaxation\nTaxation for the period comprises current tax. Current tax is the expected corporation tax payable on taxable profit for the period, calculated using rates enacted or substantively enacted at the balance sheet date.`;
+
   // Two-column balance sheet row: current year + prior year (if available)
   const BSRow = ({ label, value, priorValue, bold, caps, note }: { label: string; value: number; priorValue?: number | null; bold?: boolean; caps?: boolean; note?: string }) => (
     <tr className={bold ? "font-bold" : ""}>
@@ -175,9 +197,9 @@ export default async function FRS105AccountsPage({
         <a href={`/accounts-production/${id}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
           ← Back to Trial Balance
         </a>
-        <h1 className="text-2xl font-bold text-slate-900 mt-4">FRS 105 Micro-Entity Accounts</h1>
+        <h1 className="text-2xl font-bold text-slate-900 mt-4">FRS 102 Section 1A Accounts</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          Use your browser's print function (⌘P) to save as PDF.
+          For small companies above micro-entity size. Use your browser's print function (⌘P) to save as PDF.
         </p>
       </div>
 
@@ -246,10 +268,10 @@ export default async function FRS105AccountsPage({
             </thead>
             <tbody>
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Fixed Assets</td></tr>
-              <BSRow label="Tangible assets" value={current.fixedAssetsNBV} priorValue={prior?.fixedAssetsNBV} note="2" />
+              <BSRow label="Tangible assets" value={current.fixedAssetsNBV} priorValue={prior?.fixedAssetsNBV} note={nFixedAssets ? String(nFixedAssets) : ""} />
 
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Current Assets</td></tr>
-              <BSRow label="Total current assets" value={current.currentAssets} priorValue={prior?.currentAssets} />
+              <BSRow label="Total current assets" value={current.currentAssets} priorValue={prior?.currentAssets} bold />
               <BSRow label="Creditors: amounts falling due within one year" value={-current.creditors1yr} priorValue={prior ? -prior.creditors1yr : null} />
               <BSRow label="Net Current Assets (Liabilities)" value={current.netCurrentAssets} priorValue={prior?.netCurrentAssets} bold caps />
 
@@ -262,17 +284,20 @@ export default async function FRS105AccountsPage({
               <BSRow label="Net Assets" value={current.netAssets} priorValue={prior?.netAssets} bold caps />
 
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Capital and Reserves</td></tr>
-              <BSRow label="Called up share capital" value={current.shareCapital} priorValue={prior?.shareCapital} note="3" />
+              <BSRow label="Called up share capital" value={current.shareCapital} priorValue={prior?.shareCapital} note={String(nShareCapital)} />
               <BSRow label="Profit and loss account" value={current.plReserveCfwd} priorValue={prior?.plReserveCfwd} />
               <BSRow label="Shareholders' Funds" value={current.shareholdersFunds} priorValue={prior?.shareholdersFunds} bold caps />
             </tbody>
           </table>
+          <p className="text-xs text-slate-400 mt-3">
+            Stocks, Debtors and Cash are shown combined within Total Current Assets on the face of the balance sheet, consistent with the abbreviated format available to small companies under Section 1A of FRS 102 — the full breakdown is not separately required.
+          </p>
 
           <div className="mt-8 text-xs text-slate-600 space-y-2 border-t border-slate-200 pt-4">
             <p>For the year ending {periodEndFormatted} the company was entitled to exemption from audit under section 477 of the Companies Act 2006 relating to small companies.</p>
             <p>The member has not required the company to obtain an audit in accordance with section 476 of the Companies Act 2006.</p>
             <p>The director acknowledges their responsibilities for complying with the requirements of the Act with respect to accounting records and the preparation of accounts.</p>
-            <p>These accounts have been prepared and delivered in accordance with the provisions applicable to companies subject to the micro-entities regime, and in accordance with FRS 105, the Financial Reporting Standard applicable to the Micro-entities Regime.</p>
+            <p>These accounts have been prepared in accordance with the provisions applicable to companies subject to the small companies regime, and in accordance with Section 1A of FRS 102, the Financial Reporting Standard applicable in the UK and Republic of Ireland.</p>
           </div>
 
           <div className="mt-8 pt-6 border-t border-slate-200">
@@ -292,11 +317,11 @@ export default async function FRS105AccountsPage({
           </div>
         </div>
 
-        {/* Profit & Loss (for members / HMRC — not required to be filed at Companies House) */}
+        {/* Profit & Loss (for members / HMRC — small companies may also take filing exemption) */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <h2 className="text-lg font-bold text-slate-900 text-center">Profit and Loss Account</h2>
           <p className="text-sm text-slate-500 text-center mb-1">For the Year Ended {periodEndFormatted}</p>
-          <p className="text-xs text-slate-400 text-center mb-6">Prepared for the members and HMRC — not required to be filed at Companies House by a micro-entity</p>
+          <p className="text-xs text-slate-400 text-center mb-6">Prepared for the members and HMRC — a small company may also take the filing exemption and not deliver this to Companies House</p>
 
           <table className="w-full text-sm">
             <tbody>
@@ -315,8 +340,8 @@ export default async function FRS105AccountsPage({
 
           <div className="mb-6">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-bold text-slate-900">1. General Information</p>
-              <a href={edit_note === "general" ? `/accounts-production/${id}/frs105` : `/accounts-production/${id}/frs105?edit_note=general`}
+              <p className="text-sm font-bold text-slate-900">{nGeneral}. General Information</p>
+              <a href={edit_note === "general" ? `/accounts-production/${id}/frs102` : `/accounts-production/${id}/frs102?edit_note=general`}
                 className="text-xs font-semibold text-blue-600 hover:underline print:hidden">
                 {edit_note === "general" ? "Cancel" : "Edit"}
               </a>
@@ -324,22 +349,42 @@ export default async function FRS105AccountsPage({
             {edit_note === "general" ? (
               <form action={updateNote.bind(null, id, "note_general_info")} className="mt-2 print:hidden">
                 <textarea name="note_text" rows={5}
-                  defaultValue={tb.note_general_info || `${client?.client_name} is a private company limited by shares, incorporated in England and Wales, registration number ${client?.company_number || "________"}.${client?.address ? ` The registered office is ${client.address}.` : ""}\n\nThese financial statements have been prepared in accordance with the provisions of FRS 105, the Financial Reporting Standard applicable to the Micro-entities Regime, and the Companies Act 2006. The financial statements are presented in Sterling (£).`}
+                  defaultValue={tb.note_general_info || generalInfoDefault}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 <button type="submit" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
                   Save
                 </button>
               </form>
             ) : (
-              <div className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">
-                {tb.note_general_info || `${client?.client_name} is a private company limited by shares, incorporated in England and Wales, registration number ${client?.company_number || "________"}.${client?.address ? ` The registered office is ${client.address}.` : ""}\n\nThese financial statements have been prepared in accordance with the provisions of FRS 105, the Financial Reporting Standard applicable to the Micro-entities Regime, and the Companies Act 2006. The financial statements are presented in Sterling (£).`}
-              </div>
+              <div className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{tb.note_general_info || generalInfoDefault}</div>
             )}
           </div>
 
-          {categoryRows.length > 0 && (
+          <div className="mb-6">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-900">{nPolicies}. Accounting Policies</p>
+              <a href={edit_note === "policies" ? `/accounts-production/${id}/frs102` : `/accounts-production/${id}/frs102?edit_note=policies`}
+                className="text-xs font-semibold text-blue-600 hover:underline print:hidden">
+                {edit_note === "policies" ? "Cancel" : "Edit"}
+              </a>
+            </div>
+            {edit_note === "policies" ? (
+              <form action={updateNote.bind(null, id, "note_accounting_policies")} className="mt-2 print:hidden">
+                <textarea name="note_text" rows={14}
+                  defaultValue={tb.note_accounting_policies || accountingPoliciesDefault}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <button type="submit" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Save
+                </button>
+              </form>
+            ) : (
+              <div className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{tb.note_accounting_policies || accountingPoliciesDefault}</div>
+            )}
+          </div>
+
+          {nFixedAssets && (
             <div className="mb-6">
-              <p className="text-sm font-bold text-slate-900">2. Tangible Fixed Assets</p>
+              <p className="text-sm font-bold text-slate-900">{nFixedAssets}. Tangible Fixed Assets</p>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
@@ -376,7 +421,7 @@ export default async function FRS105AccountsPage({
           )}
 
           <div className="mb-6">
-            <p className="text-sm font-bold text-slate-900">{categoryRows.length > 0 ? "3" : "2"}. Share Capital</p>
+            <p className="text-sm font-bold text-slate-900">{nShareCapital}. Share Capital</p>
             <table className="w-full text-sm mt-2">
               <tbody>
                 <BSRow label="Allotted, called up and fully paid" value={current.shareCapital} priorValue={prior?.shareCapital} />
@@ -384,8 +429,27 @@ export default async function FRS105AccountsPage({
             </table>
           </div>
 
+          <div className="mb-6">
+            <p className="text-sm font-bold text-slate-900">{nEmployees}. Employees</p>
+            <p className="text-sm text-slate-600 mt-2">
+              The average number of persons (including directors) employed by the company during the year was{" "}
+              <strong>{tb.average_employees ?? "________"}</strong> ({priorYearLabel ? `${priorYearLabel}: ________` : "no comparative available"}).
+            </p>
+            <form action={updateEmployeeCountWithId} className="mt-3 flex items-end gap-2 print:hidden">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Set average employee count</label>
+                <input name="average_employees" type="number" min="0" defaultValue={tb.average_employees ?? ""}
+                  className="w-40 rounded-xl border border-slate-200 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <button type="submit"
+                className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                Save
+              </button>
+            </form>
+          </div>
+
           <div>
-            <p className="text-sm font-bold text-slate-900">{categoryRows.length > 0 ? "4" : "3"}. Advances, Credit and Guarantees to Directors</p>
+            <p className="text-sm font-bold text-slate-900">{nDirectors}. Advances, Credit and Guarantees to Directors</p>
             <p className="text-sm text-slate-600 mt-2">
               {current.dla !== 0
                 ? `The company had a balance of £${fmt(Math.abs(current.dla))} ${current.dla > 0 ? "owed to the company by" : "owed by the company to"} a director at the balance sheet date.`
@@ -400,19 +464,19 @@ export default async function FRS105AccountsPage({
           <div className="mt-4 max-w-md">
             <SendAccountsButton
               trialBalanceId={id}
-              accountsType="FRS105"
+              accountsType="FRS102"
               defaultEmail={client?.email || ""}
-              approvalToken={tb.accounts_type === "FRS105" ? tb.approval_token : null}
-              approvalStatus={tb.accounts_type === "FRS105" ? tb.approval_status : null}
-              approvedAt={tb.accounts_type === "FRS105" ? tb.approved_at : null}
-              queriedAt={tb.accounts_type === "FRS105" ? tb.queried_at : null}
+              approvalToken={tb.accounts_type === "FRS102" ? tb.approval_token : null}
+              approvalStatus={tb.accounts_type === "FRS102" ? tb.approval_status : null}
+              approvedAt={tb.accounts_type === "FRS102" ? tb.approved_at : null}
+              queriedAt={tb.accounts_type === "FRS102" ? tb.queried_at : null}
             />
           </div>
         </div>
 
         <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4 print:hidden">
           <p className="text-xs text-yellow-800">
-            <strong>Draft accounts for review — not a filable document.</strong> Formatted to closely match the layout and statutory wording of real filed FRS 105 micro-entity accounts, generated from your mapped trial balance. It has not been reviewed by a qualified accountant, does not include iXBRL tagging, and cannot be submitted to Companies House or HMRC directly. Verify all figures, the registered office address, and director details before use, and file through recognised software or your existing filing route.
+            <strong>Draft accounts for review — not a filable document.</strong> Formatted to closely match the layout and statutory wording of real filed FRS 102 Section 1A small company accounts, generated from your mapped trial balance. Accounting policy wording is standard boilerplate — review and tailor to the company's actual policies (particularly depreciation rates/methods and any non-standard turnover recognition) before use. Does not include iXBRL tagging and cannot be submitted to Companies House or HMRC directly. Verify all figures, the registered office address, and director details before use, and file through recognised software or your existing filing route.
           </p>
         </div>
       </div>

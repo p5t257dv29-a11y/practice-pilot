@@ -218,16 +218,11 @@ export default async function TaxComputationDetailPage({
                 computationId={id}
                 defaultEmail={comp.client_email || comp.clients?.email || ""}
                 computationToken={comp.token}
+                status={comp.status}
+                approvedAt={comp.approved_at}
+                queriedAt={comp.queried_at}
               />
             </div>
-            {comp.status && comp.status !== "Draft" && (
-              <p className="mt-3 text-xs font-semibold text-slate-500">
-                Status: <span className={
-                  comp.status === "Approved" ? "text-green-600" :
-                  comp.status === "Queried" ? "text-yellow-600" : "text-blue-600"
-                }>{comp.status}</span>
-              </p>
-            )}
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">

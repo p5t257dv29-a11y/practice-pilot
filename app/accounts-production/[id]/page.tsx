@@ -122,8 +122,12 @@ export default async function TrialBalanceDetailPage({
               View Draft Accounts →
             </a>
             <a href={`/accounts-production/${id}/frs105`}
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               FRS 105 Accounts →
+            </a>
+            <a href={`/accounts-production/${id}/frs102`}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              FRS 102 Accounts →
             </a>
           </div>
         </div>

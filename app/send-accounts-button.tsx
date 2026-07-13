@@ -2,25 +2,27 @@
 
 import { useState } from "react";
 
-export default function SendComputationButton({
-  computationId,
+export default function SendAccountsButton({
+  trialBalanceId,
+  accountsType,
   defaultEmail,
-  computationToken,
-  status: approvalStatus,
+  approvalToken,
+  approvalStatus,
   approvedAt,
   queriedAt,
 }: {
-  computationId: string;
+  trialBalanceId: string;
+  accountsType: "FRS105" | "FRS102";
   defaultEmail: string;
-  computationToken: string | null;
-  status?: string | null;
+  approvalToken: string | null;
+  approvalStatus?: string | null;
   approvedAt?: string | null;
   queriedAt?: string | null;
 }) {
   const [email, setEmail] = useState(defaultEmail);
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [computationUrl, setComputationUrl] = useState<string | null>(
-    computationToken ? `${window.location.origin}/t/${computationToken}` : null
+  const [accountsUrl, setAccountsUrl] = useState<string | null>(
+    approvalToken ? `${window.location.origin}/a/${approvalToken}` : null
   );
 
   const handleSend = async () => {
@@ -28,10 +30,10 @@ export default function SendComputationButton({
     setStatus("sending");
 
     try {
-      const res = await fetch("/api/send-tax-computation", {
+      const res = await fetch("/api/send-accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ computationId, clientEmail: email }),
+        body: JSON.stringify({ trialBalanceId, accountsType, clientEmail: email }),
       });
 
       const data = await res.json();
@@ -42,7 +44,7 @@ export default function SendComputationButton({
       }
 
       setStatus("sent");
-      setComputationUrl(data.computationUrl);
+      setAccountsUrl(data.accountsUrl);
     } catch {
       setStatus("error");
     }
@@ -93,33 +95,33 @@ export default function SendComputationButton({
         </p>
       )}
 
-      {status === "sent" && computationUrl && (
+      {status === "sent" && accountsUrl && (
         <div className="rounded-xl bg-green-50 border border-green-100 p-3">
-          <p className="text-xs font-semibold text-green-700 mb-1">Computation sent!</p>
+          <p className="text-xs font-semibold text-green-700 mb-1">Accounts sent!</p>
           <p className="text-xs text-green-600 mb-2">
             Client can also access it directly via this link:
           </p>
           <a
-            href={computationUrl}
+            href={accountsUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-blue-600 hover:underline break-all"
           >
-            {computationUrl}
+            {accountsUrl}
           </a>
         </div>
       )}
 
-      {computationToken && status === "idle" && (
+      {approvalToken && status === "idle" && (
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
           <p className="text-xs text-slate-500 mb-1">Previously sent — client link:</p>
           <a
-            href={`/t/${computationToken}`}
+            href={`/a/${approvalToken}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-blue-600 hover:underline break-all"
           >
-            {typeof window !== "undefined" ? `${window.location.origin}/t/${computationToken}` : `/t/${computationToken}`}
+            {typeof window !== "undefined" ? `${window.location.origin}/a/${approvalToken}` : `/a/${approvalToken}`}
           </a>
         </div>
       )}
