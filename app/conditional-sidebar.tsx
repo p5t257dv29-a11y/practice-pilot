@@ -19,6 +19,7 @@ const navSections = [
     label: "Clients",
     items: [
       { href: "/clients", label: "Clients", icon: "👥" },
+      { href: "/company-secretarial", label: "Company Secretarial", icon: "📜" },
       { href: "/onboarding", label: "Onboarding", icon: "🚀" },
       { href: "/engagement", label: "Engagement", icon: "📝" },
       { href: "/quotes", label: "Quotes", icon: "📋" },
