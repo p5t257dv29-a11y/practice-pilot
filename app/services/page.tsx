@@ -127,6 +127,9 @@ export default async function ServicesPage({
                     <option>Bookkeeping</option>
                     <option>Management Accounts</option>
                     <option>Companies House Filing</option>
+                    <option>Capital Gains Tax</option>
+                    <option>Partnership Tax</option>
+                    <option>P11D / Benefits in Kind</option>
                   </select>
                   <p className="text-xs text-slate-400 mt-1">
                     When this service is used on a quote and converted to a job, this sets the job's type automatically.
@@ -232,6 +235,9 @@ export default async function ServicesPage({
                               <option>Bookkeeping</option>
                               <option>Management Accounts</option>
                               <option>Companies House Filing</option>
+                    <option>Capital Gains Tax</option>
+                    <option>Partnership Tax</option>
+                    <option>P11D / Benefits in Kind</option>
                             </select>
                           </div>
 

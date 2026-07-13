@@ -315,6 +315,9 @@ export default async function JobDetailPage({
                     <option>Bookkeeping</option>
                     <option>Management Accounts</option>
                     <option>Companies House Filing</option>
+                    <option>Capital Gains Tax</option>
+                    <option>Partnership Tax</option>
+                    <option>P11D / Benefits in Kind</option>
                     <option>Other</option>
                   </select>
                 </div>
