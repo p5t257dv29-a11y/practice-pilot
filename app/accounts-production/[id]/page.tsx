@@ -117,6 +117,10 @@ export default async function TrialBalanceDetailPage({
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               Journals {journals && journals.length > 0 ? `(${journals.length})` : ""} →
             </a>
+            <a href={`/accounts-production/${id}/workpapers`}
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              Workpapers →
+            </a>
             <a href={`/accounts-production/${id}/accounts`}
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               View Draft Accounts →
