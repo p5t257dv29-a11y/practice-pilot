@@ -7,7 +7,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-function getDaysUntil(date: Date): number {
+export function getDaysUntil(date: Date): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const due = new Date(date);
@@ -16,7 +16,7 @@ function getDaysUntil(date: Date): number {
 }
 
 // Finds the next upcoming occurrence of a given month/day (annual recurring date, e.g. 31 Jan)
-function nextAnnualDate(month: number, day: number): Date {
+export function nextAnnualDate(month: number, day: number): Date {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   let candidate = new Date(today.getFullYear(), month, day);
@@ -27,7 +27,7 @@ function nextAnnualDate(month: number, day: number): Date {
 }
 
 // Finds the next upcoming occurrence of a given day-of-month (monthly recurring date, e.g. 22nd)
-function nextMonthlyDate(day: number): Date {
+export function nextMonthlyDate(day: number): Date {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   let candidate = new Date(today.getFullYear(), today.getMonth(), day);
@@ -45,7 +45,7 @@ const VAT_GROUPS: Record<string, number[]> = {
 };
 
 // VAT returns are due 1 month + 7 days after the quarter end
-function nextVatDeadline(staggerGroup: string): Date | null {
+export function nextVatDeadline(staggerGroup: string): Date | null {
   const months = VAT_GROUPS[staggerGroup];
   if (!months) return null;
 
@@ -69,7 +69,7 @@ function nextVatDeadline(staggerGroup: string): Date | null {
   return candidates.find((d) => d >= today) || null;
 }
 
-function getUrgencyColor(days: number) {
+export function getUrgencyColor(days: number) {
   if (days < 0) return {
     bg: "bg-red-50",
     border: "border-red-200",
@@ -100,47 +100,22 @@ function getUrgencyColor(days: number) {
   };
 }
 
-export default async function DeadlinesPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ entity?: string; type?: string }>;
-}) {
-  const { entity, type: typeFilter } = await searchParams;
+export type DeadlineEntry = {
+  client_id: string;
+  client_name: string;
+  company_number: string | null;
+  entity_type: string | null;
+  type: string;
+  due_date: string;
+  days: number;
+};
 
-  const { data: clients, error } = await supabase
-    .from("clients")
-    .select("id, client_name, company_number, entity_type, accounts_next_due, confirmation_statement_next_due, onboarding_status, requires_self_assessment, vat_stagger_group, paye_reference")
-    .order("client_name", { ascending: true });
-
-  if (error) {
-    return (
-      <div className="p-8">
-        <p className="text-red-600">Could not load deadlines: {error.message}</p>
-      </div>
-    );
-  }
-
-  type DeadlineEntry = {
-    client_id: string;
-    client_name: string;
-    company_number: string | null;
-    entity_type: string | null;
-    type: string;
-    due_date: string;
-    days: number;
-  };
-
-  const entityTypes = Array.from(
-    new Set((clients || []).map((c) => c.entity_type).filter(Boolean))
-  ) as string[];
-
-  const relevantClients = entity
-    ? (clients || []).filter((c) => c.entity_type === entity)
-    : (clients || []);
-
+// Builds the full deadline list from a set of clients — shared by this page and
+// the Dashboard, so both always show exactly the same calculation.
+export function computeDeadlines(clients: any[]): DeadlineEntry[] {
   const deadlines: DeadlineEntry[] = [];
 
-  relevantClients.forEach((client) => {
+  clients.forEach((client) => {
     if (client.accounts_next_due) {
       deadlines.push({
         client_id: client.id,
@@ -202,6 +177,39 @@ export default async function DeadlinesPage({
       });
     }
   });
+
+  return deadlines;
+}
+
+export default async function DeadlinesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ entity?: string; type?: string }>;
+}) {
+  const { entity, type: typeFilter } = await searchParams;
+
+  const { data: clients, error } = await supabase
+    .from("clients")
+    .select("id, client_name, company_number, entity_type, accounts_next_due, confirmation_statement_next_due, onboarding_status, requires_self_assessment, vat_stagger_group, paye_reference")
+    .order("client_name", { ascending: true });
+
+  if (error) {
+    return (
+      <div className="p-8">
+        <p className="text-red-600">Could not load deadlines: {error.message}</p>
+      </div>
+    );
+  }
+
+  const entityTypes = Array.from(
+    new Set((clients || []).map((c) => c.entity_type).filter(Boolean))
+  ) as string[];
+
+  const relevantClients = entity
+    ? (clients || []).filter((c) => c.entity_type === entity)
+    : (clients || []);
+
+  const deadlines = computeDeadlines(relevantClients);
 
   const deadlineTypes = Array.from(new Set(deadlines.map((d) => d.type)));
 
