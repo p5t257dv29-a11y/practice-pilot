@@ -47,13 +47,19 @@ export default async function InvoicesPage() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Invoices</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              Manage client invoices. Convert accepted quotes to invoices.
+              Manage client invoices. Raise directly, or convert an accepted quote.
             </p>
           </div>
-          <a href="/quotes"
-            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">
-            Convert Quote →
-          </a>
+          <div className="flex gap-3">
+            <a href="/invoices/new"
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              + New Invoice
+            </a>
+            <a href="/quotes"
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">
+              Convert Quote →
+            </a>
+          </div>
         </div>
 
         {/* Stats */}
@@ -144,11 +150,11 @@ export default async function InvoicesPage() {
               <div className="text-center py-12">
                 <p className="text-slate-500 text-sm">No invoices yet.</p>
                 <p className="text-slate-400 text-xs mt-1">
-                  Convert an accepted quote to create your first invoice.
+                  Raise one directly, or convert an accepted quote.
                 </p>
-                <a href="/quotes"
+                <a href="/invoices/new"
                   className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  Go to Quotes →
+                  + New Invoice
                 </a>
               </div>
             )}

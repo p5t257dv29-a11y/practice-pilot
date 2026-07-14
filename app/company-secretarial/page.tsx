@@ -26,19 +26,32 @@ export const CS_EVENT_TYPES: Record<string, { form: string | null; note?: string
 async function createEvent(formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
-  const num = (key: string) => { const v = get(key); return v ? parseFloat(v) : null; };
 
   const client_id = get("client_id");
   const event_type = get("event_type");
   const event_date = get("event_date");
   if (!client_id || !event_type || !event_date) return;
 
-  const director_name = get("director_name") || null;
+  const officer_id = get("officer_id") || null;
+  let director_name = get("director_name") || null;
+
+  // If an existing officer was picked (e.g. for a resignation), use their real
+  // name and mark the officer record itself inactive — closes the loop rather
+  // than just logging text that drifts from the real record.
+  if (officer_id) {
+    const { data: officer } = await supabase.from("company_officers").select("name").eq("id", officer_id).single();
+    if (officer) director_name = officer.name;
+
+    if (event_type === "Director Resigned") {
+      await supabase.from("company_officers").update({ is_active: false, resigned_on: event_date }).eq("id", officer_id);
+    }
+  }
+
   const shareholder_name = get("shareholder_name") || null;
   const transferred_from = get("transferred_from") || null;
   const share_class = get("share_class") || null;
-  const number_of_shares = num("number_of_shares");
-  const price_per_share = num("price_per_share");
+  const number_of_shares = get("number_of_shares") ? parseFloat(get("number_of_shares")) : null;
+  const price_per_share = get("price_per_share") ? parseFloat(get("price_per_share")) : null;
 
   // Build a readable summary from structured fields when the person hasn't typed
   // their own details, so the register reads well without relying on free text.
@@ -80,6 +93,7 @@ async function createEvent(formData: FormData) {
   }
 
   revalidatePath("/company-secretarial");
+  revalidatePath(`/clients/${client_id}`);
 }
 
 async function toggleFiled(id: string, current: boolean) {
@@ -98,12 +112,14 @@ async function deleteEvent(id: string) {
 }
 
 export default async function CompanySecretarialPage() {
-  const [{ data: events, error }, { data: clients }] = await Promise.all([
+  const [{ data: events, error }, { data: clients }, { data: officers }, { data: shareholdings }] = await Promise.all([
     supabase
       .from("company_secretarial_events")
       .select("*, clients(client_name)")
       .order("event_date", { ascending: false }),
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
+    supabase.from("company_officers").select("id, client_id, name").eq("is_active", true).order("name", { ascending: true }),
+    supabase.from("company_shareholdings").select("id, client_id, shareholder_name").order("shareholder_name", { ascending: true }),
   ]);
 
   const unfiledCount = (events || []).filter((e) => e.companies_house_form && !e.filed).length;
@@ -139,6 +155,8 @@ export default async function CompanySecretarialPage() {
 
           <CompanySecretarialForm
             clients={clients || []}
+            officers={officers || []}
+            shareholdings={shareholdings || []}
             eventTypes={Object.keys(CS_EVENT_TYPES)}
             createAction={createEvent}
           />

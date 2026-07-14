@@ -55,10 +55,20 @@ export default async function ChartOfAccountsPage({
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <h1 className="text-2xl font-bold text-slate-900">Chart of Accounts</h1>
-        <p className="text-sm text-slate-500 mt-0.5">
-          Your practice-wide standard nominal codes. When uploading a trial balance, codes here auto-map to a category — you'll only need to map anything that isn't already listed.
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Chart of Accounts</h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Your practice-wide standard nominal codes. When uploading a trial balance, codes here auto-map to a category — you'll only need to map anything that isn't already listed.
+            </p>
+          </div>
+          <a
+            href="/api/export-chart-of-accounts"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap ml-4"
+          >
+            Export CSV →
+          </a>
+        </div>
       </div>
 
       <div className="p-8">

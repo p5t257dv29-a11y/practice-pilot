@@ -40,7 +40,7 @@ export default async function InvoiceDetailPage({
       .single(),
     supabase
       .from("invoice_lines")
-      .select("*")
+      .select("*, jobs(job_name)")
       .eq("invoice_id", id),
   ]);
 
@@ -138,10 +138,17 @@ export default async function InvoiceDetailPage({
               <tbody className="divide-y divide-slate-50">
                 {(lines || []).map((line) => (
                   <tr key={line.id}>
-                    <td className="py-4 text-sm text-slate-900">{line.description}</td>
-                    <td className="py-4 text-sm text-slate-600 text-right">{line.qty}</td>
-                    <td className="py-4 text-sm text-slate-600 text-right">£{Number(line.price).toFixed(2)}</td>
-                    <td className="py-4 text-sm font-medium text-slate-900 text-right">£{Number(line.line_total).toFixed(2)}</td>
+                    <td className="py-4 text-sm text-slate-900">
+                      {line.description}
+                      {(line.jobs as any)?.job_name && (
+                        <span className="block mt-0.5 text-xs font-medium text-blue-600">
+                          {(line.jobs as any).job_name}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-4 text-sm text-slate-600 text-right align-top">{line.qty}</td>
+                    <td className="py-4 text-sm text-slate-600 text-right align-top">£{Number(line.price).toFixed(2)}</td>
+                    <td className="py-4 text-sm font-medium text-slate-900 text-right align-top">£{Number(line.line_total).toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>
