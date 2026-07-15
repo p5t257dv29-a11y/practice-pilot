@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
   // Section 1 — Company details
   const companyNumber = (client?.company_number || "").padStart(8, "0").slice(0, 8);
   const numberFieldIds = ["Company number 3", "Company number 4", "Company number 5", "Company number 6", "Company number 7", "Company number 8", "Company number 9", "Company number 10"];
-  companyNumber.split("").forEach((digit, i) => setField(numberFieldIds[i], digit));
+  companyNumber.split("").forEach((digit: string, i: number) => setField(numberFieldIds[i], digit));
   setField("Company name 3", client?.client_name || "");
 
   // Section 2 — Allotment date (From Date only, per the form's own guidance for
