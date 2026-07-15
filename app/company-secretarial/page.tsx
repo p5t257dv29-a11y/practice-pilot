@@ -92,6 +92,78 @@ async function createEvent(formData: FormData) {
     await supabase.from("clients").update({ address: get("new_address") }).eq("id", client_id);
   }
 
+  // Company name changes update the client record directly
+  if (event_type === "Company Name Changed" && get("new_company_name")) {
+    await supabase.from("clients").update({ client_name: get("new_company_name") }).eq("id", client_id);
+  }
+
+  // Director appointments create the real officer record, closing the loop the
+  // same way resignations already do
+  if (event_type === "Director Appointed" && director_name) {
+    await supabase.from("company_officers").insert({
+      client_id,
+      name: director_name,
+      role: "director",
+      is_active: true,
+      appointed_on: event_date,
+    });
+  }
+
+  // Share allotments and transfers update the real shareholding records, then
+  // recalculate every shareholder's percentage from the new total shares in issue
+  if ((event_type === "Shares Allotted" || event_type === "Shares Transferred") && number_of_shares) {
+    if (event_type === "Shares Transferred" && transferred_from) {
+      const { data: fromHolding } = await supabase
+        .from("company_shareholdings")
+        .select("*")
+        .eq("client_id", client_id)
+        .eq("shareholder_name", transferred_from)
+        .maybeSingle();
+
+      if (fromHolding) {
+        await supabase.from("company_shareholdings")
+          .update({ num_shares: Math.max(0, Number(fromHolding.num_shares) - number_of_shares) })
+          .eq("id", fromHolding.id);
+      }
+    }
+
+    if (shareholder_name) {
+      const { data: toHolding } = await supabase
+        .from("company_shareholdings")
+        .select("*")
+        .eq("client_id", client_id)
+        .eq("shareholder_name", shareholder_name)
+        .maybeSingle();
+
+      if (toHolding) {
+        await supabase.from("company_shareholdings")
+          .update({ num_shares: Number(toHolding.num_shares) + number_of_shares })
+          .eq("id", toHolding.id);
+      } else {
+        await supabase.from("company_shareholdings").insert({
+          client_id,
+          shareholder_name,
+          share_class: share_class || "Ordinary",
+          num_shares: number_of_shares,
+          percentage: 0, // recalculated immediately below
+        });
+      }
+    }
+
+    // Recalculate every shareholder's percentage from the new total shares in issue
+    const { data: allHoldings } = await supabase.from("company_shareholdings").select("*").eq("client_id", client_id);
+    const totalShares = (allHoldings || []).reduce((s, h) => s + Number(h.num_shares), 0);
+    if (totalShares > 0) {
+      await Promise.all(
+        (allHoldings || []).map((h) =>
+          supabase.from("company_shareholdings")
+            .update({ percentage: Math.round((Number(h.num_shares) / totalShares) * 10000) / 100 })
+            .eq("id", h.id)
+        )
+      );
+    }
+  }
+
   revalidatePath("/company-secretarial");
   revalidatePath(`/clients/${client_id}`);
 }
@@ -186,6 +258,12 @@ export default async function CompanySecretarialPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2 ml-4">
+                    {event.event_type === "Shares Allotted" && (
+                      <a href={`/api/generate-sh01?event_id=${event.id}`}
+                        className="rounded-lg bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors">
+                        Generate SH01 →
+                      </a>
+                    )}
                     {event.companies_house_form && (
                       <form action={toggleFiled.bind(null, event.id, event.filed)}>
                         <button className={`rounded-lg px-3 py-1 text-xs font-semibold transition-colors ${
@@ -212,7 +290,7 @@ export default async function CompanySecretarialPage() {
 
         <div className="mt-6 rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
           <p className="text-xs text-yellow-800">
-            <strong>Record-keeping only — does not file anything.</strong> This logs the event and shows which Companies House form it requires, but doesn't submit to Companies House directly. Registered office changes update the client's address here automatically; director and shareholding changes are recorded here but do not currently sync to the Directors/PSCs/Shareholdings tabs on the client record — update those separately for now.
+            <strong>Record-keeping only — does not file anything.</strong> This logs the event and shows which Companies House form it requires, but doesn't submit to Companies House directly. Registered office and company name changes update the client record automatically; director appointments and resignations update the real Directors record; share allotments and transfers update Shareholdings and recalculate every shareholder's percentage from the new total shares in issue. Director detail changes and PSC changes are recorded here but not yet synced — there aren't structured fields yet to know exactly what changed, so those need updating manually on the client record for now.
           </p>
         </div>
       </div>

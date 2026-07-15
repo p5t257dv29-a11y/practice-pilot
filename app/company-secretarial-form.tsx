@@ -23,6 +23,7 @@ const DIRECTOR_EVENTS = ["Director Appointed", "Director Resigned", "Director De
 const SHARE_ALLOTMENT_EVENTS = ["Shares Allotted"];
 const SHARE_TRANSFER_EVENTS = ["Shares Transferred"];
 const OFFICE_EVENTS = ["Registered Office Changed"];
+const NAME_CHANGE_EVENTS = ["Company Name Changed"];
 
 export default function CompanySecretarialForm({
   clients,
@@ -46,6 +47,7 @@ export default function CompanySecretarialForm({
   const isTransfer = SHARE_TRANSFER_EVENTS.includes(eventType);
   const isShareEvent = isAllotment || isTransfer;
   const isOfficeEvent = OFFICE_EVENTS.includes(eventType);
+  const isNameChangeEvent = NAME_CHANGE_EVENTS.includes(eventType);
 
   const clientOfficers = officers.filter((o) => o.client_id === clientId);
   const clientShareholders = shareholdings.filter((s) => s.client_id === clientId);
@@ -132,6 +134,19 @@ export default function CompanySecretarialForm({
         </div>
       )}
 
+      {/* Company name field */}
+      {isNameChangeEvent && (
+        <div className="md:col-span-2 rounded-xl border border-slate-100 p-4 bg-slate-50">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Company Name</p>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">New Company Name *</label>
+            <input name="new_company_name" required
+              className="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400"
+              placeholder="Updates the client record automatically" />
+          </div>
+        </div>
+      )}
+
       {/* Share fields */}
       {isShareEvent && (
         <div className="md:col-span-2 rounded-xl border border-slate-100 p-4 bg-slate-50">
@@ -193,11 +208,11 @@ export default function CompanySecretarialForm({
 
       <div className="md:col-span-2">
         <label className="block text-sm font-medium text-slate-700 mb-1">
-          {isDirectorEvent || isShareEvent || isOfficeEvent ? "Additional Notes" : "Details *"}
+          {isDirectorEvent || isShareEvent || isOfficeEvent || isNameChangeEvent ? "Additional Notes" : "Details *"}
         </label>
-        <textarea name="details" required={!isDirectorEvent && !isShareEvent && !isOfficeEvent} rows={2}
+        <textarea name="details" required={!isDirectorEvent && !isShareEvent && !isOfficeEvent && !isNameChangeEvent} rows={2}
           className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-          placeholder={isDirectorEvent || isShareEvent || isOfficeEvent ? "Anything else worth noting" : "e.g. PSC ceased to have significant control"} />
+          placeholder={isDirectorEvent || isShareEvent || isOfficeEvent || isNameChangeEvent ? "Anything else worth noting" : "e.g. PSC ceased to have significant control"} />
       </div>
 
       <div>
