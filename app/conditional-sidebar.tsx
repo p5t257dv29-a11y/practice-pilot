@@ -20,6 +20,7 @@ const navSections = [
     items: [
       { href: "/clients", label: "Clients", icon: "👥" },
       { href: "/company-secretarial", label: "Company Secretarial", icon: "📜" },
+      { href: "/communications", label: "Communications", icon: "📬" },
       { href: "/onboarding", label: "Onboarding", icon: "🚀" },
       { href: "/engagement", label: "Engagement", icon: "📝" },
       { href: "/quotes", label: "Quotes", icon: "📋" },
@@ -33,6 +34,7 @@ const navSections = [
       { href: "/accounts-production", label: "Accounts Production", icon: "📊" },
       { href: "/fixed-assets", label: "Fixed Assets", icon: "🏭" },
       { href: "/corporation-tax", label: "Corporation Tax", icon: "🏢" },
+      { href: "/directors-loan-account", label: "Director's Loan & S455", icon: "💳" },
       { href: "/capital-gains", label: "Capital Gains", icon: "📈" },
       { href: "/tax", label: "Personal Tax", icon: "🧮" },
       { href: "/partnership-tax", label: "Partnership Tax", icon: "🤝" },

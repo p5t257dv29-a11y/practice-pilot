@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { calculateCorporationTax, applyLossRelief } from "../../page";
 import { calculateCapitalAllowances } from "../../../fixed-assets/capital-allowances/page";
+import { calculateS455 } from "../../../directors-loan-account/page";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,22 @@ export default async function CT600SummaryPage({
     periodEnd: comp.period_end,
     associatedCompanies: comp.associated_companies,
   });
+
+  const { data: linkedDLAs } = await supabase
+    .from("directors_loan_accounts")
+    .select("*")
+    .eq("corporation_tax_id", id);
+
+  const dlaResults = (linkedDLAs || []).map((dla) => ({
+    dla,
+    result: calculateS455({
+      closingBalance: Number(dla.closing_balance),
+      periodEnd: dla.period_end,
+      repaidByDueDate: dla.repaid_by_due_date,
+      s455Rate: Number(dla.s455_rate),
+    }),
+  }));
+  const totalS455 = dlaResults.reduce((s, r) => s + r.result.s455Due, 0);
 
   const client = comp.clients as any;
   const fmt = (n: number) => n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -178,6 +195,30 @@ export default async function CT600SummaryPage({
             <Box number="275" label="Group relief" value="£0.00" note="Not applicable — assumed standalone company" />
           </div>
 
+          {dlaResults.length > 0 && (
+            <div className="p-6 border-b border-slate-100 bg-slate-50">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
+                Supplementary Page CT600A — Loans to Participators (not official box numbers — see workings)
+              </p>
+              {dlaResults.map(({ dla, result }) => (
+                <div key={dla.id} className="flex items-start justify-between border-b border-slate-100 py-2.5 gap-4">
+                  <div>
+                    <p className="text-sm text-slate-700">{dla.director_name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Closing balance £{fmt(Number(dla.closing_balance))} at {dla.s455_rate}%
+                      {result.s455Due === 0 && result.isOverdrawn && " — cleared within 9 months and 1 day, no charge"}
+                    </p>
+                  </div>
+                  <span className="text-sm font-mono font-semibold text-slate-900 flex-shrink-0">£{fmt(result.s455Due)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between pt-2 mt-1 font-bold text-base">
+                <span>Total S455 Chargeable</span>
+                <span>£{fmt(totalS455)}</span>
+              </div>
+            </div>
+          )}
+
           {/* Total profits */}
           <div className="p-6 border-b border-slate-100">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Profits Chargeable to Corporation Tax</p>
@@ -216,11 +257,14 @@ export default async function CT600SummaryPage({
           <div className="p-6">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Tax Payable and Reconciliation</p>
             <Box number="515" label="Tax chargeable" value={`£${fmt(ct.corporationTax)}`} />
+            {totalS455 > 0 && (
+              <Box number="—" label="S455 tax on loans to participators (CT600A)" value={`£${fmt(totalS455)}`} />
+            )}
             <Box number="—" label="Payments already made on account" value={`£${fmt(Number(comp.tax_paid_on_account || 0))}`}
               note="Enter any instalment payments already made, if applicable" />
             <div className="flex justify-between border-t border-slate-200 pt-3 mt-2 font-bold text-base">
-              <span>{ct.corporationTax - Number(comp.tax_paid_on_account || 0) >= 0 ? "Balance Due" : "Overpaid"}</span>
-              <span>£{fmt(Math.abs(ct.corporationTax - Number(comp.tax_paid_on_account || 0)))}</span>
+              <span>{(ct.corporationTax + totalS455) - Number(comp.tax_paid_on_account || 0) >= 0 ? "Balance Due" : "Overpaid"}</span>
+              <span>£{fmt(Math.abs((ct.corporationTax + totalS455) - Number(comp.tax_paid_on_account || 0)))}</span>
             </div>
             <p className="text-xs text-slate-400 mt-2">
               Due nine months and one day after the end of the accounting period (or by instalments for large companies).

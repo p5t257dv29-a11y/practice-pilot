@@ -3,6 +3,8 @@ import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import { calculateCorporationTax, applyLossRelief } from "../page";
 import { calculateCapitalAllowances } from "../../fixed-assets/capital-allowances/page";
+import { calculateS455 } from "../../directors-loan-account/page";
+import SendCTButton from "../../send-ct-button";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +48,7 @@ export default async function CorporationTaxDetailPage({
 
   const { data: comp, error } = await supabase
     .from("corporation_tax_computations")
-    .select("*, clients(client_name, company_number, corporation_tax_reference), jobs(job_name)")
+    .select("*, clients(client_name, company_number, corporation_tax_reference, email), jobs(job_name)")
     .eq("id", id)
     .single();
 
@@ -62,6 +64,22 @@ export default async function CorporationTaxDetailPage({
     .select("id, job_name")
     .eq("client_id", comp.client_id)
     .order("job_name", { ascending: true });
+
+  const { data: linkedDLAs } = await supabase
+    .from("directors_loan_accounts")
+    .select("*")
+    .eq("corporation_tax_id", id);
+
+  const dlaResults = (linkedDLAs || []).map((dla) => ({
+    dla,
+    result: calculateS455({
+      closingBalance: Number(dla.closing_balance),
+      periodEnd: dla.period_end,
+      repaidByDueDate: dla.repaid_by_due_date,
+      s455Rate: Number(dla.s455_rate),
+    }),
+  }));
+  const totalS455 = dlaResults.reduce((s, r) => s + r.result.s455Due, 0);
 
   const ca = calculateCapitalAllowances({
     assets: assets || [],
@@ -250,6 +268,30 @@ export default async function CorporationTaxDetailPage({
             </div>
           </div>
 
+          {dlaResults.length > 0 && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">S455 — Loans to Participators</h2>
+                <a href="/directors-loan-account" className="text-xs font-semibold text-blue-600 hover:underline">Manage DLA records →</a>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Linked from the Director's Loan Account tracker.</p>
+              <div className="mt-4 space-y-2 text-sm">
+                {dlaResults.map(({ dla, result }) => (
+                  <div key={dla.id} className="flex justify-between">
+                    <span className="text-slate-500">
+                      {dla.director_name} {result.s455Due === 0 && result.isOverdrawn ? "(cleared in time)" : ""}
+                    </span>
+                    <span className="font-medium">{fmt(result.s455Due)}</span>
+                  </div>
+                ))}
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
+                  <span>Total S455 Charge</span>
+                  <span>{fmt(totalS455)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {comp.notes && (
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Notes</h2>
@@ -261,8 +303,14 @@ export default async function CorporationTaxDetailPage({
         {/* Right column */}
         <div className="space-y-6">
           <div className="rounded-2xl bg-slate-900 p-6 shadow-sm text-white">
-            <h2 className="text-lg font-bold">Corporation Tax Due</h2>
-            <p className="mt-4 text-3xl font-bold">{fmt(ct.corporationTax)}</p>
+            <h2 className="text-lg font-bold">Total Tax Payable</h2>
+            <p className="mt-4 text-3xl font-bold">{fmt(ct.corporationTax + totalS455)}</p>
+            <div className="mt-3 space-y-1 text-sm text-slate-300 border-t border-slate-700 pt-3">
+              <div className="flex justify-between"><span>Corporation Tax</span><span>{fmt(ct.corporationTax)}</span></div>
+              {totalS455 > 0 && (
+                <div className="flex justify-between"><span>S455 (Loans to Participators)</span><span>{fmt(totalS455)}</span></div>
+              )}
+            </div>
             <p className="mt-1 text-sm text-slate-300">{ct.band} · {(ct.effectiveRate * 100).toFixed(2)}% effective</p>
             <p className="mt-4 text-xs text-slate-400">
               Due nine months and one day after the end of the accounting period.
@@ -273,6 +321,21 @@ export default async function CorporationTaxDetailPage({
             <p className="text-xs text-yellow-800">
               Uses 2026/27 Corporation Tax rates. Marginal relief assumes augmented profits equal taxable profits (no exempt group dividends). Doesn't yet account for R&D reliefs, group relief, or ring-fence profits. Always verify before filing.
             </p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Send to Client</h2>
+            <p className="text-sm text-slate-500 mt-0.5">Send this computation by email for digital approval.</p>
+            <div className="mt-4">
+              <SendCTButton
+                computationId={id}
+                defaultEmail={comp.client_email || (comp.clients as any)?.email || ""}
+                computationToken={comp.token}
+                status={comp.status}
+                approvedAt={comp.approved_at}
+                queriedAt={comp.queried_at}
+              />
+            </div>
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
