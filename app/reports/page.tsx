@@ -13,6 +13,7 @@ export default async function ReportsPage() {
     { data: jobs },
     { data: entries },
     { data: invoices },
+    { data: writeoffs },
   ] = await Promise.all([
     supabase
       .from("jobs")
@@ -23,6 +24,9 @@ export default async function ReportsPage() {
       .select("*"),
     supabase
       .from("invoices")
+      .select("*"),
+    supabase
+      .from("wip_writeoffs")
       .select("*"),
   ]);
 
@@ -37,7 +41,11 @@ export default async function ReportsPage() {
     const jobInvoices = (invoices || []).filter(i => i.job_id === job.id);
     const invoicedAmount = jobInvoices.reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
     const paidAmount = jobInvoices.filter(i => i.status === "Paid").reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
-    const wip = chargeOutValue - invoicedAmount;
+
+    const jobWriteoffs = (writeoffs || []).filter(w => w.job_id === job.id);
+    const writtenOffAmount = jobWriteoffs.reduce((sum, w) => sum + Number(w.amount), 0);
+
+    const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
     const overBudget = invoicedAmount > 0 && chargeOutValue > invoicedAmount;
 
     return {
@@ -47,15 +55,17 @@ export default async function ReportsPage() {
       chargeOutValue,
       invoicedAmount,
       paidAmount,
+      writtenOffAmount,
       wip: Math.max(wip, 0),
       overBudget,
     };
-  }).filter(d => d.totalHours > 0 || d.invoicedAmount > 0);
+  }).filter(d => d.totalHours > 0 || d.invoicedAmount > 0 || d.writtenOffAmount > 0);
 
   // Practice-wide stats
   const totalWIP = wipData.reduce((sum, d) => sum + d.wip, 0);
   const totalInvoiced = wipData.reduce((sum, d) => sum + d.invoicedAmount, 0);
   const totalPaid = wipData.reduce((sum, d) => sum + d.paidAmount, 0);
+  const totalWrittenOff = wipData.reduce((sum, d) => sum + d.writtenOffAmount, 0);
   const totalBillableHours = (entries || []).filter(e => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
   const totalNonBillableHours = (entries || []).filter(e => !e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
   const totalHoursAll = totalBillableHours + totalNonBillableHours;
@@ -63,17 +73,18 @@ export default async function ReportsPage() {
   const overBudgetJobs = wipData.filter(d => d.overBudget).length;
 
   // Top clients by WIP
-  const clientWIP: Record<string, { name: string; wip: number; invoiced: number; paid: number; hours: number }> = {};
+  const clientWIP: Record<string, { name: string; wip: number; invoiced: number; paid: number; hours: number; writtenOff: number }> = {};
   wipData.forEach(d => {
     const clientId = d.job.client_id;
     const clientName = d.job.clients?.client_name || "Unknown";
     if (!clientWIP[clientId]) {
-      clientWIP[clientId] = { name: clientName, wip: 0, invoiced: 0, paid: 0, hours: 0 };
+      clientWIP[clientId] = { name: clientName, wip: 0, invoiced: 0, paid: 0, hours: 0, writtenOff: 0 };
     }
     clientWIP[clientId]!.wip += d.wip;
     clientWIP[clientId]!.invoiced += d.invoicedAmount;
     clientWIP[clientId]!.paid += d.paidAmount;
     clientWIP[clientId]!.hours += d.totalHours;
+    clientWIP[clientId]!.writtenOff += d.writtenOffAmount;
   });
 
   const topClients = Object.values(clientWIP)
@@ -96,7 +107,7 @@ export default async function ReportsPage() {
       <div className="p-8 space-y-8">
 
         {/* Practice Overview */}
-        <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-6 lg:grid-cols-5">
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <p className="text-sm font-medium text-slate-500">Total WIP</p>
             <p className="mt-2 text-3xl font-bold text-slate-900">£{totalWIP.toFixed(2)}</p>
@@ -113,6 +124,12 @@ export default async function ReportsPage() {
             <p className="text-sm font-medium text-slate-500">Total Paid</p>
             <p className="mt-2 text-3xl font-bold text-green-600">£{totalPaid.toFixed(2)}</p>
             <p className="mt-1 text-xs text-slate-400">Cash received</p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <p className="text-sm font-medium text-slate-500">Written Off</p>
+            <p className="mt-2 text-3xl font-bold text-slate-500">£{totalWrittenOff.toFixed(2)}</p>
+            <p className="mt-1 text-xs text-slate-400">WIP not being billed</p>
           </div>
 
           <div className={`rounded-2xl p-6 shadow-sm ${overBudgetJobs > 0 ? "bg-red-50 border border-red-100" : "bg-white border border-slate-100"}`}>
@@ -140,17 +157,18 @@ export default async function ReportsPage() {
               ) : (
                 <div className="space-y-4">
                   {/* Table header */}
-                  <div className="grid grid-cols-5 gap-2 text-xs font-semibold text-slate-500 uppercase tracking-wider px-4">
+                  <div className="grid grid-cols-6 gap-2 text-xs font-semibold text-slate-500 uppercase tracking-wider px-4">
                     <div className="col-span-2">Job / Client</div>
                     <div className="text-right">Time Value</div>
                     <div className="text-right">Invoiced</div>
+                    <div className="text-right">Written Off</div>
                     <div className="text-right">WIP</div>
                   </div>
 
                   {wipData.map((d) => (
                     <div key={d.job.id}
                       className={`rounded-xl border p-4 ${d.overBudget ? "border-red-200 bg-red-50" : "border-slate-100"}`}>
-                      <div className="grid grid-cols-5 gap-2 items-center">
+                      <div className="grid grid-cols-6 gap-2 items-center">
                         <div className="col-span-2">
                           <div className="flex items-center gap-2">
                             <Link href={`/jobs/${d.job.id}`}
@@ -186,6 +204,12 @@ export default async function ReportsPage() {
                         </div>
 
                         <div className="text-right">
+                          <p className="text-sm text-slate-500">
+                            {d.writtenOffAmount > 0 ? `£${d.writtenOffAmount.toFixed(2)}` : "—"}
+                          </p>
+                        </div>
+
+                        <div className="text-right">
                           <p className={`font-bold text-sm ${d.wip > 0 ? "text-orange-600" : "text-green-600"}`}>
                             £{d.wip.toFixed(2)}
                           </p>
@@ -197,7 +221,7 @@ export default async function ReportsPage() {
 
                   {/* Totals row */}
                   <div className="rounded-xl bg-slate-50 border border-slate-200 p-4">
-                    <div className="grid grid-cols-5 gap-2 items-center">
+                    <div className="grid grid-cols-6 gap-2 items-center">
                       <div className="col-span-2">
                         <p className="font-bold text-slate-900 text-sm">Totals</p>
                       </div>
@@ -208,6 +232,9 @@ export default async function ReportsPage() {
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-900 text-sm">£{totalInvoiced.toFixed(2)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-slate-500 text-sm">£{totalWrittenOff.toFixed(2)}</p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-orange-600 text-sm">£{totalWIP.toFixed(2)}</p>
@@ -242,6 +269,9 @@ export default async function ReportsPage() {
                       </div>
                       {client.paid > 0 && (
                         <p className="text-xs text-green-600">Paid: £{client.paid.toFixed(2)}</p>
+                      )}
+                      {client.writtenOff > 0 && (
+                        <p className="text-xs text-slate-400">Written off: £{client.writtenOff.toFixed(2)}</p>
                       )}
                     </div>
                   ))}

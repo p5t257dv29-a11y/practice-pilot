@@ -55,6 +55,12 @@ export default function SendCTButton({
   const fmtDateTime = (iso: string) =>
     `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 
+  // Relative fallback used for the very first render (server + client-before-mount)
+  // so the two never disagree. Upgrades to the full origin once mounted.
+  const previouslySentUrl = computationToken
+    ? computationUrl || `/ct/${computationToken}`
+    : null;
+
   return (
     <div className="space-y-3">
       {status === "Approved" && approvedAt && (
@@ -114,16 +120,16 @@ export default function SendCTButton({
         </div>
       )}
 
-      {computationToken && sendStatus === "idle" && (
+      {computationToken && sendStatus === "idle" && previouslySentUrl && (
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
           <p className="text-xs text-slate-500 mb-1">Previously sent — client link:</p>
           <a
-            href={`/ct/${computationToken}`}
+            href={previouslySentUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-blue-600 hover:underline break-all"
           >
-            {typeof window !== "undefined" ? `${window.location.origin}/ct/${computationToken}` : `/ct/${computationToken}`}
+            {previouslySentUrl}
           </a>
         </div>
       )}

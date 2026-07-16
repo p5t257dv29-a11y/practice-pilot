@@ -71,6 +71,12 @@ export default async function OnboardingDetailPage({
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
   const clientFormUrl = `${baseUrl}/onboard/${request.token}`;
 
+  const letterDate = new Date().toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
   const completedItems = [
     request.id_received,
     request.prev_accounts_received,
@@ -175,7 +181,7 @@ export default async function OnboardingDetailPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Professional Clearance Letter</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              Request professional clearance from the previous accountant.
+              Comprehensive handover request sent to the previous accountant.
             </p>
 
             {request.prev_accountant_firm ? (
@@ -191,36 +197,131 @@ export default async function OnboardingDetailPage({
                 </div>
 
                 {/* Letter preview */}
-                <div className="mt-4 rounded-xl border border-slate-200 p-5 text-sm text-slate-700 leading-relaxed bg-white">
-                  <p className="font-bold text-slate-900 mb-4">Professional Clearance Request</p>
+                <div className="mt-4 rounded-xl border border-slate-200 p-5 text-sm text-slate-700 leading-relaxed bg-white max-h-[600px] overflow-y-auto">
+                  <p className="text-xs text-slate-400 mb-4">{letterDate}</p>
+
+                  <p className="font-bold text-slate-900 mb-4">
+                    Professional Clearance and Handover Request — {request.clients?.client_name}
+                  </p>
+
                   <p>Dear {request.prev_accountant_name || "Sir/Madam"},</p>
                   <br />
                   <p>
-                    We write to inform you that <strong>{request.clients?.client_name}</strong> has
-                    appointed E&P Accountancy Services Limited as their accountants and tax advisers
-                    with effect from the current date.
+                    We write to inform you that <strong>{request.clients?.client_name}</strong> (&quot;the
+                    Company/Client&quot;) has appointed E&amp;P Accountancy Services Limited as accountants and
+                    tax advisers with effect from the current date. We understand that your firm has acted
+                    as accountants and/or tax advisers to the Client up to this point.
                   </p>
                   <br />
                   <p>
-                    We would be grateful if you could confirm that there are no professional reasons
-                    why we should not accept this appointment, and provide us with the following
-                    information:
+                    In accordance with our professional body&apos;s ethical guidance, we would be grateful if
+                    you could confirm in writing that there are no professional or other reasons why we
+                    should not accept this appointment. We enclose/attach a copy of the Client&apos;s letter of
+                    authority confirming that you are released from your duty of confidentiality for the
+                    purposes of responding to this letter.
                   </p>
                   <br />
+                  <p>
+                    Once clearance is confirmed, and subject to any lien you may hold over the records
+                    pending settlement of outstanding fees (please let us know if this applies, and the
+                    amount outstanding), we would be grateful for the following information and
+                    documentation to enable an orderly handover:
+                  </p>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">1. Outstanding fees and lien</p>
                   <ul className="list-disc pl-5 space-y-1">
-                    <li>Copies of the last three years' accounts and tax returns</li>
-                    <li>Details of any outstanding matters with HMRC</li>
-                    <li>Any other information relevant to the client's tax affairs</li>
+                    <li>Confirmation of any fees owed by the Client and whether these remain outstanding.</li>
+                    <li>Confirmation of whether you intend to exercise a lien over any of the Client&apos;s books, records, or documents pending payment.</li>
                   </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">2. Accounts and corporation tax</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Copies of the last three years&apos; filed statutory accounts (or since incorporation/appointment if shorter).</li>
+                    <li>Copies of the last three years&apos; corporation tax computations, CT600 returns, and HMRC iXBRL-tagged accounts as filed.</li>
+                    <li>Working papers, trial balances, and journals supporting the most recently filed accounts and tax computations.</li>
+                    <li>Fixed asset register / capital allowances pools and computations, including any qualifying expenditure not yet claimed.</li>
+                    <li>Details of any losses carried forward and their originating periods.</li>
+                    <li>Details of any deferred tax balances and their calculation basis.</li>
+                    <li>Directors&apos; loan account / DLA balances and movements, including any S455 tax paid or reclaimable.</li>
+                    <li>Dividend vouchers and board minutes for dividends declared in the current and prior accounting periods.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">3. VAT</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>VAT registration certificate and VAT registration number.</li>
+                    <li>Copies of VAT returns for the last three years, together with supporting workings.</li>
+                    <li>Details of the VAT scheme used (standard, flat rate, cash accounting, annual accounting, etc.).</li>
+                    <li>Confirmation of Making Tax Digital (MTD) compliance status, including software/bridging solution used and digital links in place.</li>
+                    <li>Details of any partial exemption method, capital goods scheme items, or EC/overseas transactions.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">4. Payroll, CIS and pensions</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Payroll records for the current and prior tax year, including RTI submission history (FPS/EPS).</li>
+                    <li>HMRC payroll (PAYE) reference and Accounts Office reference.</li>
+                    <li>Copies of the most recent P60s, and any P11Ds/P11D(b) submitted, for all employees and directors.</li>
+                    <li>Auto-enrolment pension details: provider, staging/duties start date, contribution rates, and next re-enrolment date.</li>
+                    <li>If the Client engages subcontractors: CIS scheme details, contractor/subcontractor status, and CIS return history.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">5. HMRC references and agent authorisation</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Unique Taxpayer Reference (UTR) — corporate and, where relevant, personal.</li>
+                    <li>VAT registration number, PAYE reference, and Accounts Office reference (if not already provided above).</li>
+                    <li>Confirmation that you will remove/deauthorise your firm as agent on HMRC&apos;s systems (Government Gateway / Agent Services Account) once we are authorised, or confirmation of the taxes/services for which you currently hold authorisation.</li>
+                    <li>Details of any HMRC online services enrolments relevant to the Client that we should be aware of.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">6. HMRC enquiries, disputes and correspondence</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Details of any current or recent HMRC enquiries, compliance checks, or disputes, including correspondence reference numbers.</li>
+                    <li>Copies of any outstanding or unresolved correspondence with HMRC or Companies House.</li>
+                    <li>Details of any time-to-pay arrangements, penalties, or interest currently outstanding.</li>
+                    <li>Confirmation of any elections, claims, or disclaimers made on the Client&apos;s behalf that remain in effect (e.g. capital allowances disclaimers, R&amp;D claims, group relief elections).</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">7. Companies House and statutory records</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Companies House authentication code (or confirmation that this has been reset/is held by the Client).</li>
+                    <li>Copies of statutory registers (members, directors, PSC, share allotments/transfers) if maintained by your firm.</li>
+                    <li>Confirmation of the date of the last confirmation statement filed and any outstanding filings.</li>
+                    <li>Details of any charges registered against the Company.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">8. Bookkeeping and software access</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Name of bookkeeping/accounting software used and confirmation of how administrator access will be transferred — we would ask that this be actioned via the software provider&apos;s own organisation-transfer process rather than by sharing login credentials directly.</li>
+                    <li>Export or access to the full transaction history and chart of accounts, where the subscription will not be transferred.</li>
+                    <li>Details of any linked apps, bank feeds, or add-ons in use.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">9. Anti-money laundering and client due diligence</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Confirmation of the identification and verification documents held on file, so that we can assess whether further due diligence is required.</li>
+                  </ul>
+
+                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">10. Related parties and other engagements</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Details of any related entities, group companies, or connected persons for which your firm also acts, where relevant to the Client&apos;s tax affairs.</li>
+                    <li>Confirmation of any other services provided to the Client and the status of those engagements.</li>
+                    <li>Any other information you consider relevant to the proper conduct of the Client&apos;s tax and accounting affairs going forward.</li>
+                  </ul>
+
                   <br />
                   <p>
-                    We would appreciate your response within 21 days. Please do not hesitate to
-                    contact us if you require any further information.
+                    We would be grateful for your professional clearance response and the above
+                    information within 21 days of the date of this letter. If any of the above will take
+                    longer to compile, please let us know so that we can agree a reasonable timetable.
+                  </p>
+                  <br />
+                  <p>
+                    Please do not hesitate to contact us if you require any further information, or if
+                    you would find it helpful to discuss the handover directly.
                   </p>
                   <br />
                   <p>Yours faithfully,</p>
                   <br />
-                  <p className="font-semibold">E&P Accountancy Services Limited</p>
+                  <p className="font-semibold">E&amp;P Accountancy Services Limited</p>
                 </div>
 
                 <div className="mt-4 flex gap-3">

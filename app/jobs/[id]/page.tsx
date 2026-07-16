@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
+import WriteOffWipForm from "../../write-off-wip-form";
 
 export const dynamic = "force-dynamic";
 
@@ -146,6 +147,8 @@ export default async function JobDetailPage({
     { data: staff },
     { data: timeEntries },
     { data: trialBalance },
+    { data: invoices },
+    { data: writeoffs },
   ] = await Promise.all([
     supabase
       .from("jobs")
@@ -182,6 +185,15 @@ export default async function JobDetailPage({
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase
+      .from("invoices")
+      .select("subtotal, status")
+      .eq("job_id", id),
+    supabase
+      .from("wip_writeoffs")
+      .select("*")
+      .eq("job_id", id)
+      .order("created_at", { ascending: false }),
   ]);
 
   if (error || !job) notFound();
@@ -194,6 +206,11 @@ export default async function JobDetailPage({
   const totalHours = (timeEntries || []).reduce((sum, e) => sum + Number(e.hours), 0);
   const billableHours = (timeEntries || []).filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
   const chargeOutValue = (timeEntries || []).filter((e) => e.billable).reduce((sum, e) => sum + (Number(e.hours) * Number(e.hourly_rate)), 0);
+
+  // WIP for this job: charge-out value less what's been invoiced and what's already been written off
+  const invoicedAmount = (invoices || []).reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
+  const writtenOffAmount = (writeoffs || []).reduce((sum, w) => sum + Number(w.amount), 0);
+  const currentWip = Math.max(chargeOutValue - invoicedAmount - writtenOffAmount, 0);
 
   // Where the Accounts Production link should go: straight to the existing
   // trial balance if one's linked to this job, otherwise the job-first upload screen
@@ -476,7 +493,7 @@ export default async function JobDetailPage({
         {/* Right column — checklist + time logged */}
         <div className="space-y-6">
 
-          {/* Time Logged */}
+          {/* Time Logged / WIP */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">Time Logged</h2>
@@ -517,6 +534,42 @@ export default async function JobDetailPage({
             ) : (
               <p className="mt-4 text-sm text-slate-400 text-center py-2">No time logged against this job yet.</p>
             )}
+
+            {/* WIP summary + write-off */}
+            <div className="mt-5 border-t border-slate-100 pt-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-900">Current WIP</p>
+                <p className={`text-sm font-bold ${currentWip > 0 ? "text-orange-600" : "text-green-600"}`}>
+                  £{currentWip.toFixed(2)}
+                </p>
+              </div>
+              {invoicedAmount > 0 && (
+                <p className="text-xs text-slate-500">Invoiced to date: £{invoicedAmount.toFixed(2)}</p>
+              )}
+              {writtenOffAmount > 0 && (
+                <p className="text-xs text-slate-500">Written off to date: £{writtenOffAmount.toFixed(2)}</p>
+              )}
+
+              <WriteOffWipForm jobId={id} currentWip={currentWip} />
+
+              {writeoffs && writeoffs.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Write-off history</p>
+                  {writeoffs.map((w) => (
+                    <div key={w.id} className="rounded-lg border border-slate-100 p-2.5">
+                      <div className="flex items-start justify-between">
+                        <p className="text-xs font-semibold text-slate-700">{w.reason_category}</p>
+                        <p className="text-xs font-bold text-slate-900">£{Number(w.amount).toFixed(2)}</p>
+                      </div>
+                      {w.notes && <p className="text-xs text-slate-500 mt-0.5">{w.notes}</p>}
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {new Date(w.created_at).toLocaleDateString("en-GB")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
