@@ -178,23 +178,23 @@ export default async function QuoteDetailPage({
   const { id } = await params;
   const { edit_line } = await searchParams;
 
+  const { data: quote, error } = await supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single();
+
+  if (error || !quote) notFound();
+
   const [
-    { data: quote, error },
     { data: lines },
     { data: services },
     { data: jobs },
     { data: engagementLetter },
     { data: clients },
   ] = await Promise.all([
-    supabase.from("quotes").select("*, clients(client_name, email)").eq("id", id).single(),
     supabase.from("quote_lines").select("*, services(service_name)").eq("quote_id", id),
     supabase.from("services").select("*").eq("is_active", true).order("service_name", { ascending: true }),
-    supabase.from("jobs").select("id, job_name").order("job_name", { ascending: true }),
+    supabase.from("jobs").select("id, job_name").eq("client_id", quote.client_id).order("job_name", { ascending: true }),
     supabase.from("engagement_letters").select("id, status").eq("quote_id", id).maybeSingle(),
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
   ]);
-
-  if (error || !quote) notFound();
 
   const updateWithId = updateQuote.bind(null, id);
   const addLineWithId = addLineItem.bind(null, id);
@@ -437,6 +437,7 @@ export default async function QuoteDetailPage({
                 total={Number(quote.total || 0)}
                 status={quote.status}
                 jobs={jobs || []}
+                quoteLines={(lines || []).map((l) => ({ id: l.id, description: l.description }))}
               />
             </div>
           </div>

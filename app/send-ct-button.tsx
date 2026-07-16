@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export default function SendCTButton({
   computationId,
@@ -19,9 +19,13 @@ export default function SendCTButton({
 }) {
   const [email, setEmail] = useState(defaultEmail);
   const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [computationUrl, setComputationUrl] = useState<string | null>(
-    computationToken ? `${window.location.origin}/ct/${computationToken}` : null
-  );
+  const [computationUrl, setComputationUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (computationToken) {
+      setComputationUrl(`${window.location.origin}/ct/${computationToken}`);
+    }
+  }, [computationToken]);
 
   const handleSend = async () => {
     if (!email) return;

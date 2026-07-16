@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export default function SendAccountsButton({
   trialBalanceId,
@@ -21,9 +21,13 @@ export default function SendAccountsButton({
 }) {
   const [email, setEmail] = useState(defaultEmail);
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [accountsUrl, setAccountsUrl] = useState<string | null>(
-    approvalToken ? `${window.location.origin}/a/${approvalToken}` : null
-  );
+  const [accountsUrl, setAccountsUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (approvalToken) {
+      setAccountsUrl(`${window.location.origin}/a/${approvalToken}`);
+    }
+  }, [approvalToken]);
 
   const handleSend = async () => {
     if (!email) return;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export default function SendQuoteButton({
   quoteId,
@@ -13,9 +13,13 @@ export default function SendQuoteButton({
 }) {
   const [email, setEmail] = useState(defaultEmail);
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [quoteUrl, setQuoteUrl] = useState<string | null>(
-    quoteToken ? `${window.location.origin}/q/${quoteToken}` : null
-  );
+  const [quoteUrl, setQuoteUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (quoteToken) {
+      setQuoteUrl(`${window.location.origin}/q/${quoteToken}`);
+    }
+  }, [quoteToken]);
 
   const handleSend = async () => {
     if (!email) return;
@@ -91,14 +95,18 @@ export default function SendQuoteButton({
       {quoteToken && status === "idle" && (
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
           <p className="text-xs text-slate-500 mb-1">Previously sent — client link:</p>
-          <a
-            href={`/q/${quoteToken}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-600 hover:underline break-all"
-          >
-            {typeof window !== "undefined" ? `${window.location.origin}/q/${quoteToken}` : `/q/${quoteToken}`}
-          </a>
+          {quoteUrl ? (
+            <a
+              href={quoteUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-600 hover:underline break-all"
+            >
+              {quoteUrl}
+            </a>
+          ) : (
+            <p className="text-xs text-slate-400">/q/{quoteToken}</p>
+          )}
         </div>
       )}
     </div>

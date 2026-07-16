@@ -9,7 +9,7 @@ const supabase = createClient(
 
 type CommEntry = {
   key: string;
-  type: "Personal Tax" | "Accounts" | "Corporation Tax";
+  type: "Personal Tax" | "Accounts" | "Corporation Tax" | "Quote";
   label: string;
   client_name: string;
   status: string;
@@ -27,7 +27,10 @@ export default async function CommunicationsPage({
 }) {
   const { status: statusFilter, type: typeFilter } = await searchParams;
 
-  const [{ data: taxComps }, { data: accounts }, { data: ctComps }] = await Promise.all([
+  const { data: settings } = await supabase.from("app_settings").select("*").eq("id", 1).maybeSingle();
+  const lastViewedAt = settings?.communications_last_viewed_at || null;
+
+  const [{ data: taxComps }, { data: accounts }, { data: ctComps }, { data: quotes }] = await Promise.all([
     supabase
       .from("tax_computations")
       .select("id, tax_year, status, client_email, approved_at, queried_at, created_at, clients(client_name)")
@@ -40,6 +43,11 @@ export default async function CommunicationsPage({
     supabase
       .from("corporation_tax_computations")
       .select("id, period_end, status, client_email, approved_at, queried_at, clients(client_name)")
+      .not("status", "is", null)
+      .neq("status", "Draft"),
+    supabase
+      .from("quotes")
+      .select("id, quote_number, status, accepted_at, declined_at, created_at, clients(client_name)")
       .not("status", "is", null)
       .neq("status", "Draft"),
   ]);
@@ -87,6 +95,18 @@ export default async function CommunicationsPage({
       href: `/corporation-tax/${c.id}`,
       daysSinceSent: null,
     })),
+    ...(quotes || []).map((q) => ({
+      key: `quote-${q.id}`,
+      type: "Quote" as const,
+      label: q.quote_number,
+      client_name: (q.clients as any)?.client_name || "No client",
+      status: q.status,
+      client_email: null,
+      sentDate: q.created_at,
+      respondedDate: q.accepted_at || q.declined_at || null,
+      href: `/quotes/${q.id}`,
+      daysSinceSent: q.status === "Sent" ? getDaysSince(q.created_at) : null,
+    })),
   ];
 
   const filtered = entries.filter((e) => {
@@ -103,9 +123,15 @@ export default async function CommunicationsPage({
   });
 
   const sentCount = entries.filter((e) => e.status === "Sent").length;
-  const approvedCount = entries.filter((e) => e.status === "Approved").length;
-  const queriedCount = entries.filter((e) => e.status === "Queried").length;
+  const approvedCount = entries.filter((e) => e.status === "Approved" || e.status === "Accepted").length;
+  const queriedCount = entries.filter((e) => e.status === "Queried" || e.status === "Declined").length;
   const needsChasing = entries.filter((e) => e.status === "Sent" && e.daysSinceSent !== null && e.daysSinceSent >= 7);
+
+  const newCount = filtered.filter((e) => e.respondedDate && lastViewedAt && e.respondedDate > lastViewedAt).length;
+
+  // Mark everything as seen for next time — after computing newCount above,
+  // so this visit still shows what's new, but the next one won't
+  await supabase.from("app_settings").update({ communications_last_viewed_at: new Date().toISOString() }).eq("id", 1);
 
   const fmtDateTime = (iso: string) =>
     `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} at ${new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
@@ -120,8 +146,8 @@ export default async function CommunicationsPage({
 
         <div className="mt-4 flex gap-6">
           <span className="text-sm text-slate-600"><span className="font-bold text-blue-600">{sentCount}</span> awaiting response</span>
-          <span className="text-sm text-slate-600"><span className="font-bold text-green-600">{approvedCount}</span> approved</span>
-          <span className="text-sm text-slate-600"><span className="font-bold text-yellow-600">{queriedCount}</span> queried</span>
+          <span className="text-sm text-slate-600"><span className="font-bold text-green-600">{approvedCount}</span> approved/accepted</span>
+          <span className="text-sm text-slate-600"><span className="font-bold text-yellow-600">{queriedCount}</span> queried/declined</span>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
@@ -129,10 +155,12 @@ export default async function CommunicationsPage({
           <a href="/communications?status=Sent" className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${statusFilter === "Sent" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>Sent</a>
           <a href="/communications?status=Approved" className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${statusFilter === "Approved" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>Approved</a>
           <a href="/communications?status=Queried" className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${statusFilter === "Queried" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>Queried</a>
+          <a href="/communications?status=Accepted" className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${statusFilter === "Accepted" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>Accepted</a>
+          <a href="/communications?status=Declined" className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${statusFilter === "Declined" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>Declined</a>
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
           <a href={statusFilter ? `/communications?status=${statusFilter}` : "/communications"} className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${!typeFilter ? "bg-slate-700 text-white" : "bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-200"}`}>All types</a>
-          {["Personal Tax", "Accounts", "Corporation Tax"].map((t) => (
+          {["Personal Tax", "Accounts", "Corporation Tax", "Quote"].map((t) => (
             <a key={t} href={`/communications?type=${encodeURIComponent(t)}${statusFilter ? `&status=${statusFilter}` : ""}`}
               className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${typeFilter === t ? "bg-slate-700 text-white" : "bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-200"}`}>
               {t}
@@ -142,6 +170,15 @@ export default async function CommunicationsPage({
       </div>
 
       <div className="p-8 space-y-6">
+
+        {newCount > 0 && (
+          <div className="rounded-2xl bg-red-50 border border-red-200 p-4 flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0"></span>
+            <p className="text-sm font-bold text-red-700">
+              {newCount} new response{newCount !== 1 ? "s" : ""} since your last visit here
+            </p>
+          </div>
+        )}
 
         {needsChasing.length > 0 && (
           <div className="rounded-2xl bg-orange-50 border border-orange-200 p-4">
@@ -166,14 +203,21 @@ export default async function CommunicationsPage({
                   <div className="flex items-center gap-2">
                     <p className="font-semibold text-slate-900">{e.client_name}</p>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{e.type}</span>
+                    {e.respondedDate && lastViewedAt && e.respondedDate > lastViewedAt && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                        <span className="text-xs font-bold text-red-600">New</span>
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-slate-500 mt-0.5">{e.label}</p>
                   {e.client_email && <p className="text-xs text-slate-400 mt-0.5">{e.client_email}</p>}
                 </div>
                 <div className="text-right">
                   <span className={`rounded-full px-3 py-1 text-xs font-bold ${
-                    e.status === "Approved" ? "bg-green-100 text-green-700"
+                    e.status === "Approved" || e.status === "Accepted" ? "bg-green-100 text-green-700"
                     : e.status === "Queried" ? "bg-yellow-100 text-yellow-700"
+                    : e.status === "Declined" ? "bg-red-100 text-red-700"
                     : "bg-blue-100 text-blue-700"
                   }`}>
                     {e.status}

@@ -11,6 +11,7 @@ export default function ConvertToInvoiceButton({
   total,
   status,
   jobs,
+  quoteLines,
 }: {
   quoteId: string;
   clientId: string;
@@ -19,8 +20,9 @@ export default function ConvertToInvoiceButton({
   total: number;
   status: string;
   jobs: { id: string; job_name: string }[];
+  quoteLines: { id: string; description: string }[];
 }) {
-  const [jobId, setJobId] = useState("");
+  const [lineJobs, setLineJobs] = useState<Record<string, string>>({});
   const [dueDate, setDueDate] = useState("");
   const [createJobs, setCreateJobs] = useState(false);
   const [splitRecurring, setSplitRecurring] = useState(false);
@@ -62,7 +64,7 @@ export default function ConvertToInvoiceButton({
         body: JSON.stringify({
           quoteId,
           clientId,
-          jobId: !createJobs && jobId ? jobId : null,
+          lineJobAssignments: !createJobs ? lineJobs : {},
           createJobs,
           dueDate: dueDate || null,
           subtotal,
@@ -121,22 +123,29 @@ export default function ConvertToInvoiceButton({
       </label>
 
       {!createJobs && (
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">
-            Link to Existing Job (optional)
-          </label>
-          <select
-            value={jobId}
-            onChange={(e) => setJobId(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-          >
-            <option value="">Select a job</option>
-            {jobs.map((job) => (
-              <option key={job.id} value={job.id}>
-                {job.job_name}
-              </option>
-            ))}
-          </select>
+        <div className="rounded-xl border border-slate-100 p-3 space-y-2">
+          <p className="text-sm font-medium text-slate-700">Link Each Line to an Existing Job (optional)</p>
+          <p className="text-xs text-slate-500 mb-2">Assign a different job per line, or leave any unassigned.</p>
+          {quoteLines.map((line) => (
+            <div key={line.id} className="flex items-center gap-2">
+              <span className="flex-1 text-xs text-slate-600 truncate">{line.description}</span>
+              <select
+                value={lineJobs[line.id] || ""}
+                onChange={(e) => setLineJobs((prev) => ({ ...prev, [line.id]: e.target.value }))}
+                className="w-48 rounded-xl border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+              >
+                <option value="">No job</option>
+                {jobs.map((job) => (
+                  <option key={job.id} value={job.id}>
+                    {job.job_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+          {quoteLines.length === 0 && (
+            <p className="text-xs text-slate-400">No line items on this quote.</p>
+          )}
         </div>
       )}
 

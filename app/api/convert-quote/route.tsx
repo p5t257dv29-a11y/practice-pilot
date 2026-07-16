@@ -23,7 +23,7 @@ function guessJobType(description: string): string | null {
 
 export async function POST(request: NextRequest) {
   const {
-    quoteId, clientId, jobId, createJobs, dueDate, subtotal, vat, total,
+    quoteId, clientId, lineJobAssignments, createJobs, dueDate, subtotal, vat, total,
     splitRecurring, numInstalments, frequency, firstDueDate,
   } = await request.json();
 
@@ -40,10 +40,15 @@ export async function POST(request: NextRequest) {
 
   const { data: quote } = await supabase.from("quotes").select("quote_number").eq("id", quoteId).single();
 
-  // Optionally create a job for each quote line item
-  let createdJobId: string | null = jobId || null;
+  // Optionally create a job for each quote line item. When not creating jobs,
+  // each line can instead be linked to its own existing job via lineJobAssignments
+  // (keyed by quote line id) — falls back to null if that line has no assignment.
+  const assignments: Record<string, string> = lineJobAssignments || {};
+  let jobIdsByLineIndex: (string | null)[] = quoteLines
+    ? quoteLines.map((line) => assignments[line.id] || null)
+    : [];
+  let createdJobId: string | null = jobIdsByLineIndex.find((j) => j) || null;
   let createdJobCount = 0;
-  let jobIdsByLineIndex: (string | null)[] = quoteLines ? quoteLines.map(() => jobId || null) : [];
 
   if (createJobs && quoteLines && quoteLines.length > 0) {
     const { data: newJobs, error: jobsError } = await supabase

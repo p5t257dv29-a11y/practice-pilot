@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import SignOutButton from "./signout-button";
@@ -60,6 +61,25 @@ export default function ConditionalSidebar({
   const pathname = usePathname();
   const isLoginPage = pathname === "/login";
 
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    if (isLoginPage) return;
+
+    const fetchCount = () => {
+      fetch("/api/unread-count")
+        .then((res) => res.json())
+        .then((data) => setUnreadCount(data.count || 0))
+        .catch(() => {});
+    };
+
+    fetchCount();
+    // Re-check periodically, and immediately after navigating back from
+    // Communications (which marks everything as seen server-side)
+    const interval = setInterval(fetchCount, 60000);
+    return () => clearInterval(interval);
+  }, [pathname, isLoginPage]);
+
   if (isLoginPage) {
     return <>{children}</>;
   }
@@ -103,7 +123,12 @@ export default function ConditionalSidebar({
                     }`}
                   >
                     <span className="text-base">{item.icon}</span>
-                    <span>{item.label}</span>
+                    <span className="flex-1">{item.label}</span>
+                    {item.href === "/communications" && unreadCount > 0 && (
+                      <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold">
+                        {unreadCount}
+                      </span>
+                    )}
                   </Link>
                 ))}
               </div>
