@@ -19,6 +19,7 @@ export default async function DashboardPage() {
     { data: sentTaxComputations },
     { data: sentAccounts },
     { data: invoices },
+    { data: amlClients },
   ] = await Promise.all([
     supabase.from("clients").select("*", { count: "exact", head: true }),
     supabase.from("jobs").select("*", { count: "exact", head: true }).eq("status", "Active"),
@@ -29,6 +30,7 @@ export default async function DashboardPage() {
     supabase.from("tax_computations").select("id, tax_year, status, client_id, clients(client_name)").in("status", ["Sent", "Queried"]),
     supabase.from("trial_balances").select("id, period_end, accounts_type, approval_status, client_id, clients(client_name)").in("approval_status", ["Sent", "Queried"]),
     supabase.from("invoices").select("status, total"),
+    supabase.from("clients").select("id, client_name, onboarding_status, aml_risk_rating, aml_id_verified, aml_next_review_due"),
   ]);
 
   const today = new Date().toLocaleDateString("en-GB", {
@@ -68,6 +70,20 @@ export default async function DashboardPage() {
   const paidThisRun = (invoices || []).filter((i) => i.status === "Paid").reduce((s, i) => s + Number(i.total || 0), 0);
   const draftCount = (invoices || []).filter((i) => i.status === "Draft").length;
 
+  // AML alerts — only flag clients who are actually onboard/active, not prospects who
+  // haven't been taken on yet. Same "needs attention" logic as the client detail page.
+  const amlAlerts = (amlClients || [])
+    .filter((c) => c.onboarding_status === "Active Client" || c.onboarding_status === "Onboarding")
+    .map((c) => {
+      const reviewOverdue = c.aml_next_review_due && new Date(c.aml_next_review_due) < new Date();
+      const reasons: string[] = [];
+      if (!c.aml_id_verified) reasons.push("ID not verified");
+      if (!c.aml_risk_rating) reasons.push("No risk rating");
+      if (reviewOverdue) reasons.push("Review overdue");
+      return { id: c.id, client_name: c.client_name, reasons };
+    })
+    .filter((c) => c.reasons.length > 0);
+
   return (
     <div className="min-h-screen bg-slate-50">
 
@@ -90,7 +106,7 @@ export default async function DashboardPage() {
       <div className="p-8">
 
         {/* Stat Cards */}
-        <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-6 lg:grid-cols-5">
 
           <a href="/clients" className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 hover:shadow-md hover:border-slate-200 transition-all">
             <div className="flex items-center justify-between">
@@ -122,6 +138,14 @@ export default async function DashboardPage() {
               <span className="text-2xl">💷</span>
             </div>
             <p className="mt-3 text-4xl font-bold text-orange-600">£{outstanding.toFixed(0)}</p>
+          </a>
+
+          <a href="/clients" className={`rounded-2xl p-6 shadow-sm transition-all ${amlAlerts.length > 0 ? "bg-red-600 hover:bg-red-700" : "bg-white border border-slate-100 hover:shadow-md hover:border-slate-200"}`}>
+            <div className="flex items-center justify-between">
+              <p className={`text-sm font-medium ${amlAlerts.length > 0 ? "text-red-100" : "text-slate-500"}`}>AML Reviews Needed</p>
+              <span className="text-2xl">🛡️</span>
+            </div>
+            <p className={`mt-3 text-4xl font-bold ${amlAlerts.length > 0 ? "text-white" : "text-slate-900"}`}>{amlAlerts.length}</p>
           </a>
 
         </div>
@@ -210,6 +234,33 @@ export default async function DashboardPage() {
           </div>
 
         </div>
+
+        {/* AML Alerts */}
+        {amlAlerts.length > 0 && (
+          <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-red-200">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-bold text-slate-900">⚠ Clients Needing AML Attention</h2>
+              <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
+                {amlAlerts.length} client{amlAlerts.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {amlAlerts.map((c) => (
+                <a key={c.id} href={`/clients/${c.id}`}
+                  className="flex items-center justify-between rounded-xl border border-red-100 bg-red-50 p-3 hover:opacity-80 transition-opacity">
+                  <p className="text-sm font-semibold text-slate-900">{c.client_name}</p>
+                  <div className="flex gap-1 flex-wrap justify-end">
+                    {c.reasons.map((r) => (
+                      <span key={r} className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Recent activity */}
         <div className="mt-8 grid gap-6 lg:grid-cols-3">

@@ -46,6 +46,25 @@ async function updateClientRecord(id: string, formData: FormData) {
   revalidatePath(`/clients/${id}`);
 }
 
+async function updateAmlRecord(id: string, formData: FormData) {
+  "use server";
+
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  await supabase.from("clients").update({
+    aml_risk_rating: get("aml_risk_rating") || null,
+    aml_id_verified: formData.get("aml_id_verified") === "on",
+    aml_id_verification_method: get("aml_id_verification_method") || null,
+    aml_id_verified_date: get("aml_id_verified_date") || null,
+    aml_pep_status: formData.get("aml_pep_status") === "on",
+    aml_source_of_funds: get("aml_source_of_funds") || null,
+    aml_next_review_due: get("aml_next_review_due") || null,
+    aml_notes: get("aml_notes") || null,
+  }).eq("id", id);
+
+  revalidatePath(`/clients/${id}`);
+}
+
 async function addShareholding(clientId: string, formData: FormData) {
   "use server";
 
@@ -67,6 +86,42 @@ async function deleteShareholding(clientId: string, id: string) {
   "use server";
 
   await supabase.from("company_shareholdings").delete().eq("id", id);
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function uploadIdDocument(clientId: string, formData: FormData) {
+  "use server";
+  const file = formData.get("document") as File | null;
+  const documentType = String(formData.get("document_type") || "").trim();
+  if (!file || file.size === 0) return;
+
+  const storagePath = `${clientId}/${Date.now()}-${file.name}`;
+  const fileBuffer = await file.arrayBuffer();
+
+  const { error: uploadError } = await supabase.storage
+    .from("client-id-documents")
+    .upload(storagePath, fileBuffer, { contentType: file.type });
+
+  if (uploadError) {
+    console.error("Could not upload ID document:", uploadError.message);
+    return;
+  }
+
+  await supabase.from("client_id_documents").insert({
+    client_id: clientId,
+    document_type: documentType || null,
+    file_name: file.name,
+    storage_path: storagePath,
+    file_size: file.size,
+  });
+
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function deleteIdDocument(clientId: string, docId: string, storagePath: string) {
+  "use server";
+  await supabase.storage.from("client-id-documents").remove([storagePath]);
+  await supabase.from("client_id_documents").delete().eq("id", docId);
   revalidatePath(`/clients/${clientId}`);
 }
 
@@ -93,6 +148,7 @@ export default async function ClientDetailPage({
     { data: taxComputations },
     { data: ctComputations },
     { data: fixedAssets },
+    { data: idDocuments },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*").eq("client_id", id).order("is_active", { ascending: false }),
@@ -106,18 +162,44 @@ export default async function ClientDetailPage({
     supabase.from("tax_computations").select("*").eq("client_id", id).order("created_at", { ascending: false }),
     supabase.from("corporation_tax_computations").select("*").eq("client_id", id).order("created_at", { ascending: false }),
     supabase.from("fixed_assets").select("*").eq("client_id", id).order("acquisition_date", { ascending: false }),
+    supabase.from("client_id_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
   ]);
 
   if (error || !client) notFound();
 
   const updateWithId = updateClientRecord.bind(null, id);
+  const updateAmlWithId = updateAmlRecord.bind(null, id);
   const addShareholdingWithId = addShareholding.bind(null, id);
+  const uploadIdDocumentWithId = uploadIdDocument.bind(null, id);
+  const deleteIdDocumentWithId = deleteIdDocument.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
 
+  // Bucket is private, so each document needs a short-lived signed URL to download
+  const idDocumentsWithUrls = await Promise.all(
+    (idDocuments || []).map(async (doc) => {
+      const { data: signed } = await supabase.storage
+        .from("client-id-documents")
+        .createSignedUrl(doc.storage_path, 300);
+      return { ...doc, url: signed?.signedUrl || null };
+    })
+  );
+
+  const fmtFileSize = (bytes: number | null) => {
+    if (!bytes) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  // AML status check — flags if ID hasn't been verified, no risk rating set, or a review is overdue
+  const amlReviewOverdue = client.aml_next_review_due && new Date(client.aml_next_review_due) < new Date();
+  const amlNeedsAttention = !client.aml_id_verified || !client.aml_risk_rating || amlReviewOverdue;
+
   const tabs = [
     { key: "details", label: "Details" },
+    { key: "aml", label: "AML" },
     { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
     { key: "quotes", label: `Quotes (${quotes?.length ?? 0})` },
     { key: "invoices", label: `Invoices (${invoices?.length ?? 0})` },
@@ -158,14 +240,21 @@ export default async function ClientDetailPage({
             </p>
           </div>
 
-          <span className={`rounded-full px-4 py-2 text-sm font-semibold ${
-            client.onboarding_status === "Active Client" ? "bg-green-100 text-green-700"
-            : client.onboarding_status === "Prospect" ? "bg-blue-100 text-blue-700"
-            : client.onboarding_status === "Onboarding" ? "bg-yellow-100 text-yellow-700"
-            : "bg-slate-100 text-slate-600"
-          }`}>
-            {client.onboarding_status || "Unknown"}
-          </span>
+          <div className="flex items-center gap-2">
+            {amlNeedsAttention && (
+              <span className="rounded-full px-4 py-2 text-sm font-semibold bg-red-100 text-red-700">
+                ⚠ AML review needed
+              </span>
+            )}
+            <span className={`rounded-full px-4 py-2 text-sm font-semibold ${
+              client.onboarding_status === "Active Client" ? "bg-green-100 text-green-700"
+              : client.onboarding_status === "Prospect" ? "bg-blue-100 text-blue-700"
+              : client.onboarding_status === "Onboarding" ? "bg-yellow-100 text-yellow-700"
+              : "bg-slate-100 text-slate-600"
+            }`}>
+              {client.onboarding_status || "Unknown"}
+            </span>
+          </div>
         </div>
 
         {/* Filing deadlines bar */}
@@ -199,10 +288,12 @@ export default async function ClientDetailPage({
               className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
                 tab === t.key
                   ? "bg-slate-900 text-white"
+                  : t.key === "aml" && amlNeedsAttention
+                  ? "text-red-600 hover:bg-red-50 font-semibold"
                   : "text-slate-600 hover:bg-slate-100"
               }`}
             >
-              {t.label}
+              {t.key === "aml" && amlNeedsAttention ? "⚠ AML" : t.label}
             </a>
           ))}
         </div>
@@ -272,7 +363,7 @@ export default async function ClientDetailPage({
               </div>
             </div>
 
-            {/* Tax Deadline Settings — NEW SECTION */}
+            {/* Tax Deadline Settings */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Tax Deadline Settings</h2>
               <p className="text-sm text-slate-500 mt-0.5">
@@ -394,6 +485,169 @@ export default async function ClientDetailPage({
               Save Changes
             </button>
           </form>
+        )}
+
+        {/* AML TAB */}
+        {tab === "aml" && (
+          <div className="space-y-6">
+            <form action={updateAmlWithId} className={`rounded-2xl bg-white p-6 shadow-sm border ${amlNeedsAttention ? "border-red-200" : "border-slate-100"}`}>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">AML / Client Due Diligence</h2>
+                {amlNeedsAttention && (
+                  <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
+                    Needs attention
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Internal AML compliance record for this client — not part of any client-facing document.
+              </p>
+
+              {!client.aml_id_verified && (
+                <div className="mt-3 rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+                  <p className="text-xs font-semibold text-red-700">⚠ Client ID has not been marked as verified.</p>
+                </div>
+              )}
+              {!client.aml_risk_rating && (
+                <div className="mt-3 rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+                  <p className="text-xs font-semibold text-red-700">⚠ No risk rating has been set for this client.</p>
+                </div>
+              )}
+              {amlReviewOverdue && (
+                <div className="mt-3 rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+                  <p className="text-xs font-semibold text-red-700">
+                    ⚠ AML review was due {new Date(client.aml_next_review_due).toLocaleDateString("en-GB")} and is now overdue.
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Risk Rating</label>
+                  <select name="aml_risk_rating" defaultValue={client.aml_risk_rating || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Not yet assessed</option>
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Next Review Due</label>
+                  <input name="aml_next_review_due" type="date" defaultValue={client.aml_next_review_due || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+
+                <div className="flex items-center gap-3 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    id="aml_id_verified"
+                    name="aml_id_verified"
+                    defaultChecked={client.aml_id_verified || false}
+                    className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                  />
+                  <label htmlFor="aml_id_verified" className="text-sm font-medium text-slate-700">
+                    Client identity has been verified
+                  </label>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Verification Method</label>
+                  <input name="aml_id_verification_method" defaultValue={client.aml_id_verification_method || ""} placeholder="e.g. Passport + utility bill, digital ID check" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Date Verified</label>
+                  <input name="aml_id_verified_date" type="date" defaultValue={client.aml_id_verified_date || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+
+                <div className="flex items-center gap-3 md:col-span-2">
+                  <input
+                    type="checkbox"
+                    id="aml_pep_status"
+                    name="aml_pep_status"
+                    defaultChecked={client.aml_pep_status || false}
+                    className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                  />
+                  <label htmlFor="aml_pep_status" className="text-sm font-medium text-slate-700">
+                    Client (or a connected person) is a Politically Exposed Person
+                  </label>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Source of Funds / Wealth</label>
+                  <textarea name="aml_source_of_funds" defaultValue={client.aml_source_of_funds || ""} rows={2} placeholder="Only needed for higher-risk clients" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">AML Notes</label>
+                  <textarea name="aml_notes" defaultValue={client.aml_notes || ""} rows={3} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+              </div>
+
+              <button type="submit" className="mt-4 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Save AML Details
+              </button>
+            </form>
+
+            {/* ID Documents — own form, kept separate since file uploads need their own action/encoding */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">ID Documents</h2>
+              <p className="text-sm text-slate-500 mt-0.5">Scanned or photographed identity documents held for this client.</p>
+
+              <div className="mt-4 space-y-2">
+                {idDocumentsWithUrls.map((doc) => (
+                  <div key={doc.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-lg flex-shrink-0">🪪</span>
+                      <div className="min-w-0">
+                        {doc.url ? (
+                          <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                            className="text-sm font-medium text-blue-600 hover:underline truncate block">
+                            {doc.file_name}
+                          </a>
+                        ) : (
+                          <span className="text-sm font-medium text-slate-900 truncate block">{doc.file_name}</span>
+                        )}
+                        <p className="text-xs text-slate-400">
+                          {doc.document_type && `${doc.document_type} · `}
+                          {fmtFileSize(doc.file_size)} · {new Date(doc.uploaded_at).toLocaleDateString("en-GB")}
+                        </p>
+                      </div>
+                    </div>
+                    <form action={deleteIdDocumentWithId.bind(null, doc.id, doc.storage_path)}>
+                      <button className="rounded-lg bg-red-50 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors flex-shrink-0">
+                        Delete
+                      </button>
+                    </form>
+                  </div>
+                ))}
+                {idDocumentsWithUrls.length === 0 && (
+                  <p className="text-sm text-slate-400 text-center py-3">No ID documents uploaded yet.</p>
+                )}
+              </div>
+
+              <form action={uploadIdDocumentWithId} className="mt-4 flex flex-wrap gap-2 items-end border-t border-slate-100 pt-4">
+                <div className="w-48">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Document Type</label>
+                  <select name="document_type" className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Select type</option>
+                    <option>Passport</option>
+                    <option>Driving Licence</option>
+                    <option>Utility Bill</option>
+                    <option>Bank Statement</option>
+                    <option>Other</option>
+                  </select>
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Upload File</label>
+                  <input name="document" type="file" required
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <button type="submit"
+                  className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Upload
+                </button>
+              </form>
+            </div>
+          </div>
         )}
 
         {/* JOBS TAB */}
