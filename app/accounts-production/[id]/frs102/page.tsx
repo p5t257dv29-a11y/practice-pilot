@@ -435,6 +435,13 @@ export default async function FRS102AccountsPage({
               The average number of persons (including directors) employed by the company during the year was{" "}
               <strong>{tb.average_employees ?? "________"}</strong> ({priorYearLabel ? `${priorYearLabel}: ________` : "no comparative available"}).
             </p>
+            {(tb.average_employees === null || tb.average_employees === undefined) && (
+              <div className="mt-2 rounded-lg bg-red-50 border border-red-100 px-3 py-2 print:hidden">
+                <p className="text-xs font-semibold text-red-700">
+                  ⚠ Average employee count is missing — this is a required disclosure and must be set before filing.
+                </p>
+              </div>
+            )}
             <form action={updateEmployeeCountWithId} className="mt-3 flex items-end gap-2 print:hidden">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Set average employee count</label>

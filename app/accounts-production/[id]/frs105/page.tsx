@@ -19,6 +19,13 @@ async function updateNote(trialBalanceId: string, field: string, formData: FormD
   revalidatePath(`/accounts-production/${trialBalanceId}/frs105`);
 }
 
+async function updateEmployeeCount(trialBalanceId: string, formData: FormData) {
+  "use server";
+  const count = parseInt(String(formData.get("average_employees") || "").trim());
+  await supabase.from("trial_balances").update({ average_employees: isNaN(count) ? null : count }).eq("id", trialBalanceId);
+  revalidatePath(`/accounts-production/${trialBalanceId}/frs105`);
+}
+
 // Computes the full Balance Sheet position from a set of trial balance lines
 // and, if available, the Fixed Asset Register (for a more accurate NBV).
 export async function computeBalanceSheet(clientId: string, jobId: string | null, periodEnd: string, lines: any[]) {
@@ -157,6 +164,16 @@ export default async function FRS105AccountsPage({
   const currentYearLabel = new Date(tb.period_end).getFullYear();
   const priorYearLabel = priorTb ? new Date(priorTb.period_end).getFullYear() : null;
 
+  // Note numbering: General Info, [Fixed Assets if any], Share Capital, Employees, Directors' Advances
+  let noteNum = 1;
+  const nGeneral = noteNum++;
+  const nFixedAssets = categoryRows.length > 0 ? noteNum++ : null;
+  const nShareCapital = noteNum++;
+  const nEmployees = noteNum++;
+  const nDirectors = noteNum++;
+
+  const updateEmployeeCountWithId = updateEmployeeCount.bind(null, id);
+
   // Two-column balance sheet row: current year + prior year (if available)
   const BSRow = ({ label, value, priorValue, bold, caps, note }: { label: string; value: number; priorValue?: number | null; bold?: boolean; caps?: boolean; note?: string }) => (
     <tr className={bold ? "font-bold" : ""}>
@@ -246,7 +263,7 @@ export default async function FRS105AccountsPage({
             </thead>
             <tbody>
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Fixed Assets</td></tr>
-              <BSRow label="Tangible assets" value={current.fixedAssetsNBV} priorValue={prior?.fixedAssetsNBV} note="2" />
+              <BSRow label="Tangible assets" value={current.fixedAssetsNBV} priorValue={prior?.fixedAssetsNBV} note={nFixedAssets ? String(nFixedAssets) : ""} />
 
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Current Assets</td></tr>
               <BSRow label="Total current assets" value={current.currentAssets} priorValue={prior?.currentAssets} />
@@ -262,7 +279,7 @@ export default async function FRS105AccountsPage({
               <BSRow label="Net Assets" value={current.netAssets} priorValue={prior?.netAssets} bold caps />
 
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Capital and Reserves</td></tr>
-              <BSRow label="Called up share capital" value={current.shareCapital} priorValue={prior?.shareCapital} note="3" />
+              <BSRow label="Called up share capital" value={current.shareCapital} priorValue={prior?.shareCapital} note={String(nShareCapital)} />
               <BSRow label="Profit and loss account" value={current.plReserveCfwd} priorValue={prior?.plReserveCfwd} />
               <BSRow label="Shareholders' Funds" value={current.shareholdersFunds} priorValue={prior?.shareholdersFunds} bold caps />
             </tbody>
@@ -315,7 +332,7 @@ export default async function FRS105AccountsPage({
 
           <div className="mb-6">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-bold text-slate-900">1. General Information</p>
+              <p className="text-sm font-bold text-slate-900">{nGeneral}. General Information</p>
               <a href={edit_note === "general" ? `/accounts-production/${id}/frs105` : `/accounts-production/${id}/frs105?edit_note=general`}
                 className="text-xs font-semibold text-blue-600 hover:underline print:hidden">
                 {edit_note === "general" ? "Cancel" : "Edit"}
@@ -337,9 +354,9 @@ export default async function FRS105AccountsPage({
             )}
           </div>
 
-          {categoryRows.length > 0 && (
+          {nFixedAssets && (
             <div className="mb-6">
-              <p className="text-sm font-bold text-slate-900">2. Tangible Fixed Assets</p>
+              <p className="text-sm font-bold text-slate-900">{nFixedAssets}. Tangible Fixed Assets</p>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
@@ -376,7 +393,7 @@ export default async function FRS105AccountsPage({
           )}
 
           <div className="mb-6">
-            <p className="text-sm font-bold text-slate-900">{categoryRows.length > 0 ? "3" : "2"}. Share Capital</p>
+            <p className="text-sm font-bold text-slate-900">{nShareCapital}. Share Capital</p>
             <table className="w-full text-sm mt-2">
               <tbody>
                 <BSRow label="Allotted, called up and fully paid" value={current.shareCapital} priorValue={prior?.shareCapital} />
@@ -384,8 +401,34 @@ export default async function FRS105AccountsPage({
             </table>
           </div>
 
+          <div className="mb-6">
+            <p className="text-sm font-bold text-slate-900">{nEmployees}. Employees</p>
+            <p className="text-sm text-slate-600 mt-2">
+              The average number of persons (including directors) employed by the company during the year was{" "}
+              <strong>{tb.average_employees ?? "________"}</strong> ({priorYearLabel ? `${priorYearLabel}: ________` : "no comparative available"}).
+            </p>
+            {(tb.average_employees === null || tb.average_employees === undefined) && (
+              <div className="mt-2 rounded-lg bg-red-50 border border-red-100 px-3 py-2 print:hidden">
+                <p className="text-xs font-semibold text-red-700">
+                  ⚠ Average employee count is missing — this is a required disclosure and must be set before filing.
+                </p>
+              </div>
+            )}
+            <form action={updateEmployeeCountWithId} className="mt-3 flex items-end gap-2 print:hidden">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Set average employee count</label>
+                <input name="average_employees" type="number" min="0" defaultValue={tb.average_employees ?? ""}
+                  className="w-40 rounded-xl border border-slate-200 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <button type="submit"
+                className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                Save
+              </button>
+            </form>
+          </div>
+
           <div>
-            <p className="text-sm font-bold text-slate-900">{categoryRows.length > 0 ? "4" : "3"}. Advances, Credit and Guarantees to Directors</p>
+            <p className="text-sm font-bold text-slate-900">{nDirectors}. Advances, Credit and Guarantees to Directors</p>
             <p className="text-sm text-slate-600 mt-2">
               {current.dla !== 0
                 ? `The company had a balance of £${fmt(Math.abs(current.dla))} ${current.dla > 0 ? "owed to the company by" : "owed by the company to"} a director at the balance sheet date.`
