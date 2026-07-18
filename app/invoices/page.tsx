@@ -14,7 +14,14 @@ async function deleteInvoice(id: string) {
   revalidatePath("/invoices");
 }
 
-export default async function InvoicesPage() {
+export default async function InvoicesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string }>;
+}) {
+  const { q } = await searchParams;
+  const query = (q || "").trim().toLowerCase();
+
   const [{ data: invoices, error }, { data: clients }] = await Promise.all([
     supabase
       .from("invoices")
@@ -25,6 +32,21 @@ export default async function InvoicesPage() {
       .select("id, client_name")
       .order("client_name", { ascending: true }),
   ]);
+
+  const filteredInvoices = query
+    ? (invoices || []).filter((invoice) => {
+        const haystack = [
+          invoice.invoice_number,
+          invoice.clients?.client_name,
+          invoice.jobs?.job_name,
+          invoice.quotes?.quote_number,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+    : (invoices || []);
 
   const totalOutstanding = (invoices || [])
     .filter(i => i.status !== "Paid")
@@ -77,6 +99,26 @@ export default async function InvoicesPage() {
             <p className="text-2xl font-bold text-red-600">{overdue}</p>
           </div>
         </div>
+
+        {/* Search */}
+        <form method="get" className="mt-4 flex gap-2 max-w-md">
+          <input
+            name="q"
+            defaultValue={q || ""}
+            placeholder="Search by client, invoice number, job, or quote..."
+            className="flex-1 rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+          />
+          <button type="submit"
+            className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+            Search
+          </button>
+          {q && (
+            <a href="/invoices"
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors flex items-center">
+              Clear
+            </a>
+          )}
+        </form>
       </div>
 
       <div className="p-8">
@@ -88,11 +130,11 @@ export default async function InvoicesPage() {
 
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">
-            All Invoices ({invoices?.length ?? 0})
+            {query ? `Search Results (${filteredInvoices.length})` : `All Invoices (${invoices?.length ?? 0})`}
           </h2>
 
           <div className="mt-4 space-y-3">
-            {(invoices || []).map((invoice) => (
+            {filteredInvoices.map((invoice) => (
               <div key={invoice.id}
                 className="flex items-center justify-between rounded-xl border border-slate-100 p-4">
                 <a href={`/invoices/${invoice.id}`} className="flex-1">
@@ -146,7 +188,13 @@ export default async function InvoicesPage() {
               </div>
             ))}
 
-            {invoices && invoices.length === 0 && (
+            {query && filteredInvoices.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-12">
+                No invoices match "{q}".
+              </p>
+            )}
+
+            {!query && invoices && invoices.length === 0 && (
               <div className="text-center py-12">
                 <p className="text-slate-500 text-sm">No invoices yet.</p>
                 <p className="text-slate-400 text-xs mt-1">

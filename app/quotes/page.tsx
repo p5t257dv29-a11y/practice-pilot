@@ -9,73 +9,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-async function createQuote(formData: FormData) {
-  "use server";
-
-  const get = (key: string) => String(formData.get(key) || "").trim();
-
-  const { data: allQuotes } = await supabase
-    .from("quotes")
-    .select("quote_number");
-
-  let highest = 4; // sequence starts at Q-0005
-  for (const q of allQuotes || []) {
-    const match = q.quote_number?.match(/Q-(\d+)/);
-    if (match) {
-      const num = parseInt(match[1], 10);
-      if (match[1].length <= 4 && num > highest) {
-        highest = num;
-      }
-    }
-  }
-  const quoteNumber = `Q-${String(highest + 1).padStart(4, "0")}`;
-  const clientId = get("client_id");
-
-  const { data: newQuote, error } = await supabase
-    .from("quotes")
-    .insert({
-      quote_number: quoteNumber,
-      client_id: clientId,
-      quote_date: get("quote_date") || null,
-      valid_until: get("valid_until") || null,
-      status: get("status") || "Draft",
-      notes: get("notes"),
-      subtotal: 0,
-      vat: 0,
-      total: 0,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Could not create quote:", error.message);
-    return;
-  }
-
-  const { data: client } = await supabase
-    .from("clients")
-    .select("email")
-    .eq("id", clientId)
-    .single();
-
-  const { error: elError } = await supabase.from("engagement_letters").insert({
-    client_id: clientId,
-    quote_id: newQuote.id,
-    client_email: client?.email || null,
-    status: "Draft",
-    services_description: null,
-    fee_description: null,
-  });
-
-  if (elError) {
-    console.error("Could not create linked engagement letter:", elError.message, elError);
-  } else {
-    console.log("✅ Engagement letter created successfully, linked to quote:", newQuote.id, "client:", clientId);
-  }
-
-  revalidatePath("/quotes");
-  revalidatePath("/engagement");
-}
+const STATUS_OPTIONS = ["Draft", "Sent", "Accepted", "Declined", "Expired"];
 
 async function deleteQuote(id: string) {
   "use server";
@@ -84,7 +18,14 @@ async function deleteQuote(id: string) {
   revalidatePath("/quotes");
 }
 
-export default async function QuotesPage() {
+export default async function QuotesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; status?: string }>;
+}) {
+  const { q, status: statusFilter } = await searchParams;
+  const query = (q || "").trim().toLowerCase();
+
   const [{ data: quotes, error }, { data: clients }] = await Promise.all([
     supabase
       .from("quotes")
@@ -96,10 +37,25 @@ export default async function QuotesPage() {
       .order("client_name", { ascending: true }),
   ]);
 
-  const today = new Date().toISOString().split("T")[0];
-  const thirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split("T")[0];
+  const filteredQuotes = (quotes || []).filter((quote) => {
+    if (statusFilter && (quote.status || "Draft") !== statusFilter) return false;
+    if (query) {
+      const haystack = [quote.quote_number, quote.clients?.client_name]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+
+  const isFiltered = Boolean(query || statusFilter);
+
+  const totalQuoted = (quotes || []).reduce((sum, q) => sum + Number(q.total || 0), 0);
+  const acceptedValue = (quotes || [])
+    .filter((q) => q.status === "Accepted")
+    .reduce((sum, q) => sum + Number(q.total || 0), 0);
+  const pending = (quotes || []).filter((q) => (q.status || "Draft") === "Draft" || q.status === "Sent").length;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -113,7 +69,58 @@ export default async function QuotesPage() {
               Create and manage client quotes and proposals.
             </p>
           </div>
+          <a href="/quotes/new"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+            + New Quote
+          </a>
         </div>
+
+
+        {/* Stats */}
+        <div className="mt-4 flex gap-8">
+          <div>
+            <p className="text-xs text-slate-500">Total Quoted</p>
+            <p className="text-2xl font-bold text-slate-900">£{totalQuoted.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Accepted Value</p>
+            <p className="text-2xl font-bold text-green-600">£{acceptedValue.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">Pending</p>
+            <p className="text-2xl font-bold text-orange-600">{pending}</p>
+          </div>
+        </div>
+
+        {/* Search + status filter */}
+        <form method="get" className="mt-4 flex gap-2 max-w-2xl">
+          <input
+            name="q"
+            defaultValue={q || ""}
+            placeholder="Search by client or quote number..."
+            className="flex-1 rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+          />
+          <select
+            name="status"
+            defaultValue={statusFilter || ""}
+            className="rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+          >
+            <option value="">All statuses</option>
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <button type="submit"
+            className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+            Search
+          </button>
+          {isFiltered && (
+            <a href="/quotes"
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors flex items-center">
+              Clear
+            </a>
+          )}
+        </form>
       </div>
 
       <div className="p-8">
@@ -124,113 +131,22 @@ export default async function QuotesPage() {
           </div>
         )}
 
-        {/* New Quote Form */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">New Quote</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Create a quote then add line items on the quote detail page.
-          </p>
-
-          <form action={createQuote} className="mt-6">
-            <div className="grid gap-4 md:grid-cols-2">
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Client *
-                </label>
-                <select
-                  name="client_id"
-                  required
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                >
-                  <option value="">Select a client</option>
-                  {(clients || []).map((client) => (
-                    <option key={client.id} value={client.id}>
-                      {client.client_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Status
-                </label>
-                <select
-                  name="status"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                >
-                  <option>Draft</option>
-                  <option>Sent</option>
-                  <option>Accepted</option>
-                  <option>Declined</option>
-                  <option>Expired</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Quote Date
-                </label>
-                <input
-                  name="quote_date"
-                  type="date"
-                  defaultValue={today}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Valid Until
-                </label>
-                <input
-                  name="valid_until"
-                  type="date"
-                  defaultValue={thirtyDays}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Notes
-                </label>
-                <textarea
-                  name="notes"
-                  rows={2}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="Any notes to include on the quote"
-                />
-              </div>
-
-            </div>
-
-            <button
-              type="submit"
-              className="mt-6 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
-            >
-              Create Quote
-            </button>
-          </form>
-        </div>
-
         {/* Quotes List */}
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">
-            All Quotes ({quotes?.length ?? 0})
+            {isFiltered ? `Search Results (${filteredQuotes.length})` : `All Quotes (${quotes?.length ?? 0})`}
           </h2>
-<div className="mt-4 space-y-3">
-            {(quotes || []).map((quote) => (
-  <div
+          <div className="mt-4 space-y-3">
+            {filteredQuotes.map((quote) => (
+              <div
                 key={quote.id}
                 className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors"
               >
                 <Link
                   href={`/quotes/${quote.id}`}
                   className="flex-1"
->
-<div className="flex items-center gap-3">
+                >
+                  <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-sm font-bold text-blue-600">
                       📋
                     </div>
@@ -282,10 +198,20 @@ export default async function QuotesPage() {
               </div>
             ))}
 
-            {quotes && quotes.length === 0 && (
+            {isFiltered && filteredQuotes.length === 0 && (
               <p className="text-sm text-slate-500 text-center py-8">
-                No quotes yet. Create your first quote above.
+                No quotes match your search.
               </p>
+            )}
+
+            {!isFiltered && quotes && quotes.length === 0 && (
+              <div className="text-center py-12">
+                <p className="text-slate-500 text-sm">No quotes yet.</p>
+                <a href="/quotes/new"
+                  className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                  + New Quote
+                </a>
+              </div>
             )}
           </div>
         </div>
