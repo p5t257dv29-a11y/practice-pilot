@@ -45,32 +45,61 @@ export default function JobsPageClient({
   deleteAction: (id: string) => Promise<void>;
 }) {
   const [showModal, setShowModal] = useState(false);
+  const [search, setSearch] = useState("");
   const [filterClient, setFilterClient] = useState("");
   const [filterType, setFilterType] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
-  const [dueFrom, setDueFrom] = useState("");
-  const [dueTo, setDueTo] = useState("");
+  const [filterOverdueOnly, setFilterOverdueOnly] = useState(false);
 
   const jobTypes = Array.from(new Set(jobs.map((j) => j.job_type).filter(Boolean))) as string[];
+
+  const today = new Date().toISOString().split("T")[0];
+
+  const isOverdue = (job: Job) =>
+    !!job.due_date && job.due_date < today && job.status !== "Completed" && job.status !== "Cancelled";
+
+  // Stat counts — computed off the unfiltered job list, so they always reflect the practice-wide picture
+  const activeCount = jobs.filter((j) => j.status === "Active").length;
+  const draftCount = jobs.filter((j) => (j.status || "Draft") === "Draft").length;
+  const completedCount = jobs.filter((j) => j.status === "Completed").length;
+  const overdueCount = jobs.filter(isOverdue).length;
 
   const filtered = jobs.filter((job) => {
     if (filterClient && job.client_id !== filterClient) return false;
     if (filterType && job.job_type !== filterType) return false;
-    if (filterStatus && job.status !== filterStatus) return false;
-    if (dueFrom && (!job.due_date || job.due_date < dueFrom)) return false;
-    if (dueTo && (!job.due_date || job.due_date > dueTo)) return false;
+    if (filterStatus && (job.status || "Draft") !== filterStatus) return false;
+    if (filterOverdueOnly && !isOverdue(job)) return false;
+    if (search) {
+      const haystack = [job.job_name, job.clients?.client_name].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(search.trim().toLowerCase())) return false;
+    }
     return true;
   });
 
   const clearFilters = () => {
+    setSearch("");
     setFilterClient("");
     setFilterType("");
     setFilterStatus("");
-    setDueFrom("");
-    setDueTo("");
+    setFilterOverdueOnly(false);
   };
 
-  const hasActiveFilters = filterClient || filterType || filterStatus || dueFrom || dueTo;
+  const hasActiveFilters = Boolean(
+    search || filterClient || filterType || filterStatus || filterOverdueOnly
+  );
+
+  const toggleStatusFilter = (status: string) => {
+    setFilterStatus((prev) => (prev === status ? "" : status));
+  };
+
+  const toggleOverdueFilter = () => {
+    setFilterOverdueOnly((prev) => !prev);
+  };
+
+  const statCardClass = (active: boolean) =>
+    `rounded-2xl p-4 shadow-sm border text-center transition-all cursor-pointer ${
+      active ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+    }`;
 
   const handleCreate = async (formData: FormData) => {
     await createAction(formData);
@@ -180,9 +209,6 @@ export default function JobsPageClient({
     applyAutoFill(newJobClientId, jobType);
   };
 
-  const today = new Date().toISOString().split("T")[0];
-  const thirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-
   return (
     <div className="p-8">
 
@@ -208,9 +234,39 @@ export default function JobsPageClient({
         </div>
       )}
 
+      {/* Drillable stat cards */}
+      <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+        <button onClick={() => toggleStatusFilter("Active")} className={statCardClass(filterStatus === "Active")}>
+          <p className={`text-2xl font-bold ${filterStatus === "Active" ? "text-white" : "text-green-600"}`}>{activeCount}</p>
+          <p className={`text-xs mt-1 ${filterStatus === "Active" ? "text-slate-300" : "text-slate-500"}`}>Active</p>
+        </button>
+        <button onClick={() => toggleStatusFilter("Draft")} className={statCardClass(filterStatus === "Draft")}>
+          <p className={`text-2xl font-bold ${filterStatus === "Draft" ? "text-white" : "text-slate-900"}`}>{draftCount}</p>
+          <p className={`text-xs mt-1 ${filterStatus === "Draft" ? "text-slate-300" : "text-slate-500"}`}>Draft</p>
+        </button>
+        <button onClick={toggleOverdueFilter} className={statCardClass(filterOverdueOnly)}>
+          <p className={`text-2xl font-bold ${filterOverdueOnly ? "text-white" : "text-red-600"}`}>{overdueCount}</p>
+          <p className={`text-xs mt-1 ${filterOverdueOnly ? "text-slate-300" : "text-slate-500"}`}>Overdue</p>
+        </button>
+        <button onClick={() => toggleStatusFilter("Completed")} className={statCardClass(filterStatus === "Completed")}>
+          <p className={`text-2xl font-bold ${filterStatus === "Completed" ? "text-white" : "text-blue-600"}`}>{completedCount}</p>
+          <p className={`text-xs mt-1 ${filterStatus === "Completed" ? "text-slate-300" : "text-slate-500"}`}>Completed</p>
+        </button>
+      </div>
+
+      {/* Search */}
+      <div className="mt-6">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by job name or client..."
+          className="w-full max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+        />
+      </div>
+
       {/* Filters */}
-      <div className="mt-6 rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
-        <div className="grid gap-3 md:grid-cols-5">
+      <div className="mt-4 rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
+        <div className="grid gap-3 md:grid-cols-3">
           <select
             value={filterClient}
             onChange={(e) => setFilterClient(e.target.value)}
@@ -245,22 +301,6 @@ export default function JobsPageClient({
             <option>Completed</option>
             <option>Cancelled</option>
           </select>
-
-          <input
-            type="date"
-            value={dueFrom}
-            onChange={(e) => setDueFrom(e.target.value)}
-            className="rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-            placeholder="Due from"
-          />
-
-          <input
-            type="date"
-            value={dueTo}
-            onChange={(e) => setDueTo(e.target.value)}
-            className="rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-            placeholder="Due to"
-          />
         </div>
 
         {hasActiveFilters && (
@@ -270,54 +310,69 @@ export default function JobsPageClient({
         )}
       </div>
 
-      {/* Jobs List */}
-      <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-        <div className="space-y-3">
-          {filtered.map((job) => (
-            <div key={job.id}
-              className="flex items-center justify-between rounded-xl border border-slate-100 p-4">
-              <a href={`/jobs/${job.id}`} className="flex-1 hover:opacity-70 transition-opacity">
-                <div className="flex items-center gap-2">
-                  <p className="font-semibold text-slate-900">{job.job_name}</p>
-                  {job.is_recurring && (
-                    <span className="rounded-full bg-purple-50 px-2 py-0.5 text-xs text-purple-600 font-medium">
-                      ↻ {job.recurrence_frequency}
-                    </span>
-                  )}
+      {/* Jobs List — only shown once a filter or search narrows things down */}
+      {hasActiveFilters ? (
+        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <div className="space-y-3">
+            {filtered.map((job) => (
+              <div key={job.id}
+                className="flex items-center justify-between rounded-xl border border-slate-100 p-4">
+                <a href={`/jobs/${job.id}`} className="flex-1 hover:opacity-70 transition-opacity">
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-slate-900">{job.job_name}</p>
+                    {job.is_recurring && (
+                      <span className="rounded-full bg-purple-50 px-2 py-0.5 text-xs text-purple-600 font-medium">
+                        ↻ {job.recurrence_frequency}
+                      </span>
+                    )}
+                    {isOverdue(job) && (
+                      <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-600 font-medium">
+                        Overdue
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-slate-500">
+                    {job.clients?.client_name || "No client"} · {job.job_type || "No type"}
+                    {job.due_date && ` · Due ${new Date(job.due_date).toLocaleDateString("en-GB")}`}
+                  </p>
+                </a>
+
+                <div className="flex items-center gap-3">
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    job.status === "Active" ? "bg-green-100 text-green-700"
+                    : job.status === "Completed" ? "bg-blue-100 text-blue-700"
+                    : job.status === "On Hold" ? "bg-yellow-100 text-yellow-700"
+                    : job.status === "Cancelled" ? "bg-red-100 text-red-700"
+                    : "bg-slate-100 text-slate-600"
+                  }`}>
+                    {job.status || "Draft"}
+                  </span>
+
+                  <form action={deleteAction.bind(null, job.id)}>
+                    <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                      Delete
+                    </button>
+                  </form>
                 </div>
-                <p className="text-sm text-slate-500">
-                  {job.clients?.client_name || "No client"} · {job.job_type || "No type"}
-                  {job.due_date && ` · Due ${new Date(job.due_date).toLocaleDateString("en-GB")}`}
-                </p>
-              </a>
-
-              <div className="flex items-center gap-3">
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                  job.status === "Active" ? "bg-green-100 text-green-700"
-                  : job.status === "Completed" ? "bg-blue-100 text-blue-700"
-                  : job.status === "On Hold" ? "bg-yellow-100 text-yellow-700"
-                  : job.status === "Cancelled" ? "bg-red-100 text-red-700"
-                  : "bg-slate-100 text-slate-600"
-                }`}>
-                  {job.status || "Draft"}
-                </span>
-
-                <form action={deleteAction.bind(null, job.id)}>
-                  <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                    Delete
-                  </button>
-                </form>
               </div>
-            </div>
-          ))}
+            ))}
 
-          {filtered.length === 0 && (
-            <p className="text-sm text-slate-500 text-center py-8">
-              {hasActiveFilters ? "No jobs matching your filters." : "No jobs yet. Click + New Job to add your first one."}
-            </p>
-          )}
+            {filtered.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-8">
+                No jobs matching your filters.
+              </p>
+            )}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <p className="text-sm text-slate-500 text-center py-8">
+            {jobs.length === 0
+              ? "No jobs yet. Click + New Job to add your first one."
+              : "Search, filter, or click a stat above to see jobs."}
+          </p>
+        </div>
+      )}
 
       {/* Modal */}
       {showModal && (
