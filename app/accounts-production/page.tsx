@@ -208,9 +208,9 @@ async function deleteTrialBalance(id: string) {
 export default async function AccountsProductionPage({
   searchParams,
 }: {
-  searchParams: Promise<{ job?: string }>;
+  searchParams: Promise<{ job?: string; mode?: string; client?: string }>;
 }) {
-  const { job: jobId } = await searchParams;
+  const { job: jobId, mode, client: browseClientId } = await searchParams;
 
   const [{ data: trialBalances, error }, { data: clients }, { data: jobs }] = await Promise.all([
     supabase
@@ -228,6 +228,42 @@ export default async function AccountsProductionPage({
   ]);
 
   const selectedJob = jobId ? (jobs || []).find((j) => j.id === jobId) : null;
+
+  const browseResults = browseClientId
+    ? (trialBalances || []).filter((tb) => tb.client_id === browseClientId)
+    : [];
+
+  const renderTbRow = (tb: any) => {
+    const lineCount = tb.trial_balance_lines?.length || 0;
+    const mappedCount = (tb.trial_balance_lines || []).filter((l: any) => l.category).length;
+    const fullyMapped = lineCount > 0 && mappedCount === lineCount;
+
+    return (
+      <div key={tb.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+        <a href={`/accounts-production/${tb.id}`} className="flex-1">
+          <p className="font-semibold text-slate-900">
+            {(tb.clients as any)?.client_name || "No client"} — {new Date(tb.period_start).toLocaleDateString("en-GB")} to {new Date(tb.period_end).toLocaleDateString("en-GB")}
+          </p>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {lineCount} lines{(tb.jobs as any)?.job_name && ` · Job: ${(tb.jobs as any).job_name}`}
+            {tb.approval_status && ` · ${tb.approval_status}`}
+          </p>
+        </a>
+        <div className="flex items-center gap-4">
+          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+            fullyMapped ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
+          }`}>
+            {fullyMapped ? "Fully mapped" : `${mappedCount}/${lineCount} mapped`}
+          </span>
+          <form action={deleteTrialBalance.bind(null, tb.id)}>
+            <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+              Delete
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -253,155 +289,169 @@ export default async function AccountsProductionPage({
           </div>
         )}
 
-        {/* Step 1: select a job — client and period derive automatically */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">Select Job</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Client and period are taken automatically from the job's own dates.
-          </p>
-          <form method="get" className="mt-4 flex gap-2 items-end">
-            <div className="flex-1 max-w-md">
-              <select name="job" defaultValue={jobId || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                <option value="">Select a job</option>
-                {(jobs || []).map((j) => (
-                  <option key={j.id} value={j.id}>
-                    {(j.clients as any)?.client_name} — {j.job_name}
-                    {j.period_start && j.period_end && ` (${new Date(j.period_start).toLocaleDateString("en-GB")} – ${new Date(j.period_end).toLocaleDateString("en-GB")})`}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button type="submit"
-              className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-              Continue
-            </button>
-          </form>
+        {/* Entry choice: Browse existing vs Start New */}
+        <div className="grid gap-4 md:grid-cols-2 mb-6">
+          <a href="/accounts-production?mode=browse"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
+            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a client's active or historical accounts</p>
+          </a>
+          <a href="/accounts-production?mode=new"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "new" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "new" ? "text-white" : "text-slate-900"}`}>+ Start New Accounts</p>
+            <p className={`text-sm mt-1 ${mode === "new" ? "text-slate-300" : "text-slate-500"}`}>Select a job or client to upload a trial balance</p>
+          </a>
         </div>
 
-        {/* Upload form — appears once a job is selected, or via manual fallback below */}
-        {selectedJob && (
-          <div className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Upload Trial Balance</h2>
-            <p className="text-sm text-slate-500 mt-0.5">
-              CSV with columns for Nominal Code, Description, Debit, and Credit (column order and naming are flexible — headers are matched automatically).
-            </p>
-
-            <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
-              <span className="text-sm font-medium text-slate-700">
-                Client: {(selectedJob.clients as any)?.client_name} · Job: {selectedJob.job_name}
-              </span>
-              <a href="/accounts-production" className="text-xs font-semibold text-blue-600 hover:underline">Change job</a>
-            </div>
-
-            <form action={uploadTrialBalance} className="mt-4 grid gap-4 md:grid-cols-2">
-              <input type="hidden" name="client_id" value={selectedJob.client_id} />
-              <input type="hidden" name="job_id" value={selectedJob.id} />
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-                <input name="period_start" type="date" required defaultValue={selectedJob.period_start || ""}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-                <input name="period_end" type="date" required defaultValue={selectedJob.period_end || ""}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-              </div>
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance CSV *</label>
-                <input name="csv_file" type="file" accept=".csv" required
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
-              </div>
-              <div className="md:col-span-2">
-                <button type="submit"
-                  className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  Upload & Continue
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-
-        {/* Fallback: manual client + period, for clients without a job set up */}
-        <details className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <summary className="text-sm font-semibold text-slate-600 cursor-pointer">
-            Or select client and period manually →
-          </summary>
-          <form action={uploadTrialBalance} className="mt-4 grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
-              <select name="client_id" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+        {/* BROWSE MODE */}
+        {mode === "browse" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 mb-6">
+            <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
+            <form method="get" className="mt-4 flex gap-2">
+              <input type="hidden" name="mode" value="browse" />
+              <select name="client" defaultValue={browseClientId || ""}
+                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
                 <option value="">Select a client</option>
                 {(clients || []).map((c) => (
                   <option key={c.id} value={c.id}>{c.client_name}</option>
                 ))}
               </select>
-            </div>
-            <div></div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-              <input name="period_start" type="date" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-              <input name="period_end" type="date" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance CSV *</label>
-              <input name="csv_file" type="file" accept=".csv" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
-            </div>
-            <div className="md:col-span-2">
               <button type="submit"
-                className="rounded-xl bg-slate-100 px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                Upload & Continue
+                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                Show
               </button>
-            </div>
-          </form>
-        </details>
+            </form>
 
-        {/* List */}
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">All Trial Balances ({trialBalances?.length ?? 0})</h2>
-          <div className="mt-4 space-y-2">
-            {(trialBalances || []).map((tb) => {
-              const lineCount = tb.trial_balance_lines?.length || 0;
-              const mappedCount = (tb.trial_balance_lines || []).filter((l: any) => l.category).length;
-              const fullyMapped = lineCount > 0 && mappedCount === lineCount;
-
-              return (
-                <div key={tb.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
-                  <a href={`/accounts-production/${tb.id}`} className="flex-1">
-                    <p className="font-semibold text-slate-900">
-                      {(tb.clients as any)?.client_name || "No client"} — {new Date(tb.period_start).toLocaleDateString("en-GB")} to {new Date(tb.period_end).toLocaleDateString("en-GB")}
-                    </p>
-                    <p className="text-sm text-slate-500 mt-0.5">
-                      {lineCount} lines{(tb.jobs as any)?.job_name && ` · Job: ${(tb.jobs as any).job_name}`}
-                    </p>
-                  </a>
-                  <div className="flex items-center gap-4">
-                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      fullyMapped ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
-                    }`}>
-                      {fullyMapped ? "Fully mapped" : `${mappedCount}/${lineCount} mapped`}
-                    </span>
-                    <form action={deleteTrialBalance.bind(null, tb.id)}>
-                      <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                        Delete
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              );
-            })}
-            {(!trialBalances || trialBalances.length === 0) && (
-              <p className="text-sm text-slate-500 text-center py-8">No trial balances uploaded yet.</p>
+            {browseClientId && (
+              <div className="mt-6 space-y-2">
+                {browseResults.map(renderTbRow)}
+                {browseResults.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-8">No accounts on file for this client yet.</p>
+                )}
+              </div>
             )}
           </div>
-        </div>
+        )}
+
+        {/* NEW MODE */}
+        {mode === "new" && (
+          <>
+            {/* Select a job — client and period derive automatically */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Select Job</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Client and period are taken automatically from the job's own dates.
+              </p>
+              <form method="get" className="mt-4 flex gap-2 items-end">
+                <input type="hidden" name="mode" value="new" />
+                <div className="flex-1 max-w-md">
+                  <select name="job" defaultValue={jobId || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Select a job</option>
+                    {(jobs || []).map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {(j.clients as any)?.client_name} — {j.job_name}
+                        {j.period_start && j.period_end && ` (${new Date(j.period_start).toLocaleDateString("en-GB")} – ${new Date(j.period_end).toLocaleDateString("en-GB")})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button type="submit"
+                  className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                  Continue
+                </button>
+              </form>
+            </div>
+
+            {/* Upload form — appears once a job is selected, or via manual fallback below */}
+            {selectedJob && (
+              <div className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <h2 className="text-lg font-bold text-slate-900">Upload Trial Balance</h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  CSV with columns for Nominal Code, Description, Debit, and Credit (column order and naming are flexible — headers are matched automatically).
+                </p>
+
+                <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
+                  <span className="text-sm font-medium text-slate-700">
+                    Client: {(selectedJob.clients as any)?.client_name} · Job: {selectedJob.job_name}
+                  </span>
+                  <a href="/accounts-production?mode=new" className="text-xs font-semibold text-blue-600 hover:underline">Change job</a>
+                </div>
+
+                <form action={uploadTrialBalance} className="mt-4 grid gap-4 md:grid-cols-2">
+                  <input type="hidden" name="client_id" value={selectedJob.client_id} />
+                  <input type="hidden" name="job_id" value={selectedJob.id} />
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
+                    <input name="period_start" type="date" required defaultValue={selectedJob.period_start || ""}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
+                    <input name="period_end" type="date" required defaultValue={selectedJob.period_end || ""}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance CSV *</label>
+                    <input name="csv_file" type="file" accept=".csv" required
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
+                  </div>
+                  <div className="md:col-span-2">
+                    <button type="submit"
+                      className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                      Upload & Continue
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Fallback: manual client + period, for clients without a job set up */}
+            <details className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <summary className="text-sm font-semibold text-slate-600 cursor-pointer">
+                Or select client and period manually →
+              </summary>
+              <form action={uploadTrialBalance} className="mt-4 grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
+                  <select name="client_id" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Select a client</option>
+                    {(clients || []).map((c) => (
+                      <option key={c.id} value={c.id}>{c.client_name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div></div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
+                  <input name="period_start" type="date" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
+                  <input name="period_end" type="date" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance CSV *</label>
+                  <input name="csv_file" type="file" accept=".csv" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
+                </div>
+                <div className="md:col-span-2">
+                  <button type="submit"
+                    className="rounded-xl bg-slate-100 px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                    Upload & Continue
+                  </button>
+                </div>
+              </form>
+            </details>
+          </>
+        )}
       </div>
     </div>
   );

@@ -132,7 +132,13 @@ async function deleteComputation(id: string) {
   revalidatePath("/capital-gains");
 }
 
-export default async function CapitalGainsPage() {
+export default async function CapitalGainsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ mode?: string; browseClient?: string }>;
+}) {
+  const { mode, browseClient: browseClientId } = await searchParams;
+
   const [{ data: computations, error }, { data: clients }, { data: jobs }, { data: taxComputations }] = await Promise.all([
     supabase
       .from("capital_gains_computations")
@@ -177,6 +183,52 @@ export default async function CapitalGainsPage() {
     })
   );
 
+  const browseRows = browseClientId ? rows.filter((r) => r.comp.client_id === browseClientId) : [];
+
+  const renderRow = ({ comp, result }: (typeof rows)[number]) => {
+    const is60Day = comp.entity_type === "Individual" && comp.asset_category === "Residential Property";
+    const deadline = is60Day ? new Date(new Date(comp.disposal_date).getTime() + 60 * 24 * 60 * 60 * 1000) : null;
+    const daysLeft = deadline ? Math.ceil((deadline.getTime() - Date.now()) / (24 * 60 * 60 * 1000)) : null;
+
+    return (
+      <div key={comp.id} className="rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+        <div className="flex items-center justify-between">
+          <a href={`/capital-gains/${comp.id}`} className="flex-1">
+            <p className="font-semibold text-slate-900">
+              {(comp.clients as any)?.client_name || "No client"} — {comp.asset_description}
+            </p>
+            <p className="text-sm text-slate-500">
+              {comp.entity_type} · Disposed {new Date(comp.disposal_date).toLocaleDateString("en-GB")}
+              {comp.badr_eligible && " · BADR"}
+            </p>
+          </a>
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="font-bold text-slate-900">
+                {result.isCompany ? `£${result.taxableGain.toFixed(2)}` : `£${result.cgtDue.toFixed(2)}`}
+              </p>
+              <p className="text-xs text-slate-400">{result.isCompany ? "chargeable gain" : "CGT due"}</p>
+            </div>
+            <form action={deleteComputation.bind(null, comp.id)}>
+              <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                Delete
+              </button>
+            </form>
+          </div>
+        </div>
+        {is60Day && daysLeft !== null && (
+          <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-semibold ${
+            daysLeft < 0 ? "bg-red-100 text-red-700" : daysLeft <= 14 ? "bg-orange-100 text-orange-700" : "bg-blue-50 text-blue-700"
+          }`}>
+            {daysLeft < 0
+              ? `⚠ 60-day property return was due ${deadline!.toLocaleDateString("en-GB")} — overdue`
+              : `60-day property return due ${deadline!.toLocaleDateString("en-GB")} (${daysLeft} days left)`}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
@@ -193,203 +245,200 @@ export default async function CapitalGainsPage() {
           </div>
         )}
 
-        {/* New Computation Form */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">New Capital Gains Computation</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            For a company, this calculates the chargeable gain to include in its Corporation Tax computation — companies don't pay CGT directly.
-          </p>
+        {/* Entry choice: Browse existing vs Start New */}
+        <div className="grid gap-4 md:grid-cols-2 mb-6">
+          <a href="/capital-gains?mode=browse"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
+            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a client's CGT computations</p>
+          </a>
+          <a href="/capital-gains?mode=new"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "new" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "new" ? "text-white" : "text-slate-900"}`}>+ New Computation</p>
+            <p className={`text-sm mt-1 ${mode === "new" ? "text-slate-300" : "text-slate-500"}`}>Record a disposal for a client</p>
+          </a>
+        </div>
 
-          <form action={createComputation} className="mt-6 grid gap-4 md:grid-cols-3">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
-              <select name="client_id" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+        {/* BROWSE MODE */}
+        {mode === "browse" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
+            <form method="get" className="mt-4 flex gap-2">
+              <input type="hidden" name="mode" value="browse" />
+              <select name="browseClient" defaultValue={browseClientId || ""}
+                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
                 <option value="">Select a client</option>
                 {(clients || []).map((c) => (
                   <option key={c.id} value={c.id}>{c.client_name}</option>
                 ))}
               </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Entity Type</label>
-              <select name="entity_type" defaultValue="Individual"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                <option>Individual</option>
-                <option>Company</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
-              <select name="job_id"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                <option value="">No linked job</option>
-                {(jobs || []).map((j) => (
-                  <option key={j.id} value={j.id}>{j.job_name}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Asset Description *</label>
-              <input name="asset_description" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                placeholder="e.g. 12 Elm Street buy-to-let, or Shares in XYZ Ltd" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Asset Category</label>
-              <select name="asset_category" defaultValue="Other Assets"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                <option>Other Assets</option>
-                <option>Residential Property</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Acquisition Date</label>
-              <input name="acquisition_date" type="date"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Acquisition Cost (£)</label>
-              <input name="acquisition_cost" type="number" step="0.01" min="0" defaultValue="0"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Improvement Costs (£)</label>
-              <input name="improvement_costs" type="number" step="0.01" min="0" defaultValue="0"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Disposal Date *</label>
-              <input name="disposal_date" type="date" required
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Disposal Proceeds (£)</label>
-              <input name="disposal_proceeds" type="number" step="0.01" min="0" defaultValue="0"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Incidental Costs (£)</label>
-              <input name="incidental_costs" type="number" step="0.01" min="0" defaultValue="0"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                placeholder="Legal fees, agent fees etc." />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Losses Brought Forward (£)</label>
-              <input name="losses_brought_forward" type="number" step="0.01" min="0" defaultValue="0"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Linked Personal Tax Computation</label>
-              <select name="linked_tax_computation_id"
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                <option value="">None</option>
-                {(taxComputations || []).map((tc) => (
-                  <option key={tc.id} value={tc.id}>{tc.tax_year}</option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-400 mt-1">Individuals only — used to estimate remaining basic rate band for the gain.</p>
-            </div>
-            <div className="flex items-end pb-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input name="badr_eligible" type="checkbox" className="w-4 h-4 rounded" />
-                <span className="text-sm font-medium text-slate-700">Eligible for Business Asset Disposal Relief</span>
-              </label>
-            </div>
-
-            <div className="md:col-span-3 rounded-xl border border-slate-100 p-4">
-              <label className="flex items-center gap-2 cursor-pointer mb-3">
-                <input name="rollover_relief_claimed" type="checkbox" className="w-4 h-4 rounded" />
-                <span className="text-sm font-medium text-slate-700">Claiming Business Asset Rollover Relief</span>
-              </label>
-              <p className="text-xs text-slate-400 mb-3">
-                Defers the gain by rolling it into the cost of a replacement business asset. Applies to individuals and companies. If proceeds aren't fully reinvested, tax is due now on the shortfall.
-              </p>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Amount Reinvested (£)</label>
-                  <input name="amount_reinvested" type="number" step="0.01" min="0" defaultValue="0"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Cost of Replacement Asset (£)</label>
-                  <input name="replacement_asset_cost" type="number" step="0.01" min="0" defaultValue="0"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                </div>
-              </div>
-            </div>
-
-            <div className="md:col-span-3">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-              <textarea name="notes" rows={2}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-            </div>
-
-            <div className="md:col-span-3">
               <button type="submit"
-                className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                Calculate & Save
+                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                Show
               </button>
-            </div>
-          </form>
-        </div>
+            </form>
 
-        {/* List */}
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">All Computations ({rows.length})</h2>
-          <div className="mt-4 space-y-3">
-            {rows.map(({ comp, result }) => {
-              const is60Day = comp.entity_type === "Individual" && comp.asset_category === "Residential Property";
-              const deadline = is60Day ? new Date(new Date(comp.disposal_date).getTime() + 60 * 24 * 60 * 60 * 1000) : null;
-              const daysLeft = deadline ? Math.ceil((deadline.getTime() - Date.now()) / (24 * 60 * 60 * 1000)) : null;
-
-              return (
-                <div key={comp.id} className="rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
-                  <div className="flex items-center justify-between">
-                    <a href={`/capital-gains/${comp.id}`} className="flex-1">
-                      <p className="font-semibold text-slate-900">
-                        {(comp.clients as any)?.client_name || "No client"} — {comp.asset_description}
-                      </p>
-                      <p className="text-sm text-slate-500">
-                        {comp.entity_type} · Disposed {new Date(comp.disposal_date).toLocaleDateString("en-GB")}
-                        {comp.badr_eligible && " · BADR"}
-                      </p>
-                    </a>
-                    <div className="flex items-center gap-4">
-                      <div className="text-right">
-                        <p className="font-bold text-slate-900">
-                          {result.isCompany ? `£${result.taxableGain.toFixed(2)}` : `£${result.cgtDue.toFixed(2)}`}
-                        </p>
-                        <p className="text-xs text-slate-400">{result.isCompany ? "chargeable gain" : "CGT due"}</p>
-                      </div>
-                      <form action={deleteComputation.bind(null, comp.id)}>
-                        <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                          Delete
-                        </button>
-                      </form>
-                    </div>
-                  </div>
-                  {is60Day && daysLeft !== null && (
-                    <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-semibold ${
-                      daysLeft < 0 ? "bg-red-100 text-red-700" : daysLeft <= 14 ? "bg-orange-100 text-orange-700" : "bg-blue-50 text-blue-700"
-                    }`}>
-                      {daysLeft < 0
-                        ? `⚠ 60-day property return was due ${deadline!.toLocaleDateString("en-GB")} — overdue`
-                        : `60-day property return due ${deadline!.toLocaleDateString("en-GB")} (${daysLeft} days left)`}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {rows.length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-8">No computations yet. Create your first one above.</p>
+            {browseClientId && (
+              <div className="mt-6 space-y-3">
+                {browseRows.map(renderRow)}
+                {browseRows.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-8">No CGT computations on file for this client yet.</p>
+                )}
+              </div>
             )}
           </div>
-        </div>
+        )}
+
+        {/* NEW MODE */}
+        {mode === "new" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">New Capital Gains Computation</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              For a company, this calculates the chargeable gain to include in its Corporation Tax computation — companies don't pay CGT directly.
+            </p>
+
+            <form action={createComputation} className="mt-6 grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
+                <select name="client_id" required
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">Select a client</option>
+                  {(clients || []).map((c) => (
+                    <option key={c.id} value={c.id}>{c.client_name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Entity Type</label>
+                <select name="entity_type" defaultValue="Individual"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option>Individual</option>
+                  <option>Company</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
+                <select name="job_id"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">No linked job</option>
+                  {(jobs || []).map((j) => (
+                    <option key={j.id} value={j.id}>{j.job_name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-slate-700 mb-1">Asset Description *</label>
+                <input name="asset_description" required
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  placeholder="e.g. 12 Elm Street buy-to-let, or Shares in XYZ Ltd" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Asset Category</label>
+                <select name="asset_category" defaultValue="Other Assets"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option>Other Assets</option>
+                  <option>Residential Property</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Acquisition Date</label>
+                <input name="acquisition_date" type="date"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Acquisition Cost (£)</label>
+                <input name="acquisition_cost" type="number" step="0.01" min="0" defaultValue="0"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Improvement Costs (£)</label>
+                <input name="improvement_costs" type="number" step="0.01" min="0" defaultValue="0"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Disposal Date *</label>
+                <input name="disposal_date" type="date" required
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Disposal Proceeds (£)</label>
+                <input name="disposal_proceeds" type="number" step="0.01" min="0" defaultValue="0"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Incidental Costs (£)</label>
+                <input name="incidental_costs" type="number" step="0.01" min="0" defaultValue="0"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  placeholder="Legal fees, agent fees etc." />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Losses Brought Forward (£)</label>
+                <input name="losses_brought_forward" type="number" step="0.01" min="0" defaultValue="0"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Linked Personal Tax Computation</label>
+                <select name="linked_tax_computation_id"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">None</option>
+                  {(taxComputations || []).map((tc) => (
+                    <option key={tc.id} value={tc.id}>{tc.tax_year}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-400 mt-1">Individuals only — used to estimate remaining basic rate band for the gain.</p>
+              </div>
+              <div className="flex items-end pb-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input name="badr_eligible" type="checkbox" className="w-4 h-4 rounded" />
+                  <span className="text-sm font-medium text-slate-700">Eligible for Business Asset Disposal Relief</span>
+                </label>
+              </div>
+
+              <div className="md:col-span-3 rounded-xl border border-slate-100 p-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-3">
+                  <input name="rollover_relief_claimed" type="checkbox" className="w-4 h-4 rounded" />
+                  <span className="text-sm font-medium text-slate-700">Claiming Business Asset Rollover Relief</span>
+                </label>
+                <p className="text-xs text-slate-400 mb-3">
+                  Defers the gain by rolling it into the cost of a replacement business asset. Applies to individuals and companies. If proceeds aren't fully reinvested, tax is due now on the shortfall.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Amount Reinvested (£)</label>
+                    <input name="amount_reinvested" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Cost of Replacement Asset (£)</label>
+                    <input name="replacement_asset_cost" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="md:col-span-3">
+                <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                <textarea name="notes" rows={2}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+
+              <div className="md:col-span-3">
+                <button type="submit"
+                  className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Calculate & Save
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -90,9 +90,9 @@ async function deleteComputation(id: string) {
 export default async function PartnershipTaxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ client?: string; job?: string }>;
+  searchParams: Promise<{ mode?: string; client?: string; job?: string; browseClient?: string }>;
 }) {
-  const { client: selectedClientId, job: selectedJobId } = await searchParams;
+  const { mode, client: selectedClientId, job: selectedJobId, browseClient: browseClientId } = await searchParams;
 
   const [{ data: computations, error }, { data: clients }, { data: jobs }] = await Promise.all([
     supabase
@@ -162,6 +162,33 @@ export default async function PartnershipTaxPage({
 
   const selectedJobRecord = selectedJobId ? (jobs || []).find((j) => j.id === selectedJobId) : null;
 
+  const browseRows = browseClientId ? rows.filter((r) => r.comp.client_id === browseClientId) : [];
+
+  const renderRow = ({ comp, ca, adjustedProfit, partners, totalShare }: (typeof rows)[number]) => (
+    <div key={comp.id} className="rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+      <div className="flex items-center justify-between">
+        <a href={`/partnership-tax/${comp.id}`} className="flex-1">
+          <p className="font-semibold text-slate-900">
+            {(comp.clients as any)?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+          </p>
+          <p className="text-sm text-slate-500">
+            Adjusted profit: £{adjustedProfit.toFixed(2)} · Capital allowances: £{ca.totalCapitalAllowances.toFixed(2)} · {partners.length} partner{partners.length !== 1 ? "s" : ""}
+          </p>
+        </a>
+        <form action={deleteComputation.bind(null, comp.id)}>
+          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+            Delete
+          </button>
+        </form>
+      </div>
+      {partners.length > 0 && Math.abs(totalShare - 100) > 0.01 && (
+        <div className="mt-2 rounded-lg bg-yellow-50 px-3 py-1.5 text-xs font-semibold text-yellow-700">
+          ⚠ Profit shares total {totalShare.toFixed(2)}%, not 100%
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
@@ -178,210 +205,228 @@ export default async function PartnershipTaxPage({
           </div>
         )}
 
-        {/* New Computation Form */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">New Partnership Tax Computation</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Capital allowances are calculated automatically from assets acquired in this period in the Fixed Asset Register.
-          </p>
+        {/* Entry choice: Browse existing vs Start New */}
+        <div className="grid gap-4 md:grid-cols-2 mb-6">
+          <a href="/partnership-tax?mode=browse"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
+            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a partnership's computations</p>
+          </a>
+          <a href="/partnership-tax?mode=new"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "new" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "new" ? "text-white" : "text-slate-900"}`}>+ New Computation</p>
+            <p className={`text-sm mt-1 ${mode === "new" ? "text-slate-300" : "text-slate-500"}`}>Select a partnership to start</p>
+          </a>
+        </div>
 
-          {/* Step 1: pick the partnership client */}
-          <form method="get" className="mt-4 flex gap-2 items-end">
-            <div className="flex-1 max-w-sm">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Partnership (Client)</label>
-              <select name="client" defaultValue={selectedClientId || ""}
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                <option value="">Select the partnership to start</option>
+        {/* BROWSE MODE */}
+        {mode === "browse" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Find Partnership</h2>
+            <form method="get" className="mt-4 flex gap-2">
+              <input type="hidden" name="mode" value="browse" />
+              <select name="browseClient" defaultValue={browseClientId || ""}
+                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                <option value="">Select a partnership</option>
                 {(clients || []).map((c) => (
                   <option key={c.id} value={c.id}>{c.client_name}</option>
                 ))}
               </select>
-            </div>
-            <button type="submit"
-              className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-              Continue
-            </button>
-          </form>
+              <button type="submit"
+                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                Show
+              </button>
+            </form>
 
-          {/* Step 2: optionally pick a linked job */}
-          {selectedClientId && selectedClient && selectedJobId === undefined && (
-            <div className="mt-4">
-              <form method="get" className="flex gap-2 items-end">
-                <input type="hidden" name="client" value={selectedClientId} />
-                <div className="flex-1 max-w-sm">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
-                  <select name="job" defaultValue=""
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                    <option value="">No linked job</option>
-                    {(jobs || []).filter((j) => j.client_id === selectedClientId).map((j) => (
-                      <option key={j.id} value={j.id}>{j.job_name}</option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-slate-400 mt-1">
-                    If linked, capital allowances pull from that job's assets, and Accounting Profit/Depreciation/Period pre-fill from any linked trial balance.
-                  </p>
-                </div>
-                <button type="submit"
-                  className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                  Continue
-                </button>
-              </form>
-              <a href={`/partnership-tax?client=${selectedClientId}&job=`}
-                className="inline-block mt-2 text-xs font-semibold text-blue-600 hover:underline">
-                Skip — continue without a job →
-              </a>
-            </div>
-          )}
-
-          {/* Step 3: full form */}
-          {selectedClientId && selectedClient && selectedJobId !== undefined && (
-            <>
-              {linkedTrialBalance && (
-                <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
-                  Trial balance found for this job, period {new Date(suggestedPeriodStart).toLocaleDateString("en-GB")} to {new Date(suggestedPeriodEnd).toLocaleDateString("en-GB")}:
-                  {" "}Accounting Profit and Depreciation have been pre-filled from the accounts below.
-                </div>
-              )}
-
-              <form action={createComputation} className="mt-4 space-y-6">
-                <input type="hidden" name="client_id" value={selectedClientId} />
-                <input type="hidden" name="job_id" value={selectedJobId || ""} />
-                <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
-                  <span className="text-sm font-medium text-slate-700">
-                    Partnership: {selectedClient.client_name}
-                    {selectedJobRecord && ` · Job: ${selectedJobRecord.job_name}`}
-                  </span>
-                  <a href="/partnership-tax" className="text-xs font-semibold text-blue-600 hover:underline">Change client</a>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-                    <input name="period_start" type="date" required defaultValue={suggestedPeriodStart || ""}
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-                    <input name="period_end" type="date" required defaultValue={suggestedPeriodEnd || ""}
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div></div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Accounting Profit (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
-                    </label>
-                    <input name="accounting_profit" type="number" step="0.01" defaultValue={suggestedAccountingProfit || 0}
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Depreciation Add-back (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
-                    </label>
-                    <input name="depreciation_addback" type="number" step="0.01" min="0" defaultValue={suggestedDepreciation || 0}
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Other Disallowable Expenses (£)</label>
-                    <input name="disallowable_expenses" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Other Allowable Deductions (£)</label>
-                    <input name="other_allowable_deductions" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Main Pool Brought Forward (£)</label>
-                    <input name="main_pool_bfwd" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Special Rate Pool Brought Forward (£)</label>
-                    <input name="special_rate_pool_bfwd" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                </div>
-
-                {/* Partners */}
-                <div className="border-t border-slate-100 pt-6">
-                  <h3 className="text-sm font-bold text-slate-900 mb-1">Partners</h3>
-                  <p className="text-xs text-slate-400 mb-4">
-                    Add each partner and their profit-sharing percentage. Link to an existing client to later pull their share into their Personal Tax computation. Shares should sum to 100%.
-                  </p>
-                  <div className="hidden md:grid grid-cols-12 gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wide px-1 mb-1">
-                    <span className="col-span-4">Partner Name</span>
-                    <span className="col-span-5">Link to Client (optional)</span>
-                    <span className="col-span-3 text-right">Profit Share %</span>
-                  </div>
-                  <div className="space-y-2">
-                    {[0, 1, 2, 3, 4, 5].map((i) => (
-                      <div key={i} className="grid gap-2 md:grid-cols-12">
-                        <input name={`partner_name_${i}`} placeholder="Partner name"
-                          className="md:col-span-4 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        <select name={`partner_client_${i}`} defaultValue=""
-                          className="md:col-span-5 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                          <option value="">No linked client</option>
-                          {(clients || []).map((c) => (
-                            <option key={c.id} value={c.id}>{c.client_name}</option>
-                          ))}
-                        </select>
-                        <input name={`profit_share_${i}`} type="number" step="0.01" min="0" max="100" placeholder="0.00"
-                          className="md:col-span-3 rounded-xl border border-slate-200 p-2.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                  <textarea name="notes" rows={2}
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                </div>
-
-                <button type="submit"
-                  className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  Calculate & Save
-                </button>
-              </form>
-            </>
-          )}
-        </div>
-
-        {/* List */}
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">All Computations ({rows.length})</h2>
-          <div className="mt-4 space-y-3">
-            {rows.map(({ comp, ca, adjustedProfit, partners, totalShare }) => (
-              <div key={comp.id} className="rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
-                <div className="flex items-center justify-between">
-                  <a href={`/partnership-tax/${comp.id}`} className="flex-1">
-                    <p className="font-semibold text-slate-900">
-                      {(comp.clients as any)?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
-                    </p>
-                    <p className="text-sm text-slate-500">
-                      Adjusted profit: £{adjustedProfit.toFixed(2)} · Capital allowances: £{ca.totalCapitalAllowances.toFixed(2)} · {partners.length} partner{partners.length !== 1 ? "s" : ""}
-                    </p>
-                  </a>
-                  <form action={deleteComputation.bind(null, comp.id)}>
-                    <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                      Delete
-                    </button>
-                  </form>
-                </div>
-                {partners.length > 0 && Math.abs(totalShare - 100) > 0.01 && (
-                  <div className="mt-2 rounded-lg bg-yellow-50 px-3 py-1.5 text-xs font-semibold text-yellow-700">
-                    ⚠ Profit shares total {totalShare.toFixed(2)}%, not 100%
-                  </div>
+            {browseClientId && (
+              <div className="mt-6 space-y-3">
+                {browseRows.map(renderRow)}
+                {browseRows.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-8">No partnership tax computations on file for this client yet.</p>
                 )}
               </div>
-            ))}
-            {rows.length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-8">No computations yet. Create your first one above.</p>
             )}
           </div>
-        </div>
+        )}
+
+        {/* NEW MODE */}
+        {mode === "new" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">New Partnership Tax Computation</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Capital allowances are calculated automatically from assets acquired in this period in the Fixed Asset Register.
+            </p>
+
+            {/* Step 1: pick the partnership client */}
+            <form method="get" className="mt-4 flex gap-2 items-end">
+              <input type="hidden" name="mode" value="new" />
+              <div className="flex-1 max-w-sm">
+                <label className="block text-sm font-medium text-slate-700 mb-1">Partnership (Client)</label>
+                <select name="client" defaultValue={selectedClientId || ""}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                  <option value="">Select the partnership to start</option>
+                  {(clients || []).map((c) => (
+                    <option key={c.id} value={c.id}>{c.client_name}</option>
+                  ))}
+                </select>
+              </div>
+              <button type="submit"
+                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                Continue
+              </button>
+            </form>
+
+            {/* Step 2: optionally pick a linked job */}
+            {selectedClientId && selectedClient && selectedJobId === undefined && (
+              <div className="mt-4">
+                <form method="get" className="flex gap-2 items-end">
+                  <input type="hidden" name="mode" value="new" />
+                  <input type="hidden" name="client" value={selectedClientId} />
+                  <div className="flex-1 max-w-sm">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
+                    <select name="job" defaultValue=""
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                      <option value="">No linked job</option>
+                      {(jobs || []).filter((j) => j.client_id === selectedClientId).map((j) => (
+                        <option key={j.id} value={j.id}>{j.job_name}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-400 mt-1">
+                      If linked, capital allowances pull from that job's assets, and Accounting Profit/Depreciation/Period pre-fill from any linked trial balance.
+                    </p>
+                  </div>
+                  <button type="submit"
+                    className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                    Continue
+                  </button>
+                </form>
+                <a href={`/partnership-tax?mode=new&client=${selectedClientId}&job=`}
+                  className="inline-block mt-2 text-xs font-semibold text-blue-600 hover:underline">
+                  Skip — continue without a job →
+                </a>
+              </div>
+            )}
+
+            {/* Step 3: full form */}
+            {selectedClientId && selectedClient && selectedJobId !== undefined && (
+              <>
+                {linkedTrialBalance && (
+                  <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
+                    Trial balance found for this job, period {new Date(suggestedPeriodStart).toLocaleDateString("en-GB")} to {new Date(suggestedPeriodEnd).toLocaleDateString("en-GB")}:
+                    {" "}Accounting Profit and Depreciation have been pre-filled from the accounts below.
+                  </div>
+                )}
+
+                <form action={createComputation} className="mt-4 space-y-6">
+                  <input type="hidden" name="client_id" value={selectedClientId} />
+                  <input type="hidden" name="job_id" value={selectedJobId || ""} />
+                  <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-700">
+                      Partnership: {selectedClient.client_name}
+                      {selectedJobRecord && ` · Job: ${selectedJobRecord.job_name}`}
+                    </span>
+                    <a href="/partnership-tax?mode=new" className="text-xs font-semibold text-blue-600 hover:underline">Change client</a>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
+                      <input name="period_start" type="date" required defaultValue={suggestedPeriodStart || ""}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
+                      <input name="period_end" type="date" required defaultValue={suggestedPeriodEnd || ""}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div></div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">
+                        Accounting Profit (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                      </label>
+                      <input name="accounting_profit" type="number" step="0.01" defaultValue={suggestedAccountingProfit || 0}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">
+                        Depreciation Add-back (£) {linkedTrialBalance && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                      </label>
+                      <input name="depreciation_addback" type="number" step="0.01" min="0" defaultValue={suggestedDepreciation || 0}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Other Disallowable Expenses (£)</label>
+                      <input name="disallowable_expenses" type="number" step="0.01" min="0" defaultValue="0"
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Other Allowable Deductions (£)</label>
+                      <input name="other_allowable_deductions" type="number" step="0.01" min="0" defaultValue="0"
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Main Pool Brought Forward (£)</label>
+                      <input name="main_pool_bfwd" type="number" step="0.01" min="0" defaultValue="0"
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Special Rate Pool Brought Forward (£)</label>
+                      <input name="special_rate_pool_bfwd" type="number" step="0.01" min="0" defaultValue="0"
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                  </div>
+
+                  {/* Partners */}
+                  <div className="border-t border-slate-100 pt-6">
+                    <h3 className="text-sm font-bold text-slate-900 mb-1">Partners</h3>
+                    <p className="text-xs text-slate-400 mb-4">
+                      Add each partner and their profit-sharing percentage. Link to an existing client to later pull their share into their Personal Tax computation. Shares should sum to 100%.
+                    </p>
+                    <div className="hidden md:grid grid-cols-12 gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wide px-1 mb-1">
+                      <span className="col-span-4">Partner Name</span>
+                      <span className="col-span-5">Link to Client (optional)</span>
+                      <span className="col-span-3 text-right">Profit Share %</span>
+                    </div>
+                    <div className="space-y-2">
+                      {[0, 1, 2, 3, 4, 5].map((i) => (
+                        <div key={i} className="grid gap-2 md:grid-cols-12">
+                          <input name={`partner_name_${i}`} placeholder="Partner name"
+                            className="md:col-span-4 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                          <select name={`partner_client_${i}`} defaultValue=""
+                            className="md:col-span-5 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                            <option value="">No linked client</option>
+                            {(clients || []).map((c) => (
+                              <option key={c.id} value={c.id}>{c.client_name}</option>
+                            ))}
+                          </select>
+                          <input name={`profit_share_${i}`} type="number" step="0.01" min="0" max="100" placeholder="0.00"
+                            className="md:col-span-3 rounded-xl border border-slate-200 p-2.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                    <textarea name="notes" rows={2}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+
+                  <button type="submit"
+                    className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                    Calculate & Save
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
+import { calculateNBV } from "../../fixed-assets/page";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,24 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+const POOL_OPTIONS = [
+  "Main Pool - AIA Eligible",
+  "Special Rate Pool - AIA Eligible",
+  "Main Pool - Car (not AIA eligible)",
+  "Special Rate Pool - Car (not AIA eligible)",
+  "Zero Emission Car (100% FYA)",
+];
+
+const CATEGORY_OPTIONS = [
+  "Plant & Machinery",
+  "Computer Equipment",
+  "Motor Vehicles",
+  "Fixtures & Fittings",
+  "Integral Features",
+  "Office Equipment",
+  "Other",
+];
 
 async function updateClientRecord(id: string, formData: FormData) {
   "use server";
@@ -125,15 +144,70 @@ async function deleteIdDocument(clientId: string, docId: string, storagePath: st
   revalidatePath(`/clients/${clientId}`);
 }
 
+// Fixed assets — client is fixed via the bound clientId, never a form field,
+// since this action only ever runs from within that client's own page.
+async function addAssetForClient(clientId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const description = get("description");
+  if (!description) return;
+
+  await supabase.from("fixed_assets").insert({
+    client_id: clientId,
+    job_id: get("job_id") || null,
+    description,
+    category: get("category") || null,
+    capital_allowance_pool: get("capital_allowance_pool") || "Main Pool - AIA Eligible",
+    acquisition_date: get("acquisition_date"),
+    cost: parseFloat(get("cost")) || 0,
+    depreciation_rate_pct: parseFloat(get("depreciation_rate_pct")) || 20,
+    depreciation_method: get("depreciation_method") || "Straight Line",
+    notes: get("notes") || null,
+  });
+
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/fixed-assets");
+  revalidatePath("/fixed-assets/register");
+}
+
+// Only ever touches disposal_date / disposal_proceeds — same narrow pattern as
+// the standalone Dispose Asset page, so this can't blank out other asset fields.
+async function disposeAssetForClient(clientId: string, assetId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  await supabase.from("fixed_assets").update({
+    disposal_date: get("disposal_date") || null,
+    disposal_proceeds: get("disposal_proceeds") ? parseFloat(get("disposal_proceeds")) : null,
+  }).eq("id", assetId);
+
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/fixed-assets");
+  revalidatePath("/fixed-assets/register");
+  revalidatePath("/fixed-assets/dispose");
+}
+
+async function clearDisposalForClient(clientId: string, assetId: string) {
+  "use server";
+  await supabase.from("fixed_assets").update({
+    disposal_date: null,
+    disposal_proceeds: null,
+  }).eq("id", assetId);
+
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/fixed-assets");
+  revalidatePath("/fixed-assets/register");
+}
+
 export default async function ClientDetailPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; dispose?: string }>;
 }) {
   const { id } = await params;
-  const { tab = "details" } = await searchParams;
+  const { tab = "overview", dispose: disposeAssetId } = await searchParams;
 
   const [
     { data: client, error },
@@ -172,6 +246,8 @@ export default async function ClientDetailPage({
   const addShareholdingWithId = addShareholding.bind(null, id);
   const uploadIdDocumentWithId = uploadIdDocument.bind(null, id);
   const deleteIdDocumentWithId = deleteIdDocument.bind(null, id);
+  const addAssetWithId = addAssetForClient.bind(null, id);
+  const clearDisposalWithId = clearDisposalForClient.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
@@ -197,7 +273,42 @@ export default async function ClientDetailPage({
   const amlReviewOverdue = client.aml_next_review_due && new Date(client.aml_next_review_due) < new Date();
   const amlNeedsAttention = !client.aml_id_verified || !client.aml_risk_rating || amlReviewOverdue;
 
+  // Fixed assets for this client
+  const activeAssets = (fixedAssets || []).filter((a) => !a.disposal_date);
+  const disposedAssets = (fixedAssets || []).filter((a) => a.disposal_date);
+  const assetsTotalCost = activeAssets.reduce((sum, a) => sum + Number(a.cost), 0);
+  const assetsTotalNBV = activeAssets.reduce((sum, a) => sum + calculateNBV(a).nbv, 0);
+
+  // Overview tab summary figures
+  const outstandingInvoices = (invoices || []).filter((i) => i.status !== "Paid");
+  const outstandingInvoiceTotal = outstandingInvoices.reduce((sum, i) => sum + Number(i.total || 0), 0);
+  const pendingQuotes = (quotes || []).filter((q) => q.status === "Sent");
+  const allTaxComputations = [
+    ...(taxComputations || []).map((t) => ({
+      key: `tax-${t.id}`,
+      label: `Personal Tax ${t.tax_year}`,
+      status: t.status || "Draft",
+      href: `/tax/${t.id}`,
+      created_at: t.created_at,
+    })),
+    ...(ctComputations || []).map((c) => ({
+      key: `ct-${c.id}`,
+      label: `Corporation Tax — ${new Date(c.period_start).toLocaleDateString("en-GB")} to ${new Date(c.period_end).toLocaleDateString("en-GB")}`,
+      status: "",
+      href: `/corporation-tax/${c.id}`,
+      created_at: c.created_at,
+    })),
+  ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const latestEngagement = (engagementLetters || [])[0];
+
+  const nextDeadlines = [
+    client.accounts_next_due && { label: "Accounts", date: client.accounts_next_due },
+    client.confirmation_statement_next_due && { label: "Confirmation Statement", date: client.confirmation_statement_next_due },
+  ].filter(Boolean) as { label: string; date: string }[];
+  nextDeadlines.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
   const tabs = [
+    { key: "overview", label: "Overview" },
     { key: "details", label: "Details" },
     { key: "aml", label: "AML" },
     { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
@@ -279,13 +390,17 @@ export default async function ClientDetailPage({
           </div>
         )}
 
-        {/* Tabs */}
-        <div className="mt-6 flex gap-1">
+      </div>
+
+      <div className="p-8 flex gap-6">
+
+        {/* Vertical tab rail */}
+        <nav className="w-56 flex-shrink-0 space-y-1">
           {tabs.map((t) => (
             <a
               key={t.key}
               href={`/clients/${id}?tab=${t.key}`}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+              className={`block px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${
                 tab === t.key
                   ? "bg-slate-900 text-white"
                   : t.key === "aml" && amlNeedsAttention
@@ -296,10 +411,149 @@ export default async function ClientDetailPage({
               {t.key === "aml" && amlNeedsAttention ? "⚠ AML" : t.label}
             </a>
           ))}
-        </div>
-      </div>
+        </nav>
 
-      <div className="p-8">
+        <div className="flex-1 min-w-0">
+
+        {/* OVERVIEW TAB */}
+        {tab === "overview" && (
+          <div className="space-y-6">
+
+            {/* Stat cards */}
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
+                <p className="text-xs text-slate-500 uppercase tracking-wide">Active Jobs</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{activeJobs.length}</p>
+              </div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
+                <p className="text-xs text-slate-500 uppercase tracking-wide">Fixed Assets NBV</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalNBV.toFixed(2)}</p>
+              </div>
+              <div className={`rounded-2xl p-4 shadow-sm ${outstandingInvoiceTotal > 0 ? "bg-orange-50 border border-orange-100" : "bg-white border border-slate-100"}`}>
+                <p className={`text-xs uppercase tracking-wide ${outstandingInvoiceTotal > 0 ? "text-orange-600" : "text-slate-500"}`}>Outstanding Invoices</p>
+                <p className={`text-2xl font-bold mt-1 ${outstandingInvoiceTotal > 0 ? "text-orange-700" : "text-slate-900"}`}>£{outstandingInvoiceTotal.toFixed(2)}</p>
+              </div>
+              <div className={`rounded-2xl p-4 shadow-sm ${amlNeedsAttention ? "bg-red-50 border border-red-100" : "bg-white border border-slate-100"}`}>
+                <p className={`text-xs uppercase tracking-wide ${amlNeedsAttention ? "text-red-600" : "text-slate-500"}`}>AML Status</p>
+                <p className={`text-lg font-bold mt-1 ${amlNeedsAttention ? "text-red-700" : "text-green-600"}`}>
+                  {amlNeedsAttention ? "Needs attention" : "Up to date"}
+                </p>
+              </div>
+            </div>
+
+            {/* Deadlines */}
+            {nextDeadlines.length > 0 && (
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <h2 className="text-lg font-bold text-slate-900">Upcoming Deadlines</h2>
+                <div className="mt-4 flex gap-6">
+                  {nextDeadlines.map((d) => (
+                    <div key={d.label}>
+                      <p className="text-xs text-slate-500">{d.label}</p>
+                      <p className="text-sm font-semibold text-slate-900 mt-0.5">
+                        {new Date(d.date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-6 lg:grid-cols-2">
+
+              {/* Active jobs */}
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-slate-900">Active Jobs</h2>
+                  <a href={`/clients/${id}?tab=jobs`} className="text-xs font-semibold text-blue-600 hover:underline">View all →</a>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {activeJobs.slice(0, 5).map((job) => (
+                    <a key={job.id} href={`/jobs/${job.id}`} className="flex items-center justify-between rounded-xl border border-slate-100 p-3 hover:bg-slate-50 transition-colors">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{job.job_name}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {job.job_type || "No type"}{job.due_date && ` · Due ${new Date(job.due_date).toLocaleDateString("en-GB")}`}
+                        </p>
+                      </div>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        job.status === "Active" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"
+                      }`}>
+                        {job.status || "Draft"}
+                      </span>
+                    </a>
+                  ))}
+                  {activeJobs.length === 0 && (
+                    <p className="text-sm text-slate-500 text-center py-6">No active jobs.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Recent tax computations */}
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-slate-900">Recent Tax Activity</h2>
+                  <a href={`/clients/${id}?tab=tax`} className="text-xs font-semibold text-blue-600 hover:underline">View all →</a>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {allTaxComputations.slice(0, 5).map((c) => (
+                    <a key={c.key} href={c.href} className="flex items-center justify-between rounded-xl border border-slate-100 p-3 hover:bg-slate-50 transition-colors">
+                      <p className="text-sm font-semibold text-slate-900">{c.label}</p>
+                      {c.status && (
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          c.status === "Approved" ? "bg-green-100 text-green-700"
+                          : c.status === "Sent" ? "bg-blue-100 text-blue-700"
+                          : c.status === "Queried" ? "bg-yellow-100 text-yellow-700"
+                          : "bg-slate-100 text-slate-600"
+                        }`}>
+                          {c.status}
+                        </span>
+                      )}
+                    </a>
+                  ))}
+                  {allTaxComputations.length === 0 && (
+                    <p className="text-sm text-slate-500 text-center py-6">No tax computations yet.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Quotes & invoices */}
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-bold text-slate-900">Billing</h2>
+                  <a href={`/clients/${id}?tab=invoices`} className="text-xs font-semibold text-blue-600 hover:underline">View all →</a>
+                </div>
+                <div className="mt-4 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Pending quotes</span>
+                    <span className="font-semibold text-slate-900">{pendingQuotes.length}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Outstanding invoices</span>
+                    <span className="font-semibold text-slate-900">{outstandingInvoices.length} · £{outstandingInvoiceTotal.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Engagement & fixed assets snapshot */}
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <h2 className="text-lg font-bold text-slate-900">Engagement & Assets</h2>
+                <div className="mt-4 space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Engagement letter</span>
+                    <span className="font-semibold text-slate-900">{latestEngagement ? (latestEngagement.status || "Draft") : "None on file"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Active fixed assets</span>
+                    <span className="font-semibold text-slate-900">{activeAssets.length} · £{assetsTotalCost.toFixed(2)} cost</span>
+                  </div>
+                </div>
+                <a href={`/clients/${id}?tab=assets`} className="mt-3 block text-xs font-semibold text-blue-600 hover:underline">
+                  Manage fixed assets →
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* DETAILS TAB */}
         {tab === "details" && (
@@ -885,30 +1139,202 @@ export default async function ClientDetailPage({
           </div>
         )}
 
-        {/* FIXED ASSETS TAB */}
+        {/* FIXED ASSETS TAB — now fully actionable, scoped to this client */}
         {tab === "assets" && (
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <div className="space-y-6">
+
+            {/* Summary + links to cross-client views */}
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900">Fixed Assets ({fixedAssets?.length ?? 0})</h2>
-              <a href="/fixed-assets" className="text-xs font-semibold text-blue-600 hover:underline">View register →</a>
-            </div>
-            <div className="mt-4 space-y-2">
-              {(fixedAssets || []).map((asset) => (
-                <div key={asset.id} className={`flex items-center justify-between rounded-xl border border-slate-100 p-4 ${asset.disposal_date ? "opacity-60" : ""}`}>
-                  <div>
-                    <p className="font-semibold text-slate-900">{asset.description}</p>
-                    <p className="text-sm text-slate-500 mt-0.5">
-                      {asset.category || "Uncategorised"} · Acquired {new Date(asset.acquisition_date).toLocaleDateString("en-GB")}
-                      {asset.disposal_date && ` · Disposed ${new Date(asset.disposal_date).toLocaleDateString("en-GB")}`}
-                    </p>
-                  </div>
-                  <p className="font-bold text-slate-900">£{Number(asset.cost).toFixed(2)}</p>
+              <div className="grid grid-cols-3 gap-4 flex-1 mr-4">
+                <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
+                  <p className="text-xs text-slate-500 uppercase tracking-wide">Active Assets</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">{activeAssets.length}</p>
                 </div>
-              ))}
-              {(!fixedAssets || fixedAssets.length === 0) && (
-                <p className="text-sm text-slate-500 text-center py-6">No fixed assets for this client yet.</p>
-              )}
+                <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
+                  <p className="text-xs text-slate-500 uppercase tracking-wide">Total Cost</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalCost.toFixed(2)}</p>
+                </div>
+                <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
+                  <p className="text-xs text-slate-500 uppercase tracking-wide">Net Book Value</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalNBV.toFixed(2)}</p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 flex-shrink-0">
+                <a href={`/fixed-assets/report?client=${id}`}
+                  className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors text-center">
+                  Asset Report →
+                </a>
+                <a href={`/fixed-assets/capital-allowances?client=${id}`}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors text-center">
+                  Capital Allowances →
+                </a>
+              </div>
             </div>
+
+            {/* Add Asset */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Add Asset</h2>
+              <form action={addAssetWithId} className="mt-4 grid gap-4 md:grid-cols-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Description *</label>
+                  <input name="description" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="e.g. Ford Transit Van" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
+                  <select name="category"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    {CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Job (optional)</label>
+                  <select name="job_id"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">No linked job</option>
+                    {(jobs || []).map((j) => (
+                      <option key={j.id} value={j.id}>{j.job_name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Capital Allowance Pool</label>
+                  <select name="capital_allowance_pool"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    {POOL_OPTIONS.map((p) => <option key={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Acquisition Date *</label>
+                  <input name="acquisition_date" type="date" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Cost (£) *</label>
+                  <input name="cost" type="number" step="0.01" min="0" required
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Depreciation Rate (% p.a.)</label>
+                  <input name="depreciation_rate_pct" type="number" step="0.01" min="0" defaultValue="20"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Depreciation Method</label>
+                  <select name="depreciation_method" defaultValue="Straight Line"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option>Straight Line</option>
+                    <option>Reducing Balance</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                  <input name="notes"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div className="md:col-span-3">
+                  <button type="submit"
+                    className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                    Add Asset
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Active assets, with dispose + link out to full edit */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Active Assets ({activeAssets.length})</h2>
+              <div className="mt-4 space-y-2">
+                {activeAssets.map((asset) => {
+                  const { nbv } = calculateNBV(asset);
+                  const isDisposing = disposeAssetId === asset.id;
+                  const disposeActionWithId = disposeAssetForClient.bind(null, id, asset.id);
+
+                  return (
+                    <div key={asset.id} className="rounded-xl border border-slate-100">
+                      <div className="flex items-center justify-between p-4">
+                        <div className="flex-1">
+                          <p className="font-semibold text-slate-900">{asset.description}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {asset.category || "Uncategorised"} · {asset.capital_allowance_pool}
+                          </p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Acquired {new Date(asset.acquisition_date).toLocaleDateString("en-GB")} · {asset.depreciation_method || "Straight Line"} @ {asset.depreciation_rate_pct}%
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="text-right">
+                            <p className="font-bold text-slate-900">£{nbv.toFixed(2)}</p>
+                            <p className="text-xs text-slate-400">NBV (cost £{Number(asset.cost).toFixed(2)})</p>
+                          </div>
+                          <a
+                            href={isDisposing ? `/clients/${id}?tab=assets` : `/clients/${id}?tab=assets&dispose=${asset.id}`}
+                            className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
+                          >
+                            {isDisposing ? "Close" : "Dispose"}
+                          </a>
+                          <a
+                            href={`/fixed-assets/register?client=${id}&edit=${asset.id}`}
+                            className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
+                          >
+                            Edit
+                          </a>
+                        </div>
+                      </div>
+
+                      {isDisposing && (
+                        <div className="border-t border-slate-100 p-4 bg-slate-50">
+                          <form action={disposeActionWithId} className="flex flex-wrap gap-4 items-end">
+                            <div>
+                              <label className="block text-xs font-medium text-slate-700 mb-1">Disposal Date *</label>
+                              <input name="disposal_date" type="date" required
+                                className="rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-slate-700 mb-1">Disposal Proceeds (£)</label>
+                              <input name="disposal_proceeds" type="number" step="0.01" min="0"
+                                className="rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                            </div>
+                            <button type="submit"
+                              className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                              Confirm Disposal
+                            </button>
+                          </form>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {activeAssets.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-8">No active assets yet. Add one above.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Disposed assets */}
+            {disposedAssets.length > 0 && (
+              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                <h2 className="text-lg font-bold text-slate-900">Disposed Assets ({disposedAssets.length})</h2>
+                <div className="mt-4 space-y-2">
+                  {disposedAssets.map((asset) => (
+                    <div key={asset.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 opacity-70">
+                      <div>
+                        <p className="font-semibold text-slate-900">{asset.description}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Disposed {new Date(asset.disposal_date!).toLocaleDateString("en-GB")} · Proceeds £{Number(asset.disposal_proceeds || 0).toFixed(2)}
+                        </p>
+                      </div>
+                      <form action={clearDisposalWithId.bind(null, asset.id)}>
+                        <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                          Undo
+                        </button>
+                      </form>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1077,6 +1503,7 @@ export default async function ClientDetailPage({
           </div>
         )}
 
+        </div>
       </div>
     </div>
   );

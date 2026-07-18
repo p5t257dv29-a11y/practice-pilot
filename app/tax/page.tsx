@@ -216,12 +216,16 @@ async function deleteComputation(id: string) {
   revalidatePath("/tax");
 }
 
-export default async function AccountsProductionPage({
+export default async function PersonalTaxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ client?: string; self_employment?: string }>;
+  searchParams: Promise<{ mode?: string; client?: string; self_employment?: string; browseClient?: string }>;
 }) {
-  const { client: prefillClient, self_employment: prefillSelfEmployment } = await searchParams;
+  const { mode: modeParam, client: prefillClient, self_employment: prefillSelfEmployment, browseClient: browseClientId } = await searchParams;
+
+  // Arriving with a pre-filled client (e.g. handed off from Partnership Tax) should
+  // land straight in the New form, without needing that other module to know about modes.
+  const mode = modeParam || (prefillClient ? "new" : undefined);
 
   const [{ data: computations, error }, { data: clients }] = await Promise.all([
     supabase
@@ -234,10 +238,53 @@ export default async function AccountsProductionPage({
       .order("client_name", { ascending: true }),
   ]);
 
+  const withResult = (comp: any) => {
+    const result = calculateTax({
+      employmentIncome: Number(comp.employment_income),
+      selfEmploymentIncome: Number(comp.self_employment_income),
+      rentalIncome: Number(comp.rental_income),
+      pensionIncome: Number(comp.pension_income),
+      interestIncome: Number(comp.interest_income),
+      dividendIncome: Number(comp.dividend_income),
+      taxYear: comp.tax_year,
+    });
+    const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
+    return { comp, result, balanceDue };
+  };
+
+  const browseRows = browseClientId
+    ? (computations || []).filter((c) => c.client_id === browseClientId).map(withResult)
+    : [];
+
+  const renderRow = ({ comp, result, balanceDue }: ReturnType<typeof withResult>) => (
+    <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+      <a href={`/tax/${comp.id}`} className="flex-1">
+        <p className="font-semibold text-slate-900">
+          {comp.clients?.client_name || "No client"} — {comp.tax_year}
+        </p>
+        <p className="text-sm text-slate-500">
+          Total liability: £{result.totalLiability.toFixed(2)}
+        </p>
+      </a>
+      <div className="flex items-center gap-4">
+        <div className="text-right">
+          <p className={`font-bold ${balanceDue >= 0 ? "text-slate-900" : "text-green-600"}`}>
+            {balanceDue >= 0 ? `£${balanceDue.toFixed(2)} due` : `£${Math.abs(balanceDue).toFixed(2)} refund`}
+          </p>
+        </div>
+        <form action={deleteComputation.bind(null, comp.id)}>
+          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+            Delete
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <h1 className="text-2xl font-bold text-slate-900">Tax</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Personal Tax</h1>
         <p className="text-sm text-slate-500 mt-0.5">
           Personal tax computations using current HMRC rates and bands.
         </p>
@@ -250,158 +297,154 @@ export default async function AccountsProductionPage({
           </div>
         )}
 
-        {/* New Computation Form */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">New Tax Computation</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Enter gross income figures for the tax year. All bands, allowances, and Class 4 NI are calculated automatically using 2026/27 rates.
-          </p>
-
-          {prefillSelfEmployment && (
-            <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
-              Self-Employment Profit has been pre-filled with £{parseFloat(prefillSelfEmployment).toLocaleString("en-GB", { minimumFractionDigits: 2 })} from a linked Partnership Tax profit share.
-            </div>
-          )}
-
-          <form action={createComputation} className="mt-6">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
-                <select name="client_id" required defaultValue={prefillClient || ""}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                  <option value="">Select a client</option>
-                  {(clients || []).map((client) => (
-                    <option key={client.id} value={client.id}>{client.client_name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Tax Year</label>
-                <select name="tax_year"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                  <option value="2026/27">2026/27</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Employment Income (£)</label>
-                <input name="employment_income" type="number" step="0.01" min="0" defaultValue="0"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="P60 gross pay" />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Self-Employment Profit (£) {prefillSelfEmployment && <span className="text-green-600 font-normal">(auto-filled)</span>}
-                </label>
-                <input name="self_employment_income" type="number" step="0.01" min="0"
-                  defaultValue={prefillSelfEmployment || "0"}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="Net profit after expenses" />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Rental Income (£)</label>
-                <input name="rental_income" type="number" step="0.01" min="0" defaultValue="0"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="Net rental profit" />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Pension Income (£)</label>
-                <input name="pension_income" type="number" step="0.01" min="0" defaultValue="0"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="State + private pension received" />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Interest Received (£)</label>
-                <input name="interest_income" type="number" step="0.01" min="0" defaultValue="0"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="Bank/savings interest" />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Dividend Income (£)</label>
-                <input name="dividend_income" type="number" step="0.01" min="0" defaultValue="0"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Tax Already Paid at Source / PAYE (£)</label>
-                <input name="tax_paid_at_source" type="number" step="0.01" min="0" defaultValue="0"
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="From P60, if employed" />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                <textarea name="notes" rows={2}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-              </div>
-            </div>
-
-            <button type="submit"
-              className="mt-6 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-              Calculate & Save
-            </button>
-          </form>
+        {/* Entry choice: Browse existing vs Start New */}
+        <div className="grid gap-4 md:grid-cols-2 mb-6">
+          <a href="/tax?mode=browse"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
+            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a client's personal tax computations</p>
+          </a>
+          <a href="/tax?mode=new"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "new" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "new" ? "text-white" : "text-slate-900"}`}>+ New Computation</p>
+            <p className={`text-sm mt-1 ${mode === "new" ? "text-slate-300" : "text-slate-500"}`}>Enter income figures for a client's tax year</p>
+          </a>
         </div>
 
-        {/* Computations List */}
-        <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">
-            All Computations ({computations?.length ?? 0})
-          </h2>
+        {/* BROWSE MODE */}
+        {mode === "browse" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
+            <form method="get" className="mt-4 flex gap-2">
+              <input type="hidden" name="mode" value="browse" />
+              <select name="browseClient" defaultValue={browseClientId || ""}
+                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
+                <option value="">Select a client</option>
+                {(clients || []).map((c) => (
+                  <option key={c.id} value={c.id}>{c.client_name}</option>
+                ))}
+              </select>
+              <button type="submit"
+                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                Show
+              </button>
+            </form>
 
-          <div className="mt-4 space-y-3">
-            {(computations || []).map((comp) => {
-              const result = calculateTax({
-                employmentIncome: Number(comp.employment_income),
-                selfEmploymentIncome: Number(comp.self_employment_income),
-                rentalIncome: Number(comp.rental_income),
-                pensionIncome: Number(comp.pension_income),
-                interestIncome: Number(comp.interest_income),
-                dividendIncome: Number(comp.dividend_income),
-                taxYear: comp.tax_year,
-              });
-              const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
-
-              return (
-                <div key={comp.id}
-                  className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
-                  <a href={`/tax/${comp.id}`} className="flex-1">
-                    <p className="font-semibold text-slate-900">
-                      {comp.clients?.client_name || "No client"} — {comp.tax_year}
-                    </p>
-                    <p className="text-sm text-slate-500">
-                      Total liability: £{result.totalLiability.toFixed(2)}
-                    </p>
-                  </a>
-                  <div className="flex items-center gap-4">
-                    <div className="text-right">
-                      <p className={`font-bold ${balanceDue >= 0 ? "text-slate-900" : "text-green-600"}`}>
-                        {balanceDue >= 0 ? `£${balanceDue.toFixed(2)} due` : `£${Math.abs(balanceDue).toFixed(2)} refund`}
-                      </p>
-                    </div>
-                    <form action={deleteComputation.bind(null, comp.id)}>
-                      <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                        Delete
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              );
-            })}
-
-            {computations && computations.length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-8">
-                No computations yet. Create your first one above.
-              </p>
+            {browseClientId && (
+              <div className="mt-6 space-y-3">
+                {browseRows.map(renderRow)}
+                {browseRows.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-8">No personal tax computations on file for this client yet.</p>
+                )}
+              </div>
             )}
           </div>
-        </div>
+        )}
+
+        {/* NEW MODE */}
+        {mode === "new" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">New Tax Computation</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Enter gross income figures for the tax year. All bands, allowances, and Class 4 NI are calculated automatically using 2026/27 rates.
+            </p>
+
+            {prefillSelfEmployment && (
+              <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
+                Self-Employment Profit has been pre-filled with £{parseFloat(prefillSelfEmployment).toLocaleString("en-GB", { minimumFractionDigits: 2 })} from a linked Partnership Tax profit share.
+              </div>
+            )}
+
+            <form action={createComputation} className="mt-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Client *</label>
+                  <select name="client_id" required defaultValue={prefillClient || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">Select a client</option>
+                    {(clients || []).map((client) => (
+                      <option key={client.id} value={client.id}>{client.client_name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Tax Year</label>
+                  <select name="tax_year"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="2026/27">2026/27</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Employment Income (£)</label>
+                  <input name="employment_income" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="P60 gross pay" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Self-Employment Profit (£) {prefillSelfEmployment && <span className="text-green-600 font-normal">(auto-filled)</span>}
+                  </label>
+                  <input name="self_employment_income" type="number" step="0.01" min="0"
+                    defaultValue={prefillSelfEmployment || "0"}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Net profit after expenses" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Rental Income (£)</label>
+                  <input name="rental_income" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Net rental profit" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Pension Income (£)</label>
+                  <input name="pension_income" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="State + private pension received" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Interest Received (£)</label>
+                  <input name="interest_income" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Bank/savings interest" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Dividend Income (£)</label>
+                  <input name="dividend_income" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Tax Already Paid at Source / PAYE (£)</label>
+                  <input name="tax_paid_at_source" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="From P60, if employed" />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                  <textarea name="notes" rows={2}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+              </div>
+
+              <button type="submit"
+                className="mt-6 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Calculate & Save
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   );
