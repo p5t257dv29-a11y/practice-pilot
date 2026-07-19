@@ -15,9 +15,14 @@ const POOL_OPTIONS = [
   "Main Pool - Car (not AIA eligible)",
   "Special Rate Pool - Car (not AIA eligible)",
   "Zero Emission Car (100% FYA)",
+  "Not Applicable (Intangible)",
 ];
 
-const CATEGORY_OPTIONS = [
+// Exported so accounts-production/page.tsx can build matching trial balance
+// categories from the same lists — keep these in sync by editing only here.
+export const TANGIBLE_CATEGORY_OPTIONS = [
+  "Land & Buildings",
+  "Leasehold Improvements",
   "Plant & Machinery",
   "Computer Equipment",
   "Motor Vehicles",
@@ -27,6 +32,13 @@ const CATEGORY_OPTIONS = [
   "Other",
 ];
 
+export const INTANGIBLE_CATEGORY_OPTIONS = [
+  "Goodwill",
+  "Other Intangible Assets",
+];
+
+export const CATEGORY_OPTIONS = [...TANGIBLE_CATEGORY_OPTIONS, ...INTANGIBLE_CATEGORY_OPTIONS];
+
 async function createAsset(formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -34,12 +46,16 @@ async function createAsset(formData: FormData) {
   const description = get("description");
   if (!client_id || !description) return;
 
+  const category = get("category") || null;
+  const asset_type = category && INTANGIBLE_CATEGORY_OPTIONS.includes(category) ? "Intangible" : "Tangible";
+
   await supabase.from("fixed_assets").insert({
     client_id,
     job_id: get("job_id") || null,
     description,
-    category: get("category") || null,
-    capital_allowance_pool: get("capital_allowance_pool") || "Main Pool - AIA Eligible",
+    category,
+    asset_type,
+    capital_allowance_pool: get("capital_allowance_pool") || (asset_type === "Intangible" ? "Not Applicable (Intangible)" : "Main Pool - AIA Eligible"),
     acquisition_date: get("acquisition_date"),
     cost: parseFloat(get("cost")) || 0,
     depreciation_rate_pct: parseFloat(get("depreciation_rate_pct")) || 20,
@@ -71,7 +87,7 @@ export default async function AddAssetPage({
           ← Back to Fixed Assets
         </a>
         <h1 className="text-2xl font-bold text-slate-900 mt-4">Add Asset</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Log a new fixed asset acquisition.</p>
+        <p className="text-sm text-slate-500 mt-0.5">Log a new fixed asset acquisition — tangible or intangible.</p>
       </div>
 
       <div className="p-8 max-w-4xl">
@@ -97,7 +113,12 @@ export default async function AddAssetPage({
               <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
               <select name="category"
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                {CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}
+                <optgroup label="Tangible">
+                  {TANGIBLE_CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}
+                </optgroup>
+                <optgroup label="Intangible">
+                  {INTANGIBLE_CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}
+                </optgroup>
               </select>
             </div>
             <div>
@@ -116,6 +137,7 @@ export default async function AddAssetPage({
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
                 {POOL_OPTIONS.map((p) => <option key={p}>{p}</option>)}
               </select>
+              <p className="text-xs text-slate-400 mt-1">Select "Not Applicable" for Goodwill / Intangibles.</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Acquisition Date *</label>
@@ -128,12 +150,12 @@ export default async function AddAssetPage({
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Accounts Depreciation Rate (% p.a.)</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Depreciation / Amortisation Rate (% p.a.)</label>
               <input name="depreciation_rate_pct" type="number" step="0.01" min="0" defaultValue="20"
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Depreciation Method</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Method</label>
               <select name="depreciation_method" defaultValue="Straight Line"
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
                 <option>Straight Line</option>

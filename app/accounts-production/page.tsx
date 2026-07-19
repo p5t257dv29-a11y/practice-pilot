@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { TANGIBLE_CATEGORY_OPTIONS, INTANGIBLE_CATEGORY_OPTIONS } from "../fixed-assets/add/page";
 
 export const dynamic = "force-dynamic";
 
@@ -26,13 +27,84 @@ export const PL_CATEGORIES = [
   "Printing, Postage and Stationery",
   "Professional Fees",
   "Bank Charges and Interest Payable",
+  "Hire Purchase Interest",
+  "Loan Interest",
   "Depreciation",
   "Other Administrative Expenses",
   "Interest Receivable",
 ];
 
+// --- Fixed asset movement schedule ---
+// For each asset class (tangible or intangible) we generate a full set of
+// six movement categories, matching a standard FRS102 fixed asset note:
+// Cost/Valuation B/F, Additions, Disposals (Cost), Accumulated Depreciation
+// B/F, Depreciation Charge for Year, Depreciation on Disposals. The Fixed
+// Asset Register derives all of these automatically from each asset's
+// acquisition/disposal dates — see accounts-production/[id]/page.tsx.
+export type AssetMovementCategories = {
+  costBf: string;
+  additions: string;
+  disposalsCost: string;
+  depBf: string;
+  depCharge: string;
+  depDisposals: string;
+};
+
+function buildMovementCategories(assetClass: string, isIntangible: boolean): AssetMovementCategories {
+  const dep = isIntangible ? "Amortisation" : "Depreciation";
+  return {
+    costBf: `${assetClass} - Cost/Valuation B/F`,
+    additions: `${assetClass} - Additions`,
+    disposalsCost: `${assetClass} - Disposals (Cost)`,
+    depBf: `${assetClass} - Accumulated ${dep} B/F`,
+    depCharge: `${assetClass} - ${dep} Charge for Year`,
+    depDisposals: `${assetClass} - ${dep} on Disposals`,
+  };
+}
+
+export const FIXED_ASSET_CLASSES: { assetClass: string; isIntangible: boolean }[] = [
+  ...TANGIBLE_CATEGORY_OPTIONS.map((c) => ({ assetClass: c, isIntangible: false })),
+  ...INTANGIBLE_CATEGORY_OPTIONS.map((c) => ({ assetClass: c, isIntangible: true })),
+];
+
+export const FIXED_ASSET_MOVEMENT: Record<string, AssetMovementCategories> = Object.fromEntries(
+  FIXED_ASSET_CLASSES.map(({ assetClass, isIntangible }) => [assetClass, buildMovementCategories(assetClass, isIntangible)])
+);
+
+export const DISPOSAL_CATEGORY = "Fixed Assets - Disposal Proceeds";
+
+const fixedAssetMovementCategoryList = FIXED_ASSET_CLASSES.flatMap(
+  ({ assetClass }) => Object.values(FIXED_ASSET_MOVEMENT[assetClass])
+);
+
+// Categories within the movement schedule that are naturally CREDIT balances:
+// disposing of cost, and accumulated depreciation (a contra-asset) both being
+// credit-normal. Depreciation-on-disposals removes that contra, so it's debit-normal.
+const fixedAssetCreditNormalCategories = FIXED_ASSET_CLASSES.flatMap(({ assetClass }) => {
+  const m = FIXED_ASSET_MOVEMENT[assetClass];
+  return [m.disposalsCost, m.depBf, m.depCharge];
+});
+
+// Director's Loan Account movement schedule — the flat "Directors' Loan
+// Account" category still exists as a catch-all for whatever hasn't been
+// split out. These sub-categories are optional detail on top of it. All are
+// posted using ordinary debit/credit convention (debit = director owes the
+// company more, credit = company owes the director more) — no special
+// CREDIT_NORMAL handling needed, since the parent category already works
+// this way and simply summing keeps that consistent.
+export const DLA_MOVEMENT_CATEGORIES = [
+  "Directors' Loan Account - Balance B/F",
+  "Directors' Loan Account - Capital Introduced",
+  "Directors' Loan Account - Drawings",
+  "Directors' Loan Account - Repayments to Director",
+  "Directors' Loan Account - Interest Charged",
+];
+
 export const BS_CATEGORIES = [
   "Tangible Fixed Assets",
+  "Intangible Fixed Assets",
+  ...fixedAssetMovementCategoryList,
+  DISPOSAL_CATEGORY,
   "Stock",
   "Trade Debtors",
   "Prepayments and Accrued Income",
@@ -43,6 +115,7 @@ export const BS_CATEGORIES = [
   "PAYE/NI Liability",
   "Corporation Tax Liability",
   "Directors' Loan Account",
+  ...DLA_MOVEMENT_CATEGORIES,
   "Bank Loans - Due Within One Year",
   "Bank Loans - Due After One Year",
   "Called Up Share Capital",
@@ -58,18 +131,44 @@ export const CREDIT_NORMAL = new Set([
   "Trade Creditors", "Accruals and Deferred Income", "VAT Liability", "PAYE/NI Liability",
   "Corporation Tax Liability", "Bank Loans - Due Within One Year", "Bank Loans - Due After One Year",
   "Called Up Share Capital", "Profit and Loss Reserve",
+  DISPOSAL_CATEGORY,
+  ...fixedAssetCreditNormalCategories,
 ]);
 
-const ADMIN_EXPENSE_CATEGORIES = [
-  "Gross Wages and Salaries", "Employer's NI and Pension Costs", "Rent and Rates",
-  "Motor Expenses", "Travel and Subsistence", "Repairs and Renewals", "Insurance",
-  "Telephone and Internet", "Printing, Postage and Stationery", "Professional Fees",
-  "Depreciation", "Other Administrative Expenses",
-];
+export type PLGroup = "turnover" | "cost_of_sales" | "admin_expenses" | "interest_payable" | "interest_receivable";
+
+// Every built-in P&L category's group — this is what actually drives the
+// summary totals now, not a fixed list. Custom categories (added via the
+// Chart of Accounts page, stored in custom_pl_categories) supply their own
+// group at read time and get merged in by callers — see accounts-production/[id]/frs102/page.tsx.
+export const PL_CATEGORY_GROUPS: Record<string, PLGroup> = {
+  "Turnover": "turnover",
+  "Cost of Sales": "cost_of_sales",
+  "Gross Wages and Salaries": "admin_expenses",
+  "Employer's NI and Pension Costs": "admin_expenses",
+  "Rent and Rates": "admin_expenses",
+  "Motor Expenses": "admin_expenses",
+  "Travel and Subsistence": "admin_expenses",
+  "Repairs and Renewals": "admin_expenses",
+  "Insurance": "admin_expenses",
+  "Telephone and Internet": "admin_expenses",
+  "Printing, Postage and Stationery": "admin_expenses",
+  "Professional Fees": "admin_expenses",
+  "Bank Charges and Interest Payable": "interest_payable",
+  "Hire Purchase Interest": "interest_payable",
+  "Loan Interest": "interest_payable",
+  "Depreciation": "admin_expenses",
+  "Other Administrative Expenses": "admin_expenses",
+  "Interest Receivable": "interest_receivable",
+};
 
 // Computes a Profit & Loss summary from a set of mapped trial balance lines.
 // Shared by the formatted accounts page and the Corporation Tax auto-fill.
-export function calculateProfitAndLoss(lines: any[]) {
+// customGroups lets a caller merge in practice- or client-specific categories
+// (e.g. from custom_pl_categories) without changing this function — any
+// category not found in either map is simply excluded from every total, so
+// an un-configured category fails safe rather than silently double-counting.
+export function calculateProfitAndLoss(lines: any[], customGroups: Record<string, PLGroup> = {}) {
   const totals = new Map<string, number>();
   (lines || []).forEach((l) => {
     if (!l.category) return;
@@ -79,18 +178,34 @@ export function calculateProfitAndLoss(lines: any[]) {
     totals.set(l.category, (totals.get(l.category) || 0) + net);
   });
   const get = (cat: string) => totals.get(cat) || 0;
+  const groupOf = (cat: string) => PL_CATEGORY_GROUPS[cat] || customGroups[cat];
 
-  const turnover = get("Turnover");
-  const costOfSales = get("Cost of Sales");
-  const grossProfit = turnover - costOfSales;
+  let turnover = 0, costOfSales = 0, adminExpenses = 0, interestPayable = 0, interestReceivable = 0;
+  totals.forEach((value, cat) => {
+    const group = groupOf(cat);
+    if (group === "turnover") turnover += value;
+    else if (group === "cost_of_sales") costOfSales += value;
+    else if (group === "admin_expenses") adminExpenses += value;
+    else if (group === "interest_payable") interestPayable += value;
+    else if (group === "interest_receivable") interestReceivable += value;
+  });
+
   const depreciation = get("Depreciation");
-  const adminExpenses = ADMIN_EXPENSE_CATEGORIES.reduce((s, c) => s + get(c), 0);
+  const grossProfit = turnover - costOfSales;
   const operatingProfit = grossProfit - adminExpenses;
-  const interestReceivable = get("Interest Receivable");
-  const interestPayable = get("Bank Charges and Interest Payable");
   const profitBeforeTax = operatingProfit + interestReceivable - interestPayable;
 
   return { totals, turnover, costOfSales, grossProfit, depreciation, adminExpenses, operatingProfit, interestReceivable, interestPayable, profitBeforeTax };
+}
+
+// Fetches practice-defined custom P&L categories and returns them in the
+// shapes callers need: a flat name list (for dropdowns, appended to
+// PL_CATEGORIES) and a name->group map (for calculateProfitAndLoss).
+export async function getCustomPLCategories(supabaseClient: any) {
+  const { data } = await supabaseClient.from("custom_pl_categories").select("name, category_group").order("name", { ascending: true });
+  const names = (data || []).map((c: any) => c.name);
+  const groups: Record<string, PLGroup> = Object.fromEntries((data || []).map((c: any) => [c.name, c.category_group]));
+  return { names, groups };
 }
 
 // Simple CSV line parser handling quoted fields with commas inside them

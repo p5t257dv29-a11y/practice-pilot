@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
+import { Fragment } from "react";
 import { calculateNBV } from "../../../fixed-assets/page";
-import { calculateProfitAndLoss, CREDIT_NORMAL } from "../../page";
+import { calculateProfitAndLoss, CREDIT_NORMAL, FIXED_ASSET_CLASSES, FIXED_ASSET_MOVEMENT, DLA_MOVEMENT_CATEGORIES, getCustomPLCategories, PL_CATEGORY_GROUPS, type PLGroup } from "../../page";
 import SendAccountsButton from "../../../send-accounts-button";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,9 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+const INTANGIBLE_CLASS_SET = new Set(FIXED_ASSET_CLASSES.filter((c) => c.isIntangible).map((c) => c.assetClass));
+const TANGIBLE_CLASS_SET = new Set(FIXED_ASSET_CLASSES.filter((c) => !c.isIntangible).map((c) => c.assetClass));
 
 async function updateEmployeeCount(trialBalanceId: string, formData: FormData) {
   "use server";
@@ -28,7 +32,7 @@ async function updateNote(trialBalanceId: string, field: string, formData: FormD
 
 // Computes the full Balance Sheet position from a set of trial balance lines
 // and, if available, the Fixed Asset Register (for a more accurate NBV).
-async function computeBalanceSheet(clientId: string, jobId: string | null, periodEnd: string, lines: any[]) {
+async function computeBalanceSheet(clientId: string, periodEnd: string, lines: any[], customPLGroups: Record<string, PLGroup> = {}) {
   const totals = new Map<string, number>();
   lines.forEach((l) => {
     if (!l.category) return;
@@ -37,20 +41,47 @@ async function computeBalanceSheet(clientId: string, jobId: string | null, perio
   });
   const get = (cat: string) => totals.get(cat) || 0;
 
-  let fixedAssetsNBV = get("Tangible Fixed Assets");
-  if (jobId) {
-    const { data: assets } = await supabase.from("fixed_assets").select("*").eq("job_id", jobId);
-    if (assets && assets.length > 0) {
-      fixedAssetsNBV = assets.filter((a) => !a.disposal_date).reduce((s, a) => s + calculateNBV(a, new Date(periodEnd)).nbv, 0);
-    }
+  // TB-side fallback for a fixed asset class's NBV, using the granular
+  // movement categories (all already sign-adjusted via CREDIT_NORMAL above,
+  // so they can just be summed directly): Cost B/F + Additions - Disposals
+  // minus Depreciation B/F + Charge - Disposals-of-depreciation.
+  function classNBVFromTB(assetClass: string) {
+    const m = FIXED_ASSET_MOVEMENT[assetClass];
+    const cost = get(m.costBf) + get(m.additions) - get(m.disposalsCost);
+    const dep = get(m.depBf) + get(m.depCharge) - get(m.depDisposals);
+    return cost - dep;
   }
 
-  const pl = calculateProfitAndLoss(lines);
+  const tbTangibleNBV = get("Tangible Fixed Assets") +
+    [...TANGIBLE_CLASS_SET].reduce((s, c) => s + classNBVFromTB(c), 0);
+  const tbIntangibleNBV = get("Intangible Fixed Assets") +
+    [...INTANGIBLE_CLASS_SET].reduce((s, c) => s + classNBVFromTB(c), 0);
+
+  // Prefer the Fixed Asset Register when it has entries for this client —
+  // keyed by client_id rather than job_id, since assets aren't always linked
+  // to a specific job. Falls back to the trial balance figures above if the
+  // client has no register entries at all.
+  let fixedAssetsNBV = tbTangibleNBV;
+  let intangibleAssetsNBV = tbIntangibleNBV;
+  const { data: clientAssets } = await supabase.from("fixed_assets").select("*").eq("client_id", clientId);
+  if (clientAssets && clientAssets.length > 0) {
+    const stillHeld = (a: any) => !a.disposal_date || new Date(a.disposal_date) > new Date(periodEnd);
+    fixedAssetsNBV = clientAssets
+      .filter((a) => stillHeld(a) && !INTANGIBLE_CLASS_SET.has(a.category))
+      .reduce((s, a) => s + calculateNBV(a, new Date(periodEnd)).nbv, 0);
+    intangibleAssetsNBV = clientAssets
+      .filter((a) => stillHeld(a) && INTANGIBLE_CLASS_SET.has(a.category))
+      .reduce((s, a) => s + calculateNBV(a, new Date(periodEnd)).nbv, 0);
+  }
+
+  const totalFixedAssets = fixedAssetsNBV + intangibleAssetsNBV;
+
+  const pl = calculateProfitAndLoss(lines, customPLGroups);
   const stock = get("Stock");
   const debtors = get("Trade Debtors");
   const prepayments = get("Prepayments and Accrued Income");
   const cash = get("Cash at Bank and in Hand");
-  const dla = get("Directors' Loan Account");
+  const dla = get("Directors' Loan Account") + DLA_MOVEMENT_CATEGORIES.reduce((s, c) => s + get(c), 0);
   const dlaIsAsset = dla > 0;
   const currentAssets = stock + debtors + prepayments + cash + (dlaIsAsset ? dla : 0);
 
@@ -60,7 +91,7 @@ async function computeBalanceSheet(clientId: string, jobId: string | null, perio
     (dlaIsAsset ? 0 : -dla);
 
   const netCurrentAssets = currentAssets - creditors1yr;
-  const totalAssetsLessCurrentLiabilities = fixedAssetsNBV + netCurrentAssets;
+  const totalAssetsLessCurrentLiabilities = totalFixedAssets + netCurrentAssets;
   const creditorsAfter1yr = get("Bank Loans - Due After One Year");
   const netAssets = totalAssetsLessCurrentLiabilities - creditorsAfter1yr;
 
@@ -68,7 +99,7 @@ async function computeBalanceSheet(clientId: string, jobId: string | null, perio
   const plReserveCfwd = get("Profit and Loss Reserve") + pl.profitBeforeTax;
   const shareholdersFunds = shareCapital + plReserveCfwd;
 
-  return { fixedAssetsNBV, currentAssets, creditors1yr, netCurrentAssets, totalAssetsLessCurrentLiabilities, creditorsAfter1yr, netAssets, shareCapital, plReserveCfwd, shareholdersFunds, pl, dla };
+  return { fixedAssetsNBV, intangibleAssetsNBV, totalFixedAssets, currentAssets, creditors1yr, netCurrentAssets, totalAssetsLessCurrentLiabilities, creditorsAfter1yr, netAssets, shareCapital, plReserveCfwd, shareholdersFunds, pl, dla };
 }
 
 export default async function FRS102AccountsPage({
@@ -98,7 +129,9 @@ export default async function FRS102AccountsPage({
   const directorName = director?.officer_name || director?.name || director?.full_name || "________________";
   const client = tb.clients as any;
 
-  const current = await computeBalanceSheet(tb.client_id, tb.job_id, tb.period_end, lines || []);
+  const customPL = await getCustomPLCategories(supabase);
+
+  const current = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups);
 
   // Look up the most recent prior trial balance for this client (a different period,
   // ending before this one starts) to show as the comparative year, as real filed accounts do.
@@ -114,17 +147,34 @@ export default async function FRS102AccountsPage({
   let prior: Awaited<ReturnType<typeof computeBalanceSheet>> | null = null;
   if (priorTb) {
     const { data: priorLines } = await supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", priorTb.id);
-    prior = await computeBalanceSheet(tb.client_id, priorTb.job_id, priorTb.period_end, priorLines || []);
+    prior = await computeBalanceSheet(tb.client_id, priorTb.period_end, priorLines || [], customPL.groups);
   }
 
   const isBalanced = Math.abs(current.netAssets - current.shareholdersFunds) < 1;
 
-  // Fixed asset note — cost/depreciation movement by category
-  let registerAssets: any[] = [];
-  if (tb.job_id) {
-    const { data: assets } = await supabase.from("fixed_assets").select("*").eq("job_id", tb.job_id);
-    registerAssets = assets || [];
-  }
+  // Detailed Profit and Loss breakdown — every category with data, grouped
+  // by its P&L group. Built dynamically from whatever categories are actually
+  // in use for this client, so a custom category shows up automatically
+  // without any code change here.
+  const groupOf = (cat: string) => PL_CATEGORY_GROUPS[cat] || customPL.groups[cat];
+  const detailedPLGroups: { key: PLGroup; label: string; rows: { name: string; value: number; priorValue: number | null }[] }[] =
+    (["turnover", "cost_of_sales", "admin_expenses", "interest_payable", "interest_receivable"] as PLGroup[]).map((key) => {
+      const label = { turnover: "Turnover", cost_of_sales: "Cost of Sales", admin_expenses: "Administrative Expenses", interest_payable: "Interest Payable", interest_receivable: "Interest Receivable" }[key];
+      const names = new Set<string>();
+      current.pl.totals.forEach((_, cat) => { if (groupOf(cat) === key) names.add(cat); });
+      if (prior) prior.pl.totals.forEach((_, cat) => { if (groupOf(cat) === key) names.add(cat); });
+      const rows = Array.from(names).map((name) => ({
+        name,
+        value: current.pl.totals.get(name) || 0,
+        priorValue: prior ? (prior.pl.totals.get(name) || 0) : null,
+      }));
+      return { key, label, rows };
+    }).filter((g) => g.rows.length > 0);
+
+  // Fixed asset note — cost/depreciation movement by category, for every
+  // asset belonging to this client (tangible and intangible together).
+  const { data: registerAssetsRaw } = await supabase.from("fixed_assets").select("*").eq("client_id", tb.client_id);
+  const registerAssets = registerAssetsRaw || [];
   const categoryRows = (() => {
     if (registerAssets.length === 0) return [];
     const pStart = new Date(tb.period_start);
@@ -181,7 +231,7 @@ export default async function FRS102AccountsPage({
 
   const generalInfoDefault = `${client?.client_name} is a private company limited by shares, incorporated in England and Wales, registration number ${client?.company_number || "________"}.${client?.address ? ` The registered office is ${client.address}.` : ""}\n\nThese financial statements have been prepared in accordance with Section 1A of FRS 102, the Financial Reporting Standard applicable in the UK and Republic of Ireland, and the Companies Act 2006, as applicable to companies subject to the small companies regime. The financial statements are presented in Sterling (£).`;
 
-  const accountingPoliciesDefault = `Basis of preparation\nThese financial statements have been prepared under the historical cost convention and in accordance with Section 1A of FRS 102 as issued by the Financial Reporting Council.\n\nTurnover\nTurnover represents amounts receivable for goods and services provided in the normal course of business, net of value added tax and trade discounts.\n\nTangible fixed assets and depreciation\nTangible fixed assets are stated at cost less accumulated depreciation. Depreciation is provided on all tangible fixed assets at rates calculated to write off the cost of each asset over its expected useful life.\n\nTaxation\nTaxation for the period comprises current tax. Current tax is the expected corporation tax payable on taxable profit for the period, calculated using rates enacted or substantively enacted at the balance sheet date.`;
+  const accountingPoliciesDefault = `Basis of preparation\nThese financial statements have been prepared under the historical cost convention and in accordance with Section 1A of FRS 102 as issued by the Financial Reporting Council.\n\nTurnover\nTurnover represents amounts receivable for goods and services provided in the normal course of business, net of value added tax and trade discounts.\n\nTangible fixed assets and depreciation\nTangible fixed assets are stated at cost less accumulated depreciation. Depreciation is provided on all tangible fixed assets at rates calculated to write off the cost of each asset over its expected useful life.\n\nIntangible fixed assets and amortisation\nIntangible fixed assets are stated at cost less accumulated amortisation. Amortisation is provided at rates calculated to write off the cost of each asset over its expected useful life.\n\nTaxation\nTaxation for the period comprises current tax. Current tax is the expected corporation tax payable on taxable profit for the period, calculated using rates enacted or substantively enacted at the balance sheet date.`;
 
   const relatedPartyDefault = `There were no related party transactions during the year requiring disclosure under Section 1A of FRS 102, other than transactions with directors disclosed in the Advances, Credit and Guarantees to Directors note above.`;
 
@@ -278,6 +328,9 @@ export default async function FRS102AccountsPage({
             </thead>
             <tbody>
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Fixed Assets</td></tr>
+              {(current.intangibleAssetsNBV !== 0 || (prior && prior.intangibleAssetsNBV !== 0)) && (
+                <BSRow label="Intangible assets" value={current.intangibleAssetsNBV} priorValue={prior?.intangibleAssetsNBV} note={nFixedAssets ? String(nFixedAssets) : ""} />
+              )}
               <BSRow label="Tangible assets" value={current.fixedAssetsNBV} priorValue={prior?.fixedAssetsNBV} note={nFixedAssets ? String(nFixedAssets) : ""} />
 
               <tr><td className="pt-3 font-bold uppercase" colSpan={4}>Current Assets</td></tr>
@@ -344,6 +397,29 @@ export default async function FRS102AccountsPage({
           </table>
         </div>
 
+        {/* Detailed Profit & Loss — every category with data, grouped, since
+            this genuinely varies client to client based on what's mapped. */}
+        {detailedPLGroups.length > 0 && (
+          <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
+            <h2 className="text-lg font-bold text-slate-900 text-center">Detailed Profit and Loss Account</h2>
+            <p className="text-sm text-slate-500 text-center mb-1">For the Year Ended {periodEndFormatted}</p>
+            <p className="text-xs text-slate-400 text-center mb-6">Supplementary schedule — not part of the statutory accounts, provided for information</p>
+
+            <table className="w-full text-sm">
+              <tbody>
+                {detailedPLGroups.map((group) => (
+                  <Fragment key={group.key}>
+                    <tr><td className="pt-3 font-bold uppercase text-xs text-slate-500" colSpan={4}>{group.label}</td></tr>
+                    {group.rows.map((r) => (
+                      <BSRow key={r.name} label={r.name} value={group.key === "cost_of_sales" || group.key === "admin_expenses" || group.key === "interest_payable" ? -r.value : r.value} priorValue={r.priorValue === null ? null : (group.key === "cost_of_sales" || group.key === "admin_expenses" || group.key === "interest_payable" ? -r.priorValue : r.priorValue)} />
+                    ))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {/* Notes */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Notes to the Financial Statements</h2>
@@ -394,7 +470,8 @@ export default async function FRS102AccountsPage({
 
           {nFixedAssets && (
             <div className="mb-6">
-              <p className="text-sm font-bold text-slate-900">{nFixedAssets}. Tangible Fixed Assets</p>
+              <p className="text-sm font-bold text-slate-900">{nFixedAssets}. Fixed Assets</p>
+              <p className="text-xs text-slate-400 mt-1">Depreciation columns include amortisation for intangible asset classes (e.g. Goodwill).</p>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>

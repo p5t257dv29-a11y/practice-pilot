@@ -94,12 +94,14 @@ async function reopenWeek(staffName: string, weekStart: string) {
 export default async function TimesheetsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ week?: string; staff?: string; edit?: string }>;
+  searchParams: Promise<{ week?: string; staff?: string; edit?: string; view?: string; day?: string; log?: string }>;
 }) {
-  const { week, staff, edit } = await searchParams;
+  const { week, staff, edit, view, day, log } = await searchParams;
   const staffName = staff || DEFAULT_STAFF;
   const weekStart = mondayOf(week || todayStr());
   const weekEnd = addDays(weekStart, 6);
+  const viewMode = view === "day" ? "day" : "week";
+  const selectedDay = day && day >= weekStart && day <= weekEnd ? day : weekStart;
 
   const [{ data: entries, error }, { data: clients }, { data: jobs }, { data: closure }, { data: staffRows }] = await Promise.all([
     supabase
@@ -140,21 +142,114 @@ export default async function TimesheetsPage({
   const billableHours = (entries || []).filter((e) => e.billable).reduce((s, e) => s + Number(e.hours), 0);
   const billableValue = (entries || []).filter((e) => e.billable).reduce((s, e) => s + Number(e.hours) * Number(e.hourly_rate), 0);
 
-  const prevWeekHref = `/timesheets?week=${addDays(weekStart, -7)}&staff=${encodeURIComponent(staffName)}`;
-  const nextWeekHref = `/timesheets?week=${addDays(weekStart, 7)}&staff=${encodeURIComponent(staffName)}`;
-  const todayWeekHref = `/timesheets?staff=${encodeURIComponent(staffName)}`;
+  const baseParams = `week=${weekStart}&staff=${encodeURIComponent(staffName)}`;
+  const prevWeekHref = `/timesheets?week=${addDays(weekStart, -7)}&staff=${encodeURIComponent(staffName)}&view=${viewMode}`;
+  const nextWeekHref = `/timesheets?week=${addDays(weekStart, 7)}&staff=${encodeURIComponent(staffName)}&view=${viewMode}`;
+  const todayWeekHref = `/timesheets?staff=${encodeURIComponent(staffName)}&view=${viewMode}`;
+  const weekViewHref = `/timesheets?${baseParams}&view=week`;
+  const dayViewHref = (d: string) => `/timesheets?${baseParams}&view=day&day=${d}`;
+  const logModalHref = `/timesheets?${baseParams}&view=${viewMode}${viewMode === "day" ? `&day=${selectedDay}` : ""}&log=1`;
+  const closeModalHref = `/timesheets?${baseParams}&view=${viewMode}${viewMode === "day" ? `&day=${selectedDay}` : ""}`;
+  const entryEditHref = (entryId: string) => `${closeModalHref}&edit=${entryId}`;
+
+  const daysToShow = viewMode === "day" ? [selectedDay] : days;
+
+  const renderEntryRow = (entry: any) => {
+    const isEditing = edit === entry.id;
+    const entryJobs = (jobs || []).filter((j) => !entry.client_id || j.client_id === entry.client_id);
+
+    if (isEditing) {
+      return (
+        <form
+          key={entry.id}
+          action={updateTimeEntry.bind(null, entry.id)}
+          className="rounded-xl bg-white border border-slate-200 p-4 grid gap-3 md:grid-cols-3"
+        >
+          <select name="client_id" defaultValue={entry.client_id || ""}
+            className="rounded-lg border border-slate-200 p-2.5 text-sm bg-white">
+            <option value="">No client</option>
+            {(clients || []).map((c) => (
+              <option key={c.id} value={c.id}>{c.client_name}</option>
+            ))}
+          </select>
+          <select name="job_id" defaultValue={entry.job_id || ""}
+            className="rounded-lg border border-slate-200 p-2.5 text-sm bg-white">
+            <option value="">No job</option>
+            {entryJobs.map((j) => (
+              <option key={j.id} value={j.id}>{j.job_name}</option>
+            ))}
+          </select>
+          <input name="date" type="date" defaultValue={entry.date}
+            className="rounded-lg border border-slate-200 p-2.5 text-sm bg-white" />
+          <input name="hours" type="number" step="0.25" min="0.25" defaultValue={entry.hours}
+            className="rounded-lg border border-slate-200 p-2.5 text-sm bg-white" placeholder="Hours" />
+          <input name="hourly_rate" type="number" step="0.01" min="0" defaultValue={entry.hourly_rate}
+            className="rounded-lg border border-slate-200 p-2.5 text-sm bg-white" placeholder="Rate £" />
+          <input type="hidden" name="user_name" value={entry.user_name} />
+          <textarea name="description" defaultValue={entry.description} rows={2}
+            className="rounded-lg border border-slate-200 p-2.5 text-sm bg-white md:col-span-3" />
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input name="billable" type="checkbox" defaultChecked={entry.billable} className="w-4 h-4 rounded" />
+            <span className="text-sm text-slate-700">Billable</span>
+          </label>
+          <div className="flex items-center gap-3 md:col-span-2 md:justify-end">
+            <button type="submit" className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              Save
+            </button>
+            <a href={closeModalHref} className="text-sm font-semibold text-slate-500 hover:text-slate-700">
+              Cancel
+            </a>
+          </div>
+        </form>
+      );
+    }
+
+    return (
+      <div key={entry.id} className="flex items-center justify-between gap-4 rounded-xl bg-white border border-slate-100 p-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-semibold text-slate-900">{entry.clients?.client_name || "No client"}</p>
+            {entry.jobs?.job_name && <span className="text-sm text-slate-400">· {entry.jobs.job_name}</span>}
+            <span className={`text-xs px-2 py-0.5 rounded-full ${entry.billable ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>
+              {entry.billable ? "Billable" : "Non-billable"}
+            </span>
+          </div>
+          <p className="text-sm text-slate-500 mt-1">{entry.description}</p>
+        </div>
+        <div className="flex items-center gap-6 flex-shrink-0">
+          <p className="font-bold text-slate-900 font-mono tabular-nums text-lg">{Number(entry.hours).toFixed(2)}h</p>
+          {!isClosed && (
+            <div className="flex items-center gap-3">
+              <a href={entryEditHref(entry.id)} className="text-sm font-semibold text-slate-500 hover:text-slate-700">Edit</a>
+              <form action={deleteTimeEntry.bind(null, entry.id)}>
+                <button className="text-sm font-semibold text-red-500 hover:text-red-700">Delete</button>
+              </form>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <h1 className="text-2xl font-bold text-slate-900">Timesheets</h1>
-        <p className="text-sm text-slate-500 mt-0.5">
-          {new Date(weekStart + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long" })} –{" "}
-          {new Date(weekEnd + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
-          {isClosed && <span className="ml-2 rounded-full bg-slate-800 px-2.5 py-0.5 text-xs font-semibold text-white">Closed</span>}
-        </p>
+      <div className="bg-white border-b border-slate-200 px-8 py-8">
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Timesheets</h1>
+            <p className="text-sm text-slate-500 mt-1">
+              {new Date(weekStart + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long" })} –{" "}
+              {new Date(weekEnd + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
+              {isClosed && <span className="ml-2 rounded-full bg-slate-800 px-2.5 py-0.5 text-xs font-semibold text-white">Closed</span>}
+            </p>
+          </div>
+          <a href={logModalHref}
+            className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
+            + Log Time
+          </a>
+        </div>
 
-        <div className="mt-4 flex items-center gap-3 flex-wrap">
+        <div className="mt-5 flex items-center gap-3 flex-wrap">
           <div className="flex gap-2">
             <a href={prevWeekHref} className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">← Prev</a>
             <a href={todayWeekHref} className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">This Week</a>
@@ -162,6 +257,17 @@ export default async function TimesheetsPage({
           </div>
 
           <StaffSwitcher staffNames={staffNames} currentStaff={staffName} weekStart={weekStart} />
+
+          <div className="flex rounded-xl bg-slate-100 p-1 ml-1">
+            <a href={weekViewHref}
+              className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors ${viewMode === "week" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}>
+              Week
+            </a>
+            <a href={dayViewHref(selectedDay)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors ${viewMode === "day" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}>
+              Day
+            </a>
+          </div>
 
           <div className="flex-1" />
 
@@ -180,162 +286,109 @@ export default async function TimesheetsPage({
           )}
         </div>
 
-        <div className="mt-4 flex gap-8">
+        <div className="mt-6" style={{ display: "flex", gap: "2.5rem" }}>
           <div>
             <p className="text-xs text-slate-500">Total Hours</p>
-            <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums">{totalHours.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-1">{totalHours.toFixed(2)}</p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Billable Hours</p>
-            <p className="text-2xl font-bold text-blue-600 font-mono tabular-nums">{billableHours.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-blue-600 font-mono tabular-nums mt-1">{billableHours.toFixed(2)}</p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Billable Value</p>
-            <p className="text-2xl font-bold text-green-600 font-mono tabular-nums">£{billableValue.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-green-600 font-mono tabular-nums mt-1">£{billableValue.toFixed(2)}</p>
           </div>
         </div>
       </div>
 
-      <div className="p-8">
+      {/* Day strip — calendar header across the top */}
+      <div className="bg-white border-b border-slate-200 px-8 py-4">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: "0.75rem" }}>
+          {days.map((d, i) => {
+            const dayEntries = entriesByDay.get(d) || [];
+            const dayTotal = dayEntries.reduce((s, e) => s + Number(e.hours), 0);
+            const isToday = d === todayStr();
+            const isSelected = viewMode === "day" && d === selectedDay;
+            return (
+              <a key={d} href={dayViewHref(d)}
+                className={`rounded-xl p-3 text-center transition-colors border ${
+                  isSelected ? "bg-slate-900 border-slate-900" : isToday ? "bg-white border-slate-400" : "bg-white border-slate-100 hover:border-slate-300"
+                }`}>
+                <p className={`text-xs font-semibold ${isSelected ? "text-white" : "text-slate-900"}`}>{dayNames[i]}</p>
+                <p className={`text-xs mt-0.5 ${isSelected ? "text-slate-300" : "text-slate-400"}`}>
+                  {new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                </p>
+                <p className={`text-sm font-bold font-mono tabular-nums mt-1.5 ${isSelected ? "text-white" : dayTotal > 0 ? "text-slate-700" : "text-slate-300"}`}>
+                  {dayTotal > 0 ? `${dayTotal.toFixed(1)}h` : "—"}
+                </p>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="p-8 space-y-6 max-w-4xl mx-auto">
         {error && (
-          <div className="mb-4 rounded-xl bg-red-100 p-3 text-sm text-red-700">
+          <div className="rounded-xl bg-red-100 p-3 text-sm text-red-700">
             Could not load time entries: {error.message}
           </div>
         )}
 
-        <div className="flex gap-6 items-start">
-          <div className="w-80 flex-shrink-0">
-            {!isClosed && (
-              <div className="rounded-2xl bg-white p-5 shadow-sm border border-slate-100">
-                <h2 className="text-base font-bold text-slate-900 mb-4">Log Time</h2>
-                <TimesheetLogForm
-                  clients={clients || []}
-                  jobs={jobs || []}
-                  weekStart={weekStart}
-                  weekEnd={weekEnd}
-                  currentStaffRate={currentStaffRate}
-                  defaultDate={todayStr() >= weekStart && todayStr() <= weekEnd
-                    ? todayStr()
-                    : weekStart}
-                  logAction={logTimeWithWeek}
-                />
-              </div>
-            )}
+        {daysToShow.map((d) => {
+          const dayEntries = entriesByDay.get(d) || [];
+          const dayIndex = days.indexOf(d);
+          const dayTotal = dayEntries.reduce((s, e) => s + Number(e.hours), 0);
 
-            {isClosed && (
-              <div className="rounded-2xl bg-slate-100 border border-slate-200 p-4 text-sm text-slate-600">
-                This week is closed. Reopen it above if you need to add or edit entries.
-              </div>
-            )}
-          </div>
-
-          <div className="flex-1 min-w-0" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: "0.75rem" }}>
-            {days.map((day, i) => {
-              const dayEntries = entriesByDay.get(day) || [];
-              const dayTotal = dayEntries.reduce((s, e) => s + Number(e.hours), 0);
-              const isToday = day === todayStr();
-
-              return (
-                <div key={day} className={`rounded-2xl bg-white border p-2.5 ${isToday ? "border-slate-400" : "border-slate-100"}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <p className="text-xs font-semibold text-slate-900">{dayNames[i]}</p>
-                      <p className="text-xs text-slate-400">{new Date(day + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</p>
-                    </div>
-                    {dayTotal > 0 && <span className="text-xs font-bold text-slate-600 font-mono tabular-nums">{dayTotal.toFixed(1)}h</span>}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    {dayEntries.map((entry) => {
-                      const isEditing = edit === entry.id;
-                      const entryJobs = (jobs || []).filter((j) => !entry.client_id || j.client_id === entry.client_id);
-                      const editHref = `/timesheets?week=${weekStart}&staff=${encodeURIComponent(staffName)}&edit=${entry.id}`;
-                      const closeEditHref = `/timesheets?week=${weekStart}&staff=${encodeURIComponent(staffName)}`;
-
-                      if (isEditing) {
-                        return (
-                          <form
-                            key={entry.id}
-                            action={updateTimeEntry.bind(null, entry.id)}
-                            className="rounded-lg bg-white border border-slate-200 p-2 text-xs space-y-1.5"
-                          >
-                            <select name="client_id" defaultValue={entry.client_id || ""}
-                              className="w-full rounded-lg border border-slate-200 p-1.5 text-xs bg-white">
-                              <option value="">No client</option>
-                              {(clients || []).map((c) => (
-                                <option key={c.id} value={c.id}>{c.client_name}</option>
-                              ))}
-                            </select>
-                            <select name="job_id" defaultValue={entry.job_id || ""}
-                              className="w-full rounded-lg border border-slate-200 p-1.5 text-xs bg-white">
-                              <option value="">No job</option>
-                              {entryJobs.map((j) => (
-                                <option key={j.id} value={j.id}>{j.job_name}</option>
-                              ))}
-                            </select>
-                            <div className="flex gap-1.5">
-                              <input name="date" type="date" defaultValue={entry.date}
-                                className="w-1/2 rounded-lg border border-slate-200 p-1.5 text-xs bg-white" />
-                              <input name="hours" type="number" step="0.25" min="0.25" defaultValue={entry.hours}
-                                className="w-1/2 rounded-lg border border-slate-200 p-1.5 text-xs bg-white" />
-                            </div>
-                            <textarea name="description" defaultValue={entry.description} rows={2}
-                              className="w-full rounded-lg border border-slate-200 p-1.5 text-xs bg-white" />
-                            <input name="hourly_rate" type="number" step="0.01" min="0" defaultValue={entry.hourly_rate}
-                              className="w-full rounded-lg border border-slate-200 p-1.5 text-xs bg-white" placeholder="Rate £" />
-                            <input type="hidden" name="user_name" value={entry.user_name} />
-                            <label className="flex items-center gap-1.5 cursor-pointer">
-                              <input name="billable" type="checkbox" defaultChecked={entry.billable} className="w-3.5 h-3.5 rounded" />
-                              <span className="text-[11px] text-slate-700">Billable</span>
-                            </label>
-                            <div className="flex items-center justify-between pt-0.5">
-                              <button type="submit" className="rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-slate-700 transition-colors">
-                                Save
-                              </button>
-                              <a href={closeEditHref} className="text-[11px] font-semibold text-slate-500 hover:text-slate-700">
-                                Cancel
-                              </a>
-                            </div>
-                          </form>
-                        );
-                      }
-
-                      return (
-                        <div key={entry.id} className="rounded-lg bg-slate-50 p-2 text-xs">
-                          <div className="flex items-start justify-between gap-1">
-                            <p className="font-semibold text-slate-800 leading-tight">
-                              {entry.clients?.client_name || "No client"}
-                            </p>
-                            <span className="font-bold text-slate-900 flex-shrink-0 font-mono tabular-nums">{Number(entry.hours).toFixed(2)}h</span>
-                          </div>
-                          {entry.jobs?.job_name && <p className="text-slate-500">{entry.jobs.job_name}</p>}
-                          <p className="text-slate-500 mt-0.5">{entry.description}</p>
-                          <div className="flex items-center justify-between mt-1">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${entry.billable ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>
-                              {entry.billable ? "Billable" : "Non-billable"}
-                            </span>
-                            {!isClosed && (
-                              <div className="flex items-center gap-2">
-                                <a href={editHref} className="text-slate-500 hover:text-slate-700 text-[10px] font-semibold">Edit</a>
-                                <form action={deleteTimeEntry.bind(null, entry.id)}>
-                                  <button className="text-red-500 hover:text-red-700 text-[10px] font-semibold">Delete</button>
-                                </form>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {dayEntries.length === 0 && (
-                      <p className="text-[11px] text-slate-300 text-center py-3">No time logged</p>
-                    )}
-                  </div>
+          return (
+            <div key={d}>
+              {viewMode === "week" && (
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-base font-bold text-slate-900">
+                    {dayNames[dayIndex]}{" "}
+                    <span className="font-normal text-slate-400">
+                      {new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long" })}
+                    </span>
+                  </h2>
+                  {dayTotal > 0 && <span className="text-sm font-bold text-slate-600 font-mono tabular-nums">{dayTotal.toFixed(2)}h</span>}
                 </div>
-              );
-            })}
+              )}
+
+              <div className="space-y-3">
+                {dayEntries.map(renderEntryRow)}
+                {dayEntries.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center">
+                    <p className="text-sm text-slate-400">No time logged</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Log Time modal */}
+      {log === "1" && !isClosed && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(15, 23, 42, 0.4)" }}>
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Log Time</h2>
+              <a href={closeModalHref} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</a>
+            </div>
+            <div className="p-6">
+              <TimesheetLogForm
+                clients={clients || []}
+                jobs={jobs || []}
+                weekStart={weekStart}
+                weekEnd={weekEnd}
+                currentStaffRate={currentStaffRate}
+                defaultDate={viewMode === "day" ? selectedDay : (todayStr() >= weekStart && todayStr() <= weekEnd ? todayStr() : weekStart)}
+                logAction={logTimeWithWeek}
+              />
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

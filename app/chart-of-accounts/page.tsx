@@ -9,6 +9,14 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+const GROUP_LABELS: Record<string, string> = {
+  turnover: "Turnover",
+  cost_of_sales: "Cost of Sales",
+  admin_expenses: "Administrative Expenses",
+  interest_payable: "Interest Payable",
+  interest_receivable: "Interest Receivable",
+};
+
 async function addAccount(formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -40,6 +48,23 @@ async function deleteAccount(id: string) {
   revalidatePath("/chart-of-accounts");
 }
 
+async function addCustomCategory(formData: FormData) {
+  "use server";
+  const name = String(formData.get("name") || "").trim();
+  const category_group = String(formData.get("category_group") || "").trim();
+  if (!name || !category_group) return;
+
+  const { error } = await supabase.from("custom_pl_categories").insert({ name, category_group });
+  if (error) console.error("Could not add custom category:", error.message);
+  revalidatePath("/chart-of-accounts");
+}
+
+async function deleteCustomCategory(id: string) {
+  "use server";
+  await supabase.from("custom_pl_categories").delete().eq("id", id);
+  revalidatePath("/chart-of-accounts");
+}
+
 export default async function ChartOfAccountsPage({
   searchParams,
 }: {
@@ -47,10 +72,13 @@ export default async function ChartOfAccountsPage({
 }) {
   const { edit } = await searchParams;
 
-  const { data: accounts, error } = await supabase
-    .from("chart_of_accounts")
-    .select("*")
-    .order("nominal_code", { ascending: true });
+  const [{ data: accounts, error }, { data: customCategoriesRaw }] = await Promise.all([
+    supabase.from("chart_of_accounts").select("*").order("nominal_code", { ascending: true }),
+    supabase.from("custom_pl_categories").select("*").order("name", { ascending: true }),
+  ]);
+
+  const customCategories = customCategoriesRaw || [];
+  const allPLCategories = [...PL_CATEGORIES, ...customCategories.map((c) => c.name)];
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -78,6 +106,63 @@ export default async function ChartOfAccountsPage({
           </div>
         )}
 
+        {/* Custom P&L categories */}
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 mb-6">
+          <h2 className="text-lg font-bold text-slate-900">Custom P&L Categories</h2>
+          <p className="text-sm text-slate-500 mt-0.5">
+            Add a category for something the standard list doesn't cover — e.g. a client-specific expense you want broken out separately.
+            Pick which group it rolls into so it's still counted correctly in the accounts (Turnover, Cost of Sales, Administrative Expenses, Interest Payable, or Interest Receivable).
+            It'll also appear on its own line in the Detailed Profit and Loss note on the formatted accounts.
+          </p>
+          <form action={addCustomCategory} className="mt-4 grid gap-4 md:grid-cols-3">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Category Name *</label>
+              <input name="name" required
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                placeholder="e.g. Subscriptions" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Rolls Into *</label>
+              <select name="category_group" required
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                <option value="">Select group...</option>
+                <option value="turnover">Turnover</option>
+                <option value="cost_of_sales">Cost of Sales</option>
+                <option value="admin_expenses">Administrative Expenses</option>
+                <option value="interest_payable">Interest Payable</option>
+                <option value="interest_receivable">Interest Receivable</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <button type="submit"
+                className="w-full rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Add Category
+              </button>
+            </div>
+          </form>
+
+          {customCategories.length > 0 && (
+            <div className="mt-4 space-y-1">
+              {customCategories.map((c) => (
+                <div key={c.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3">
+                  <div>
+                    <span className="text-sm font-medium text-slate-900">{c.name}</span>
+                    <span className="ml-2 text-xs text-slate-400">→ {GROUP_LABELS[c.category_group] || c.category_group}</span>
+                  </div>
+                  <form action={deleteCustomCategory.bind(null, c.id)}>
+                    <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                      Delete
+                    </button>
+                  </form>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-slate-400 mt-3">
+            This only covers Profit &amp; Loss categories. New Balance Sheet categories (e.g. a new fixed asset class, or a new type of loan) touch more of the system and still need setting up directly — just ask.
+          </p>
+        </div>
+
         {/* Add form */}
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">Add Nominal Code</h2>
@@ -100,7 +185,7 @@ export default async function ChartOfAccountsPage({
                 className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
                 <option value="">Select category...</option>
                 <optgroup label="Profit & Loss">
-                  {PL_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {allPLCategories.map((c) => <option key={c} value={c}>{c}</option>)}
                 </optgroup>
                 <optgroup label="Balance Sheet">
                   {BS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -153,7 +238,7 @@ export default async function ChartOfAccountsPage({
                         <select name="category" defaultValue={acc.category}
                           className="rounded-xl border border-slate-200 p-2.5 text-sm bg-white">
                           <optgroup label="Profit & Loss">
-                            {PL_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                            {allPLCategories.map((c) => <option key={c} value={c}>{c}</option>)}
                           </optgroup>
                           <optgroup label="Balance Sheet">
                             {BS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
