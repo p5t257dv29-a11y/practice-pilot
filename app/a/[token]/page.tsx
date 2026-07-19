@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { computeBalanceSheet } from "../../accounts-production/[id]/frs105/page";
+import { getCustomPLCategories } from "../../accounts-production/page";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -41,11 +42,12 @@ export default async function PublicAccountsPage({
 
   if (error || !tb) notFound();
 
-  const [{ data: lines }] = await Promise.all([
+  const [{ data: lines }, customPL] = await Promise.all([
     supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", tb.id),
+    getCustomPLCategories(supabase),
   ]);
 
-  const result = await computeBalanceSheet(tb.client_id, tb.job_id, tb.period_end, lines || []);
+  const result = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups);
 
   const approveWithToken = approveAccounts.bind(null, token);
   const queryWithToken = queryAccounts.bind(null, token);
@@ -137,7 +139,7 @@ export default async function PublicAccountsPage({
           <div className="p-6 bg-slate-50">
             <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Balance Sheet Summary</h2>
             <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Fixed Assets</span><span className="font-medium">{fmt(result.fixedAssetsNBV)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Fixed Assets</span><span className="font-medium">{fmt(result.totalFixedAssets)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Net Current Assets</span><span className="font-medium">{fmt(result.netCurrentAssets)}</span></div>
               <div className="flex justify-between font-bold border-t border-slate-100 pt-2">
                 <span>Net Assets</span>
