@@ -164,7 +164,8 @@ export default async function FRS102AccountsPage({
   const currentYearLabel = new Date(tb.period_end).getFullYear();
   const priorYearLabel = priorTb ? new Date(priorTb.period_end).getFullYear() : null;
 
-  // Note numbering: General Info, Accounting Policies, [Fixed Assets if any], Share Capital, Employees, Directors' Advances
+  // Note numbering: General Info, Accounting Policies, [Fixed Assets if any], Share Capital, Employees,
+  // Directors' Advances, Related Party Transactions, Post Balance Sheet Events, Ultimate Controlling Party
   let noteNum = 1;
   const nGeneral = noteNum++;
   const nPolicies = noteNum++;
@@ -172,12 +173,21 @@ export default async function FRS102AccountsPage({
   const nShareCapital = noteNum++;
   const nEmployees = noteNum++;
   const nDirectors = noteNum++;
+  const nRelatedParty = noteNum++;
+  const nPostBalanceSheet = noteNum++;
+  const nUltimateControlling = noteNum++;
 
   const updateEmployeeCountWithId = updateEmployeeCount.bind(null, id);
 
   const generalInfoDefault = `${client?.client_name} is a private company limited by shares, incorporated in England and Wales, registration number ${client?.company_number || "________"}.${client?.address ? ` The registered office is ${client.address}.` : ""}\n\nThese financial statements have been prepared in accordance with Section 1A of FRS 102, the Financial Reporting Standard applicable in the UK and Republic of Ireland, and the Companies Act 2006, as applicable to companies subject to the small companies regime. The financial statements are presented in Sterling (£).`;
 
   const accountingPoliciesDefault = `Basis of preparation\nThese financial statements have been prepared under the historical cost convention and in accordance with Section 1A of FRS 102 as issued by the Financial Reporting Council.\n\nTurnover\nTurnover represents amounts receivable for goods and services provided in the normal course of business, net of value added tax and trade discounts.\n\nTangible fixed assets and depreciation\nTangible fixed assets are stated at cost less accumulated depreciation. Depreciation is provided on all tangible fixed assets at rates calculated to write off the cost of each asset over its expected useful life.\n\nTaxation\nTaxation for the period comprises current tax. Current tax is the expected corporation tax payable on taxable profit for the period, calculated using rates enacted or substantively enacted at the balance sheet date.`;
+
+  const relatedPartyDefault = `There were no related party transactions during the year requiring disclosure under Section 1A of FRS 102, other than transactions with directors disclosed in the Advances, Credit and Guarantees to Directors note above.`;
+
+  const postBalanceSheetDefault = `There were no material events between the balance sheet date and the date these financial statements were approved that would require adjustment to, or disclosure in, these financial statements.`;
+
+  const ultimateControllingDefault = `In the opinion of the director, there is no ultimate controlling party.`;
 
   // Two-column balance sheet row: current year + prior year (if available)
   const BSRow = ({ label, value, priorValue, bold, caps, note }: { label: string; value: number; priorValue?: number | null; bold?: boolean; caps?: boolean; note?: string }) => (
@@ -462,6 +472,72 @@ export default async function FRS102AccountsPage({
                 ? `The company had a balance of £${fmt(Math.abs(current.dla))} ${current.dla > 0 ? "owed to the company by" : "owed by the company to"} a director at the balance sheet date.`
                 : "No advances, credits, or guarantees were granted to directors during the year."}
             </p>
+          </div>
+
+          <div className="mt-6">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-900">{nRelatedParty}. Related Party Transactions</p>
+              <a href={edit_note === "related_party" ? `/accounts-production/${id}/frs102` : `/accounts-production/${id}/frs102?edit_note=related_party`}
+                className="text-xs font-semibold text-blue-600 hover:underline print:hidden">
+                {edit_note === "related_party" ? "Cancel" : "Edit"}
+              </a>
+            </div>
+            {edit_note === "related_party" ? (
+              <form action={updateNote.bind(null, id, "note_related_party_transactions")} className="mt-2 print:hidden">
+                <textarea name="note_text" rows={4}
+                  defaultValue={tb.note_related_party_transactions || relatedPartyDefault}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <button type="submit" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Save
+                </button>
+              </form>
+            ) : (
+              <div className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{tb.note_related_party_transactions || relatedPartyDefault}</div>
+            )}
+          </div>
+
+          <div className="mt-6">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-900">{nPostBalanceSheet}. Post Balance Sheet Events</p>
+              <a href={edit_note === "post_balance_sheet" ? `/accounts-production/${id}/frs102` : `/accounts-production/${id}/frs102?edit_note=post_balance_sheet`}
+                className="text-xs font-semibold text-blue-600 hover:underline print:hidden">
+                {edit_note === "post_balance_sheet" ? "Cancel" : "Edit"}
+              </a>
+            </div>
+            {edit_note === "post_balance_sheet" ? (
+              <form action={updateNote.bind(null, id, "note_post_balance_sheet_events")} className="mt-2 print:hidden">
+                <textarea name="note_text" rows={4}
+                  defaultValue={tb.note_post_balance_sheet_events || postBalanceSheetDefault}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <button type="submit" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Save
+                </button>
+              </form>
+            ) : (
+              <div className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{tb.note_post_balance_sheet_events || postBalanceSheetDefault}</div>
+            )}
+          </div>
+
+          <div className="mt-6">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-900">{nUltimateControlling}. Ultimate Controlling Party</p>
+              <a href={edit_note === "ultimate_controlling" ? `/accounts-production/${id}/frs102` : `/accounts-production/${id}/frs102?edit_note=ultimate_controlling`}
+                className="text-xs font-semibold text-blue-600 hover:underline print:hidden">
+                {edit_note === "ultimate_controlling" ? "Cancel" : "Edit"}
+              </a>
+            </div>
+            {edit_note === "ultimate_controlling" ? (
+              <form action={updateNote.bind(null, id, "note_ultimate_controlling_party")} className="mt-2 print:hidden">
+                <textarea name="note_text" rows={3}
+                  defaultValue={tb.note_ultimate_controlling_party || ultimateControllingDefault}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <button type="submit" className="mt-2 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Save
+                </button>
+              </form>
+            ) : (
+              <div className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{tb.note_ultimate_controlling_party || ultimateControllingDefault}</div>
+            )}
           </div>
         </div>
 

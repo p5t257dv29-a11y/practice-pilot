@@ -114,76 +114,76 @@ export default async function EngagementPage({
           )}
         </form>
 
-        {/* List */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">
-            {isFiltered ? `Results (${filteredLetters.length})` : `All Letters (${letters?.length ?? 0})`}
-          </h2>
+        {/* List — only shown once a filter or search narrows things down */}
+        {isFiltered ? (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">
+              Results ({filteredLetters.length})
+            </h2>
 
-          <div className="mt-4 space-y-3">
-            {filteredLetters.map((letter) => (
-              <div key={letter.id} className="rounded-xl border border-slate-100 p-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
+            <div className="mt-4 space-y-3">
+              {filteredLetters.map((letter) => (
+                <div key={letter.id} className="rounded-xl border border-slate-100 p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <a href={`/engagement/${letter.id}`}
+                          className="font-semibold text-slate-900 hover:text-blue-600 transition-colors">
+                          {letter.clients?.client_name || "Unknown Client"}
+                        </a>
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          letter.status === "Signed" ? "bg-green-100 text-green-700"
+                          : letter.status === "Sent" ? "bg-blue-100 text-blue-700"
+                          : "bg-slate-100 text-slate-600"
+                        }`}>
+                          {letter.status}
+                        </span>
+                      </div>
+
+                      <p className="text-sm text-slate-500 mt-0.5">{letter.client_email}</p>
+
+                      <div className="mt-1 flex gap-4 text-xs text-slate-400">
+                        {letter.start_date && (
+                          <span>Start: {new Date(letter.start_date).toLocaleDateString("en-GB")}</span>
+                        )}
+                        {letter.sent_at && (
+                          <span>Sent: {new Date(letter.sent_at).toLocaleDateString("en-GB")}</span>
+                        )}
+                        {letter.signed_at && (
+                          <span className="text-green-600">✓ Signed: {new Date(letter.signed_at).toLocaleDateString("en-GB")}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 ml-4">
                       <a href={`/engagement/${letter.id}`}
-                        className="font-semibold text-slate-900 hover:text-blue-600 transition-colors">
-                        {letter.clients?.client_name || "Unknown Client"}
+                        className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                        Manage
                       </a>
-                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                        letter.status === "Signed" ? "bg-green-100 text-green-700"
-                        : letter.status === "Sent" ? "bg-blue-100 text-blue-700"
-                        : "bg-slate-100 text-slate-600"
-                      }`}>
-                        {letter.status}
-                      </span>
+                      <form action={deleteEngagementLetter.bind(null, letter.id)}>
+                        <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                          Delete
+                        </button>
+                      </form>
                     </div>
-
-                    <p className="text-sm text-slate-500 mt-0.5">{letter.client_email}</p>
-
-                    <div className="mt-1 flex gap-4 text-xs text-slate-400">
-                      {letter.start_date && (
-                        <span>Start: {new Date(letter.start_date).toLocaleDateString("en-GB")}</span>
-                      )}
-                      {letter.sent_at && (
-                        <span>Sent: {new Date(letter.sent_at).toLocaleDateString("en-GB")}</span>
-                      )}
-                      {letter.signed_at && (
-                        <span className="text-green-600">✓ Signed: {new Date(letter.signed_at).toLocaleDateString("en-GB")}</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 ml-4">
-                    <a href={`/engagement/${letter.id}`}
-                      className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
-                      Manage
-                    </a>
-                    <form action={deleteEngagementLetter.bind(null, letter.id)}>
-                      <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                        Delete
-                      </button>
-                    </form>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
 
-            {isFiltered && filteredLetters.length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-8">No engagement letters match this filter.</p>
-            )}
-
-            {!isFiltered && letters && letters.length === 0 && (
-              <div className="text-center py-12">
-                <p className="text-slate-500 text-sm">No engagement letters yet.</p>
-                <a href="/engagement/new"
-                  className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  + New Engagement Letter
-                </a>
-              </div>
-            )}
+              {filteredLetters.length === 0 && (
+                <p className="text-sm text-slate-500 text-center py-8">No engagement letters match this filter.</p>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <p className="text-sm text-slate-500 text-center py-8">
+              {letters && letters.length === 0
+                ? "No engagement letters yet. Click + New Engagement Letter to add your first one."
+                : "Search, or click a stat above, to see letters."}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

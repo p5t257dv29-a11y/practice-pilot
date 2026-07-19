@@ -114,97 +114,97 @@ export default async function OnboardingPage({
           )}
         </form>
 
-        {/* List */}
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-          <h2 className="text-lg font-bold text-slate-900">
-            {isFiltered ? `Results (${filteredRequests.length})` : `All Requests (${requests?.length ?? 0})`}
-          </h2>
+        {/* List — only shown once a filter or search narrows things down */}
+        {isFiltered ? (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">
+              Results ({filteredRequests.length})
+            </h2>
 
-          <div className="mt-4 space-y-3">
-            {filteredRequests.map((request) => (
-              <div key={request.id}
-                className="rounded-xl border border-slate-100 p-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
+            <div className="mt-4 space-y-3">
+              {filteredRequests.map((request) => (
+                <div key={request.id}
+                  className="rounded-xl border border-slate-100 p-4">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <a href={`/onboarding/${request.id}`}
+                          className="font-semibold text-slate-900 hover:text-blue-600 transition-colors">
+                          {request.clients?.client_name || "Unknown Client"}
+                        </a>
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          request.status === "Complete" ? "bg-green-100 text-green-700"
+                          : request.status === "In Progress" ? "bg-blue-100 text-blue-700"
+                          : "bg-slate-100 text-slate-600"
+                        }`}>
+                          {request.status}
+                        </span>
+                      </div>
+
+                      <p className="text-sm text-slate-500 mt-0.5">
+                        {request.client_email || "No email"}
+                      </p>
+
+                      <div className="mt-2 flex gap-4 text-xs text-slate-400">
+                        <span>
+                          📋 Client form: {request.completed_at
+                            ? <span className="text-green-600 font-medium">Completed</span>
+                            : request.sent_at
+                            ? <span className="text-blue-600 font-medium">Sent</span>
+                            : <span>Not sent</span>}
+                        </span>
+                        <span>
+                          📨 Clearance: {request.clearance_received
+                            ? <span className="text-green-600 font-medium">Received</span>
+                            : request.clearance_sent_at
+                            ? <span className="text-blue-600 font-medium">Sent</span>
+                            : <span>Not sent</span>}
+                        </span>
+                      </div>
+
+                      {/* Checklist indicators */}
+                      <div className="mt-2 flex gap-2">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${request.id_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-400"}`}>
+                          ID {request.id_received ? "✓" : "○"}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${request.prev_accounts_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-400"}`}>
+                          Prev Accounts {request.prev_accounts_received ? "✓" : "○"}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${request.signed_engagement_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-400"}`}>
+                          Engagement Letter {request.signed_engagement_received ? "✓" : "○"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 ml-4">
                       <a href={`/onboarding/${request.id}`}
-                        className="font-semibold text-slate-900 hover:text-blue-600 transition-colors">
-                        {request.clients?.client_name || "Unknown Client"}
+                        className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                        Manage
                       </a>
-                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                        request.status === "Complete" ? "bg-green-100 text-green-700"
-                        : request.status === "In Progress" ? "bg-blue-100 text-blue-700"
-                        : "bg-slate-100 text-slate-600"
-                      }`}>
-                        {request.status}
-                      </span>
+                      <form action={deleteOnboardingRequest.bind(null, request.id)}>
+                        <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                          Delete
+                        </button>
+                      </form>
                     </div>
-
-                    <p className="text-sm text-slate-500 mt-0.5">
-                      {request.client_email || "No email"}
-                    </p>
-
-                    <div className="mt-2 flex gap-4 text-xs text-slate-400">
-                      <span>
-                        📋 Client form: {request.completed_at
-                          ? <span className="text-green-600 font-medium">Completed</span>
-                          : request.sent_at
-                          ? <span className="text-blue-600 font-medium">Sent</span>
-                          : <span>Not sent</span>}
-                      </span>
-                      <span>
-                        📨 Clearance: {request.clearance_received
-                          ? <span className="text-green-600 font-medium">Received</span>
-                          : request.clearance_sent_at
-                          ? <span className="text-blue-600 font-medium">Sent</span>
-                          : <span>Not sent</span>}
-                      </span>
-                    </div>
-
-                    {/* Checklist indicators */}
-                    <div className="mt-2 flex gap-2">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${request.id_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-400"}`}>
-                        ID {request.id_received ? "✓" : "○"}
-                      </span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${request.prev_accounts_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-400"}`}>
-                        Prev Accounts {request.prev_accounts_received ? "✓" : "○"}
-                      </span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${request.signed_engagement_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-400"}`}>
-                        Engagement Letter {request.signed_engagement_received ? "✓" : "○"}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 ml-4">
-                    <a href={`/onboarding/${request.id}`}
-                      className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
-                      Manage
-                    </a>
-                    <form action={deleteOnboardingRequest.bind(null, request.id)}>
-                      <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                        Delete
-                      </button>
-                    </form>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
 
-            {isFiltered && filteredRequests.length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-8">No onboarding requests match this filter.</p>
-            )}
-
-            {!isFiltered && requests && requests.length === 0 && (
-              <div className="text-center py-12">
-                <p className="text-slate-500 text-sm">No onboarding requests yet.</p>
-                <a href="/onboarding/new"
-                  className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  + New Onboarding
-                </a>
-              </div>
-            )}
+              {filteredRequests.length === 0 && (
+                <p className="text-sm text-slate-500 text-center py-8">No onboarding requests match this filter.</p>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <p className="text-sm text-slate-500 text-center py-8">
+              {requests && requests.length === 0
+                ? "No onboarding requests yet. Click + New Onboarding to add your first one."
+                : "Search, or click a stat above, to see requests."}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
