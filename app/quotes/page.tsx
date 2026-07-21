@@ -9,6 +9,19 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Helper function to format GBP currency with thousands commas
+const formatCurrency = (amount: number | string) => {
+  const num = typeof amount === "string" ? parseFloat(amount) : amount;
+  if (isNaN(num)) return "£0.00";
+
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(num);
+};
+
 const STATUS_OPTIONS = ["Draft", "Sent", "Accepted", "Declined", "Expired"];
 
 async function deleteQuote(id: string) {
@@ -55,7 +68,9 @@ export default async function QuotesPage({
   const acceptedValue = (quotes || [])
     .filter((q) => q.status === "Accepted")
     .reduce((sum, q) => sum + Number(q.total || 0), 0);
-  const pending = (quotes || []).filter((q) => (q.status || "Draft") === "Draft" || q.status === "Sent").length;
+  const pending = (quotes || []).filter(
+    (q) => (q.status || "Draft") === "Draft" || q.status === "Sent"
+  ).length;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -69,22 +84,27 @@ export default async function QuotesPage({
               Create and manage client quotes and proposals.
             </p>
           </div>
-          <a href="/quotes/new"
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+          <a
+            href="/quotes/new"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
+          >
             + New Quote
           </a>
         </div>
-
 
         {/* Stats */}
         <div className="mt-4 flex gap-8">
           <div>
             <p className="text-xs text-slate-500">Total Quoted</p>
-            <p className="text-2xl font-bold text-slate-900">£{totalQuoted.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-slate-900">
+              {formatCurrency(totalQuoted)}
+            </p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Accepted Value</p>
-            <p className="text-2xl font-bold text-green-600">£{acceptedValue.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-green-600">
+              {formatCurrency(acceptedValue)}
+            </p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Pending</p>
@@ -107,16 +127,22 @@ export default async function QuotesPage({
           >
             <option value="">All statuses</option>
             {STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
           </select>
-          <button type="submit"
-            className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+          <button
+            type="submit"
+            className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
+          >
             Search
           </button>
           {isFiltered && (
-            <a href="/quotes"
-              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors flex items-center">
+            <a
+              href="/quotes"
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors flex items-center"
+            >
               Clear
             </a>
           )}
@@ -124,7 +150,6 @@ export default async function QuotesPage({
       </div>
 
       <div className="p-8">
-
         {error && (
           <div className="mb-6 rounded-xl bg-red-100 p-3 text-sm text-red-700">
             Could not load quotes: {error.message}
@@ -134,7 +159,9 @@ export default async function QuotesPage({
         {/* Quotes List */}
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">
-            {isFiltered ? `Search Results (${filteredQuotes.length})` : `All Quotes (${quotes?.length ?? 0})`}
+            {isFiltered
+              ? `Search Results (${filteredQuotes.length})`
+              : `All Quotes (${quotes?.length ?? 0})`}
           </h2>
           <div className="mt-4 space-y-3">
             {filteredQuotes.map((quote) => (
@@ -142,10 +169,7 @@ export default async function QuotesPage({
                 key={quote.id}
                 className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors"
               >
-                <Link
-                  href={`/quotes/${quote.id}`}
-                  className="flex-1"
-                >
+                <Link href={`/quotes/${quote.id}`} className="flex-1">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-sm font-bold text-blue-600">
                       📋
@@ -170,22 +194,24 @@ export default async function QuotesPage({
                 <div className="flex items-center gap-4">
                   <div className="text-right">
                     <p className="font-bold text-slate-900">
-                      £{Number(quote.total || 0).toFixed(2)}
+                      {formatCurrency(quote.total || 0)}
                     </p>
                     <p className="text-xs text-slate-400">inc. VAT</p>
                   </div>
 
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                    quote.status === "Accepted"
-                      ? "bg-green-100 text-green-700"
-                      : quote.status === "Sent"
-                      ? "bg-blue-100 text-blue-700"
-                      : quote.status === "Declined"
-                      ? "bg-red-100 text-red-700"
-                      : quote.status === "Expired"
-                      ? "bg-orange-100 text-orange-700"
-                      : "bg-slate-100 text-slate-600"
-                  }`}>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      quote.status === "Accepted"
+                        ? "bg-green-100 text-green-700"
+                        : quote.status === "Sent"
+                        ? "bg-blue-100 text-blue-700"
+                        : quote.status === "Declined"
+                        ? "bg-red-100 text-red-700"
+                        : quote.status === "Expired"
+                        ? "bg-orange-100 text-orange-700"
+                        : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
                     {quote.status || "Draft"}
                   </span>
 
@@ -207,15 +233,16 @@ export default async function QuotesPage({
             {!isFiltered && quotes && quotes.length === 0 && (
               <div className="text-center py-12">
                 <p className="text-slate-500 text-sm">No quotes yet.</p>
-                <a href="/quotes/new"
-                  className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                <a
+                  href="/quotes/new"
+                  className="mt-4 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
+                >
                   + New Quote
                 </a>
               </div>
             )}
           </div>
         </div>
-
       </div>
     </div>
   );
