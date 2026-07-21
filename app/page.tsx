@@ -19,7 +19,7 @@ export default async function DashboardPage() {
     { data: sentCT },
     { data: engagementLetters },
     { data: onboardingRequests },
-    { count: p11dCount },
+    { data: sentP11D },
   ] = await Promise.all([
     supabase.from("clients").select("*", { count: "exact", head: true }),
     supabase.from("invoices").select("status, total"),
@@ -30,7 +30,7 @@ export default async function DashboardPage() {
     supabase.from("corporation_tax_computations").select("id", { count: "exact" }).eq("status", "Sent"),
     supabase.from("engagement_letters").select("id, status"),
     supabase.from("onboarding_requests").select("id, status"),
-    supabase.from("p11d_computations").select("*", { count: "exact", head: true }),
+    supabase.from("p11d_computations").select("id", { count: "exact" }).eq("status", "Sent"),
   ]);
 
   const today = new Date().toLocaleDateString("en-GB", {
@@ -59,13 +59,11 @@ export default async function DashboardPage() {
   const allDeadlines = computeDeadlines(deadlineClients || []);
   const upcomingDeadlinesCount = allDeadlines.filter((d) => d.days <= 30).length;
 
-  // 5. Awaiting approval — split by module. P11D has no client-approval workflow
-  // yet (no status field on those records at all), so it shows the total P11D
-  // count instead — a different kind of number, not folded into the same alert logic.
+  // 5. Awaiting approval — split by module.
   const accountsAwaitingCount = sentAccounts?.length ?? 0;
   const ctAwaitingCount = sentCT?.length ?? 0;
   const personalTaxAwaitingCount = sentTax?.length ?? 0;
-  const p11dTotalCount = p11dCount ?? 0;
+  const p11dAwaitingCount = sentP11D?.length ?? 0;
 
   // 6. Outstanding engagement letters — anything not yet Signed
   const outstandingEngagementCount = (engagementLetters || []).filter((l) => l.status !== "Signed").length;
@@ -156,12 +154,7 @@ export default async function DashboardPage() {
             <StatBox href="/communications?status=Sent&type=Accounts" label="Accounts" value={accountsAwaitingCount} needsAttention={accountsAwaitingCount > 0} />
             <StatBox href="/communications?status=Sent&type=Corporation+Tax" label="Corporation Tax" value={ctAwaitingCount} needsAttention={ctAwaitingCount > 0} />
             <StatBox href="/communications?status=Sent&type=Personal+Tax" label="Personal Tax" value={personalTaxAwaitingCount} needsAttention={personalTaxAwaitingCount > 0} />
-            <a href="/p11d"
-              className="block rounded-2xl bg-white border border-slate-100 border-l-[3px] border-l-slate-200 p-5 transition-all hover:shadow-md hover:border-slate-200">
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">P11D</p>
-              <p className="mt-2 text-3xl font-bold font-mono tabular-nums text-slate-400">{p11dTotalCount}</p>
-              <p className="mt-1 text-xs text-slate-400">Total on file — no approval workflow yet</p>
-            </a>
+            <StatBox href="/communications?status=Sent&type=P11D" label="P11D" value={p11dAwaitingCount} needsAttention={p11dAwaitingCount > 0} />
           </div>
         </div>
 
