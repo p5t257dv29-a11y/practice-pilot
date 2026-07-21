@@ -52,9 +52,20 @@ export default async function PublicTaxComputationPage({
     employmentIncome: Number(comp.employment_income),
     selfEmploymentIncome: Number(comp.self_employment_income),
     rentalIncome: Number(comp.rental_income),
+    propertyExpenses: Number(comp.property_expenses),
+    propertyFinanceCosts: Number(comp.property_finance_costs),
+    financeCostsBf: Number(comp.finance_costs_bf),
     pensionIncome: Number(comp.pension_income),
     interestIncome: Number(comp.interest_income),
     dividendIncome: Number(comp.dividend_income),
+    foreignEmploymentIncome: Number(comp.foreign_employment_income),
+    foreignInterestIncome: Number(comp.foreign_interest_income),
+    foreignDividendIncome: Number(comp.foreign_dividend_income),
+    foreignRentalIncome: Number(comp.foreign_rental_income),
+    foreignPropertyExpenses: Number(comp.foreign_property_expenses),
+    foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
+    foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
+    foreignTaxPaid: Number(comp.foreign_tax_paid),
     taxYear: comp.tax_year,
   });
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
@@ -62,6 +73,7 @@ export default async function PublicTaxComputationPage({
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const fmtDateTime = (d: string) =>
     `${new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+  const hasPropertyIncome = Number(comp.rental_income) > 0 || Number(comp.finance_costs_bf) > 0;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -127,12 +139,84 @@ export default async function PublicTaxComputationPage({
             <div className="space-y-2 text-sm">
               <div className="flex justify-between"><span className="text-slate-500">Employment Income</span><span className="font-medium">{fmt(Number(comp.employment_income))}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Self-Employment Profit</span><span className="font-medium">{fmt(Number(comp.self_employment_income))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Rental Income</span><span className="font-medium">{fmt(Number(comp.rental_income))}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Rental Property Profit</span><span className="font-medium">{fmt(result.propertyProfit)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Pension Income</span><span className="font-medium">{fmt(Number(comp.pension_income))}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Interest Received</span><span className="font-medium">{fmt(Number(comp.interest_income))}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Dividend Income</span><span className="font-medium">{fmt(Number(comp.dividend_income))}</span></div>
+              {Number(comp.foreign_employment_income) > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Foreign Employment Income</span><span className="font-medium">{fmt(Number(comp.foreign_employment_income))}</span></div>
+              )}
+              {result.foreignPropertyProfit > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Foreign Rental Property Profit</span><span className="font-medium">{fmt(result.foreignPropertyProfit)}</span></div>
+              )}
+              {Number(comp.foreign_interest_income) > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Foreign Interest</span><span className="font-medium">{fmt(Number(comp.foreign_interest_income))}</span></div>
+              )}
+              {Number(comp.foreign_dividend_income) > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Foreign Dividends</span><span className="font-medium">{fmt(Number(comp.foreign_dividend_income))}</span></div>
+              )}
             </div>
           </div>
+
+          {/* Property finance cost relief, shown for transparency when relevant */}
+          {hasPropertyIncome && (
+            <div className="p-6 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Rental Property Finance Costs</h2>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Finance costs for the year</span><span className="font-medium">{fmt(Number(comp.property_finance_costs))}</span></div>
+                {Number(comp.finance_costs_bf) > 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Unused finance costs brought forward</span><span className="font-medium">{fmt(Number(comp.finance_costs_bf))}</span></div>
+                )}
+                <div className="flex justify-between font-medium text-green-600">
+                  <span>Tax reducer applied (20%)</span>
+                  <span>−{fmt(result.financeCostTaxReducer)}</span>
+                </div>
+                {result.unusedFinanceCostsCf > 0 && (
+                  <div className="flex justify-between text-amber-700">
+                    <span>Carried forward to next year</span>
+                    <span>{fmt(result.unusedFinanceCostsCf)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Foreign property finance costs, shown for transparency when relevant */}
+          {(Number(comp.foreign_rental_income) > 0 || Number(comp.foreign_finance_costs_bf) > 0) && (
+            <div className="p-6 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Foreign Rental Property Finance Costs</h2>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Finance costs for the year</span><span className="font-medium">{fmt(Number(comp.foreign_property_finance_costs))}</span></div>
+                {Number(comp.foreign_finance_costs_bf) > 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Unused finance costs brought forward</span><span className="font-medium">{fmt(Number(comp.foreign_finance_costs_bf))}</span></div>
+                )}
+                <div className="flex justify-between font-medium text-green-600">
+                  <span>Tax reducer applied (20%)</span>
+                  <span>−{fmt(result.foreignFinanceCostTaxReducer)}</span>
+                </div>
+                {result.unusedForeignFinanceCostsCf > 0 && (
+                  <div className="flex justify-between text-amber-700">
+                    <span>Carried forward to next year</span>
+                    <span>{fmt(result.unusedForeignFinanceCostsCf)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Foreign Tax Credit Relief, shown for transparency when relevant */}
+          {Number(comp.foreign_tax_paid) > 0 && (
+            <div className="p-6 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Foreign Tax Credit Relief</h2>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Foreign tax paid</span><span className="font-medium">{fmt(Number(comp.foreign_tax_paid))}</span></div>
+                <div className="flex justify-between font-medium text-green-600">
+                  <span>Credit relief given</span>
+                  <span>−{fmt(result.foreignTaxCreditRelief)}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Tax Breakdown */}
           <div className="p-6 border-b border-slate-100">

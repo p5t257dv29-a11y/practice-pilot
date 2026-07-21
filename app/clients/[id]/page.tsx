@@ -199,15 +199,151 @@ async function clearDisposalForClient(clientId: string, assetId: string) {
   revalidatePath("/fixed-assets/register");
 }
 
+// Links an officer to an existing individual client record.
+async function linkOfficerToExistingClient(companyClientId: string, officerId: string, formData: FormData) {
+  "use server";
+  const linkedClientId = String(formData.get("linked_client_id") || "").trim();
+  if (!linkedClientId) return;
+
+  await supabase.from("company_officers").update({ linked_client_id: linkedClientId }).eq("id", officerId);
+  revalidatePath(`/clients/${companyClientId}`);
+}
+
+// Creates a brand-new "Individual" client for this officer and links it in one step.
+async function createAndLinkClient(companyClientId: string, officerId: string, officerName: string) {
+  "use server";
+
+  const words = officerName.trim().split(" ").filter((w) => !["Mr", "Mrs", "Ms", "Miss", "Dr"].includes(w));
+  const prefix = words.slice(0, 2).map((w: string) => w[0]).join("").toUpperCase() || "CL";
+
+  const { data: existingClients } = await supabase
+    .from("clients")
+    .select("client_ref")
+    .like("client_ref", `${prefix}%`)
+    .not("client_ref", "is", null)
+    .order("client_ref", { ascending: false })
+    .limit(1);
+
+  let nextRef = `${prefix}001`;
+  if (existingClients && existingClients.length > 0 && existingClients[0]?.client_ref) {
+    const lastNum = parseInt(existingClients[0].client_ref.replace(prefix, "")) || 0;
+    nextRef = `${prefix}${String(lastNum + 1).padStart(3, "0")}`;
+  }
+
+  const { data: newClient, error } = await supabase.from("clients").insert({
+    client_ref: nextRef,
+    client_name: officerName,
+    entity_type: "Individual",
+    onboarding_status: "Active Client",
+    requires_self_assessment: true,
+  }).select().single();
+
+  if (error || !newClient) {
+    console.error("Could not create linked client:", error?.message);
+    return;
+  }
+
+  await supabase.from("company_officers").update({ linked_client_id: newClient.id }).eq("id", officerId);
+  revalidatePath(`/clients/${companyClientId}`);
+}
+
+async function unlinkOfficer(companyClientId: string, officerId: string) {
+  "use server";
+  await supabase.from("company_officers").update({ linked_client_id: null }).eq("id", officerId);
+  revalidatePath(`/clients/${companyClientId}`);
+}
+
+// Salary/dividends the accountant enters when finalizing the company's accounts
+// for a specific director + tax year — kept separate from the trial balance
+// mapping system, since that works at whole-company level.
+async function saveDirectorRemuneration(companyClientId: string, officerId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const tax_year = get("tax_year");
+  if (!tax_year) return;
+
+  await supabase.from("director_remuneration").upsert({
+    client_id: companyClientId,
+    officer_id: officerId,
+    tax_year,
+    salary: parseFloat(get("salary")) || 0,
+    dividends: parseFloat(get("dividends")) || 0,
+    notes: get("notes") || null,
+  }, { onConflict: "officer_id,tax_year" });
+
+  revalidatePath(`/clients/${companyClientId}`);
+}
+
+async function deleteDirectorRemuneration(companyClientId: string, id: string) {
+  "use server";
+  await supabase.from("director_remuneration").delete().eq("id", id);
+  revalidatePath(`/clients/${companyClientId}`);
+}
+
+// Pushes salary/dividends into the linked director's personal tax computation
+// for the matching tax year — creating it if it doesn't exist yet. Uses the
+// DELTA between this sync and the last one, so editing the remuneration figures
+// and re-syncing adjusts the computation correctly rather than double-counting
+// or overwriting other income entered separately on the personal tax side.
+async function syncDirectorRemuneration(companyClientId: string, remunerationId: string) {
+  "use server";
+
+  const { data: rem } = await supabase.from("director_remuneration").select("*").eq("id", remunerationId).single();
+  if (!rem) return;
+
+  const { data: officer } = await supabase.from("company_officers").select("linked_client_id").eq("id", rem.officer_id).single();
+  const linkedClientId = officer?.linked_client_id;
+  if (!linkedClientId) return;
+
+  const deltaSalary = Number(rem.salary) - Number(rem.synced_salary || 0);
+  const deltaDividends = Number(rem.dividends) - Number(rem.synced_dividends || 0);
+
+  const { data: existingComp } = await supabase
+    .from("tax_computations")
+    .select("*")
+    .eq("client_id", linkedClientId)
+    .eq("tax_year", rem.tax_year)
+    .maybeSingle();
+
+  if (existingComp) {
+    await supabase.from("tax_computations").update({
+      employment_income: Number(existingComp.employment_income || 0) + deltaSalary,
+      dividend_income: Number(existingComp.dividend_income || 0) + deltaDividends,
+    }).eq("id", existingComp.id);
+  } else {
+    await supabase.from("tax_computations").insert({
+      client_id: linkedClientId,
+      tax_year: rem.tax_year,
+      employment_income: Number(rem.salary),
+      dividend_income: Number(rem.dividends),
+      self_employment_income: 0,
+      rental_income: 0,
+      pension_income: 0,
+      interest_income: 0,
+      tax_paid_at_source: 0,
+    });
+  }
+
+  await supabase.from("director_remuneration").update({
+    synced_salary: rem.salary,
+    synced_dividends: rem.dividends,
+    synced_at: new Date().toISOString(),
+  }).eq("id", remunerationId);
+
+  revalidatePath(`/clients/${companyClientId}`);
+  revalidatePath(`/clients/${linkedClientId}`);
+  revalidatePath("/tax");
+}
+
 export default async function ClientDetailPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string; dispose?: string }>;
+  searchParams: Promise<{ tab?: string; dispose?: string; link?: string; remun?: string }>;
 }) {
   const { id } = await params;
-  const { tab = "overview", dispose: disposeAssetId } = await searchParams;
+  const { tab = "overview", dispose: disposeAssetId, link: linkOfficerId, remun: remunOfficerId } = await searchParams;
 
   const [
     { data: client, error },
@@ -223,9 +359,11 @@ export default async function ClientDetailPage({
     { data: ctComputations },
     { data: fixedAssets },
     { data: idDocuments },
+    { data: individualClients },
+    { data: directorRemuneration },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
-    supabase.from("company_officers").select("*").eq("client_id", id).order("is_active", { ascending: false }),
+    supabase.from("company_officers").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", id).order("is_active", { ascending: false }),
     supabase.from("company_pscs").select("*").eq("client_id", id).order("is_active", { ascending: false }),
     supabase.from("company_shareholdings").select("*").eq("client_id", id).order("created_at", { ascending: true }),
     supabase.from("staff").select("id, name").eq("is_active", true).order("name", { ascending: true }),
@@ -237,6 +375,8 @@ export default async function ClientDetailPage({
     supabase.from("corporation_tax_computations").select("*").eq("client_id", id).order("created_at", { ascending: false }),
     supabase.from("fixed_assets").select("*").eq("client_id", id).order("acquisition_date", { ascending: false }),
     supabase.from("client_id_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
+    supabase.from("clients").select("id, client_name").in("entity_type", ["Individual", "Sole Trader"]).order("client_name", { ascending: true }),
+    supabase.from("director_remuneration").select("*").eq("client_id", id).order("tax_year", { ascending: false }),
   ]);
 
   if (error || !client) notFound();
@@ -248,6 +388,11 @@ export default async function ClientDetailPage({
   const deleteIdDocumentWithId = deleteIdDocument.bind(null, id);
   const addAssetWithId = addAssetForClient.bind(null, id);
   const clearDisposalWithId = clearDisposalForClient.bind(null, id);
+  const linkOfficerWithId = linkOfficerToExistingClient.bind(null, id);
+  const unlinkOfficerWithId = unlinkOfficer.bind(null, id);
+  const saveRemunerationWithId = saveDirectorRemuneration.bind(null, id);
+  const deleteRemunerationWithId = deleteDirectorRemuneration.bind(null, id);
+  const syncRemunerationWithId = syncDirectorRemuneration.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
@@ -574,6 +719,7 @@ export default async function ClientDetailPage({
                     <option>Sole Trader</option>
                     <option>Partnership</option>
                     <option>LLP</option>
+                    <option>Individual</option>
                   </select>
                 </div>
                 <div>
@@ -1346,40 +1492,175 @@ export default async function ClientDetailPage({
               <p className="text-sm text-slate-500 mt-0.5">Pulled from Companies House at time of onboarding.</p>
 
               <div className="mt-6 space-y-4">
-                {(officers || []).map((officer) => (
-                  <div key={officer.id} className={`rounded-xl border p-4 ${officer.is_active ? "border-slate-100" : "border-slate-100 opacity-50"}`}>
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-semibold text-slate-900">{officer.name}</p>
-                          {!officer.is_active && (
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">Resigned</span>
+                {(officers || []).map((officer: any) => {
+                  const isLinking = linkOfficerId === officer.id;
+                  const isEditingRemun = remunOfficerId === officer.id;
+                  const linkedClient = officer.linked_client;
+                  const officerRemuneration = (directorRemuneration || []).filter((r: any) => r.officer_id === officer.id);
+                  const linkPanelHref = isLinking ? `/clients/${id}?tab=directors` : `/clients/${id}?tab=directors&link=${officer.id}`;
+                  const remunPanelHref = isEditingRemun ? `/clients/${id}?tab=directors` : `/clients/${id}?tab=directors&remun=${officer.id}`;
+                  const createAndLinkWithArgs = createAndLinkClient.bind(null, id, officer.id, officer.name);
+
+                  return (
+                    <div key={officer.id} className={`rounded-xl border p-4 ${officer.is_active ? "border-slate-100" : "border-slate-100 opacity-50"}`}>
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-semibold text-slate-900">{officer.name}</p>
+                            {!officer.is_active && (
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">Resigned</span>
+                            )}
+                            {linkedClient && (
+                              <a href={`/clients/${linkedClient.id}`}
+                                className="rounded-full bg-green-100 text-green-700 px-2 py-0.5 text-xs font-semibold hover:bg-green-200 transition-colors">
+                                → {linkedClient.client_name}
+                              </a>
+                            )}
+                          </div>
+                          <p className="text-sm text-slate-500 capitalize mt-0.5">{officer.role?.replace(/-/g, " ")}</p>
+                          {officer.appointed_on && (
+                            <p className="text-xs text-slate-400 mt-1">
+                              Appointed: {new Date(officer.appointed_on).toLocaleDateString("en-GB")}
+                              {officer.resigned_on && ` · Resigned: ${new Date(officer.resigned_on).toLocaleDateString("en-GB")}`}
+                            </p>
+                          )}
+                          {officer.nationality && (
+                            <p className="text-xs text-slate-400">
+                              {officer.nationality} · {officer.country_of_residence}
+                            </p>
+                          )}
+                          {officer.date_of_birth_year && (
+                            <p className="text-xs text-slate-400">
+                              DOB: {officer.date_of_birth_month}/{officer.date_of_birth_year}
+                            </p>
+                          )}
+                          {officer.address && (
+                            <p className="text-xs text-slate-400 mt-1">{officer.address}</p>
                           )}
                         </div>
-                        <p className="text-sm text-slate-500 capitalize mt-0.5">{officer.role?.replace(/-/g, " ")}</p>
-                        {officer.appointed_on && (
-                          <p className="text-xs text-slate-400 mt-1">
-                            Appointed: {new Date(officer.appointed_on).toLocaleDateString("en-GB")}
-                            {officer.resigned_on && ` · Resigned: ${new Date(officer.resigned_on).toLocaleDateString("en-GB")}`}
-                          </p>
-                        )}
-                        {officer.nationality && (
-                          <p className="text-xs text-slate-400">
-                            {officer.nationality} · {officer.country_of_residence}
-                          </p>
-                        )}
-                        {officer.date_of_birth_year && (
-                          <p className="text-xs text-slate-400">
-                            DOB: {officer.date_of_birth_month}/{officer.date_of_birth_year}
-                          </p>
-                        )}
-                        {officer.address && (
-                          <p className="text-xs text-slate-400 mt-1">{officer.address}</p>
-                        )}
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {linkedClient ? (
+                            <>
+                              <a href={remunPanelHref}
+                                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
+                                {isEditingRemun ? "Close" : "+ Salary & Dividends"}
+                              </a>
+                              <form action={unlinkOfficerWithId.bind(null, officer.id)}>
+                                <button className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                                  Unlink
+                                </button>
+                              </form>
+                            </>
+                          ) : (
+                            <a href={linkPanelHref}
+                              className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors whitespace-nowrap">
+                              {isLinking ? "Close" : "Link to Client"}
+                            </a>
+                          )}
+                        </div>
                       </div>
+
+                      {/* Link panel — pick an existing individual client, or create one */}
+                      {isLinking && !linkedClient && (
+                        <div className="mt-4 border-t border-slate-100 pt-4 space-y-3">
+                          <form action={linkOfficerWithId.bind(null, officer.id)} className="flex gap-2 items-end">
+                            <div className="flex-1 max-w-sm">
+                              <label className="block text-xs font-medium text-slate-700 mb-1">Link to an existing client</label>
+                              <select name="linked_client_id" required
+                                className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
+                                <option value="">Select a client</option>
+                                {(individualClients || []).map((c: any) => (
+                                  <option key={c.id} value={c.id}>{c.client_name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <button type="submit"
+                              className="rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
+                              Link
+                            </button>
+                          </form>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-px bg-slate-100" />
+                            <span className="text-xs text-slate-400">or</span>
+                            <div className="flex-1 h-px bg-slate-100" />
+                          </div>
+                          <form action={createAndLinkWithArgs}>
+                            <button type="submit"
+                              className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                              + Create "{officer.name}" as a new Individual client
+                            </button>
+                          </form>
+                        </div>
+                      )}
+
+                      {/* Salary & Dividends — only once linked */}
+                      {linkedClient && isEditingRemun && (
+                        <div className="mt-4 border-t border-slate-100 pt-4">
+                          <form action={saveRemunerationWithId.bind(null, officer.id)} className="grid gap-3 md:grid-cols-4 items-end">
+                            <div>
+                              <label className="block text-xs font-medium text-slate-700 mb-1">Tax Year</label>
+                              <select name="tax_year" defaultValue="2026/27"
+                                className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white">
+                                <option value="2026/27">2026/27</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-slate-700 mb-1">Salary (£)</label>
+                              <input name="salary" type="number" step="0.01" min="0" defaultValue="0"
+                                className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-slate-700 mb-1">Dividends (£)</label>
+                              <input name="dividends" type="number" step="0.01" min="0" defaultValue="0"
+                                className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white" />
+                            </div>
+                            <button type="submit"
+                              className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                              Save
+                            </button>
+                          </form>
+                        </div>
+                      )}
+
+                      {/* Existing remuneration records for this officer, with sync status */}
+                      {linkedClient && officerRemuneration.length > 0 && (
+                        <div className="mt-4 border-t border-slate-100 pt-4 space-y-2">
+                          {officerRemuneration.map((rem: any) => {
+                            const isSynced = Number(rem.synced_salary) === Number(rem.salary) && Number(rem.synced_dividends) === Number(rem.dividends) && rem.synced_at;
+                            return (
+                              <div key={rem.id} className="flex items-center justify-between rounded-lg bg-slate-50 p-3">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-900">{rem.tax_year}</p>
+                                  <p className="text-xs text-slate-500">
+                                    Salary £{Number(rem.salary).toFixed(2)} · Dividends £{Number(rem.dividends).toFixed(2)}
+                                  </p>
+                                  <p className={`text-xs mt-0.5 ${isSynced ? "text-green-600" : "text-amber-600"}`}>
+                                    {isSynced ? "✓ Synced to personal tax" : rem.synced_at ? "⚠ Changed since last sync" : "Not yet synced"}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {!isSynced && (
+                                    <form action={syncRemunerationWithId.bind(null, rem.id)}>
+                                      <button className="rounded-lg bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors">
+                                        Sync to Personal Tax →
+                                      </button>
+                                    </form>
+                                  )}
+                                  <form action={deleteRemunerationWithId.bind(null, rem.id)}>
+                                    <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                                      Delete
+                                    </button>
+                                  </form>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {(!officers || officers.length === 0) && (
                   <p className="text-sm text-slate-500 text-center py-8">
@@ -1387,6 +1668,12 @@ export default async function ClientDetailPage({
                   </p>
                 )}
               </div>
+            </div>
+
+            <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4">
+              <p className="text-xs text-blue-800">
+                <strong>How the sync works:</strong> link a director to their own personal client record, then enter their salary and dividends for the year once you've finalised the company's accounts. "Sync to Personal Tax" pushes those figures into (or creates) their personal tax computation for the matching tax year. Editing the figures and syncing again only applies the difference, so it won't double-count or overwrite other income you've entered separately on their personal tax return.
+              </p>
             </div>
           </div>
         )}
