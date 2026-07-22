@@ -106,7 +106,7 @@ export default async function DisposeAssetPage({
                     <div>
                       <p className="font-semibold text-slate-900">{asset.description}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        {asset.clients?.client_name || "No client"} · NBV £{nbv.toFixed(2)} · Acquired {new Date(asset.acquisition_date).toLocaleDateString("en-GB")}
+                        {asset.clients?.client_name || "No client"} · NBV £{nbv.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Acquired {new Date(asset.acquisition_date).toLocaleDateString("en-GB")}
                       </p>
                     </div>
                     <a
@@ -155,7 +155,7 @@ export default async function DisposeAssetPage({
                   <div>
                     <p className="font-semibold text-slate-900">{asset.description}</p>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      {asset.clients?.client_name || "No client"} · Disposed {new Date(asset.disposal_date!).toLocaleDateString("en-GB")} · Proceeds £{Number(asset.disposal_proceeds || 0).toFixed(2)}
+                      {asset.clients?.client_name || "No client"} · Disposed {new Date(asset.disposal_date!).toLocaleDateString("en-GB")} · Proceeds £{Number(asset.disposal_proceeds || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                   </div>
                   <form action={clearDisposal.bind(null, asset.id)}>

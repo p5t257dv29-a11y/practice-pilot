@@ -440,8 +440,8 @@ export default async function PersonalTaxPage({
 
   const renderRow = ({ comp, result, balanceDue }: ReturnType<typeof withResult>) => {
     const carryForwardNote = [
-      result.unusedFinanceCostsCf > 0 ? `£${result.unusedFinanceCostsCf.toFixed(2)} UK finance costs c/f` : null,
-      result.unusedForeignFinanceCostsCf > 0 ? `£${result.unusedForeignFinanceCostsCf.toFixed(2)} foreign finance costs c/f` : null,
+      result.unusedFinanceCostsCf > 0 ? `£${result.unusedFinanceCostsCf.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} UK finance costs c/f` : null,
+      result.unusedForeignFinanceCostsCf > 0 ? `£${result.unusedForeignFinanceCostsCf.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} foreign finance costs c/f` : null,
     ].filter(Boolean).join(" · ");
     return (
     <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
@@ -450,14 +450,14 @@ export default async function PersonalTaxPage({
           {comp.clients?.client_name || "No client"} — {comp.tax_year}
         </p>
         <p className="text-sm text-slate-500">
-          Total liability: £{result.totalLiability.toFixed(2)}
+          Total liability: £{result.totalLiability.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           {carryForwardNote && ` · ${carryForwardNote}`}
         </p>
       </a>
       <div className="flex items-center gap-4">
         <div className="text-right">
           <p className={`font-bold ${balanceDue >= 0 ? "text-slate-900" : "text-green-600"}`}>
-            {balanceDue >= 0 ? `£${balanceDue.toFixed(2)} due` : `£${Math.abs(balanceDue).toFixed(2)} refund`}
+            {balanceDue >= 0 ? `£${balanceDue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} due` : `£${Math.abs(balanceDue).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} refund`}
           </p>
         </div>
         <form action={deleteComputation.bind(null, comp.id)}>

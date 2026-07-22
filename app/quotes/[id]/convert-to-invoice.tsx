@@ -233,7 +233,7 @@ export default function ConvertToInvoiceButton({
             </div>
             {numInstalments > 0 && (
               <p className="text-xs text-slate-500">
-                {numInstalments} invoices of ~£{instalmentAmount.toFixed(2)} each (the last one absorbs any rounding, so they total exactly £{total.toFixed(2)})
+                {numInstalments} invoices of ~£{instalmentAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} each (the last one absorbs any rounding, so they total exactly £{total.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
               </p>
             )}
           </div>

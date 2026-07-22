@@ -173,28 +173,28 @@ export default async function ReportsPage({
           <Link href={activeFilter === "wip" ? "/reports" : "/reports?filter=wip"}
             className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "wip" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
             <p className="text-sm font-medium text-slate-500">Total WIP</p>
-            <p className="mt-2 text-3xl font-bold text-slate-900 font-mono tabular-nums">£{totalWIP.toFixed(2)}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900 font-mono tabular-nums">£{totalWIP.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             <p className="mt-1 text-xs text-slate-400">Unbilled work value</p>
           </Link>
 
           <Link href={activeFilter === "invoiced" ? "/reports" : "/reports?filter=invoiced"}
             className={`rounded-2xl bg-blue-600 p-6 shadow-sm transition-colors ${activeFilter === "invoiced" ? "ring-2 ring-blue-900" : "hover:bg-blue-700"}`}>
             <p className="text-sm font-medium text-blue-100">Total Invoiced</p>
-            <p className="mt-2 text-3xl font-bold text-white font-mono tabular-nums">£{totalInvoiced.toFixed(2)}</p>
+            <p className="mt-2 text-3xl font-bold text-white font-mono tabular-nums">£{totalInvoiced.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             <p className="mt-1 text-xs text-blue-200">All invoices raised</p>
           </Link>
 
           <Link href={activeFilter === "paid" ? "/reports" : "/reports?filter=paid"}
             className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "paid" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
             <p className="text-sm font-medium text-slate-500">Total Paid</p>
-            <p className="mt-2 text-3xl font-bold text-green-600 font-mono tabular-nums">£{totalPaid.toFixed(2)}</p>
+            <p className="mt-2 text-3xl font-bold text-green-600 font-mono tabular-nums">£{totalPaid.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             <p className="mt-1 text-xs text-slate-400">Cash received</p>
           </Link>
 
           <Link href={activeFilter === "writtenoff" ? "/reports" : "/reports?filter=writtenoff"}
             className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "writtenoff" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
             <p className="text-sm font-medium text-slate-500">Written Off</p>
-            <p className="mt-2 text-3xl font-bold text-slate-500 font-mono tabular-nums">£{totalWrittenOff.toFixed(2)}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-500 font-mono tabular-nums">£{totalWrittenOff.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             <p className="mt-1 text-xs text-slate-400">WIP not being billed</p>
           </Link>
 
@@ -290,26 +290,26 @@ export default async function ReportsPage({
                         </div>
 
                         <div className="text-right">
-                          <p className="font-semibold text-slate-900 text-sm font-mono tabular-nums">£{d.chargeOutValue.toFixed(2)}</p>
+                          <p className="font-semibold text-slate-900 text-sm font-mono tabular-nums">£{d.chargeOutValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                           <p className="text-xs text-slate-400">{d.billableHours.toFixed(1)}h billable</p>
                         </div>
 
                         <div className="text-right">
-                          <p className="font-semibold text-slate-900 text-sm font-mono tabular-nums">£{d.invoicedAmount.toFixed(2)}</p>
+                          <p className="font-semibold text-slate-900 text-sm font-mono tabular-nums">£{d.invoicedAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                           {d.paidAmount > 0 && (
-                            <p className="text-xs text-green-600 font-mono tabular-nums">£{d.paidAmount.toFixed(2)} paid</p>
+                            <p className="text-xs text-green-600 font-mono tabular-nums">£{d.paidAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} paid</p>
                           )}
                         </div>
 
                         <div className="text-right">
                           <p className="text-sm text-slate-500 font-mono tabular-nums">
-                            {d.writtenOffAmount > 0 ? `£${d.writtenOffAmount.toFixed(2)}` : "—"}
+                            {d.writtenOffAmount > 0 ? `£${d.writtenOffAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                           </p>
                         </div>
 
                         <div className="text-right">
                           <p className={`font-bold text-sm font-mono tabular-nums ${d.wip > 0 ? "text-orange-600" : "text-green-600"}`}>
-                            £{d.wip.toFixed(2)}
+                            £{d.wip.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </p>
                           <p className="text-xs text-slate-400">unbilled</p>
                         </div>
@@ -328,22 +328,22 @@ export default async function ReportsPage({
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-900 text-sm font-mono tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.chargeOutValue, 0).toFixed(2)}
+                          £{displayRows.reduce((sum, d) => sum + d.chargeOutValue, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-900 text-sm font-mono tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.invoicedAmount, 0).toFixed(2)}
+                          £{displayRows.reduce((sum, d) => sum + d.invoicedAmount, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-500 text-sm font-mono tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.writtenOffAmount, 0).toFixed(2)}
+                          £{displayRows.reduce((sum, d) => sum + d.writtenOffAmount, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-orange-600 text-sm font-mono tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.wip, 0).toFixed(2)}
+                          £{displayRows.reduce((sum, d) => sum + d.wip, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       </div>
                     </div>
@@ -373,14 +373,14 @@ export default async function ReportsPage({
                           <p className="text-xs text-slate-500 font-mono tabular-nums">{client.hours.toFixed(1)}h</p>
                         </div>
                         <div className="flex justify-between text-xs text-slate-500 mb-1 font-mono tabular-nums">
-                          <span>WIP: £{client.wip.toFixed(2)}</span>
-                          <span>Invoiced: £{client.invoiced.toFixed(2)}</span>
+                          <span>WIP: £{client.wip.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          <span>Invoiced: £{client.invoiced.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
                         {client.paid > 0 && (
-                          <p className="text-xs text-green-600 font-mono tabular-nums">Paid: £{client.paid.toFixed(2)}</p>
+                          <p className="text-xs text-green-600 font-mono tabular-nums">Paid: £{client.paid.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                         )}
                         {client.writtenOff > 0 && (
-                          <p className="text-xs text-slate-400 font-mono tabular-nums">Written off: £{client.writtenOff.toFixed(2)}</p>
+                          <p className="text-xs text-slate-400 font-mono tabular-nums">Written off: £{client.writtenOff.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                         )}
                       </div>
                     ))}

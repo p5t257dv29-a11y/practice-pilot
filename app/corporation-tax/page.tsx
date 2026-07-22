@@ -239,13 +239,13 @@ export default async function CorporationTaxPage({
           {(comp.jobs as any)?.job_name && ` · ${(comp.jobs as any)?.job_name}`}
         </p>
         <p className="text-sm text-slate-500">
-          Taxable profit: £{loss.taxableProfitAfterLosses.toFixed(2)} · Capital allowances: £{ca.totalCapitalAllowances.toFixed(2)} · {ct.band}
-          {loss.lossesCarriedForward > 0 && ` · £${loss.lossesCarriedForward.toFixed(2)} losses c/fwd`}
+          Taxable profit: £{loss.taxableProfitAfterLosses.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Capital allowances: £{ca.totalCapitalAllowances.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {ct.band}
+          {loss.lossesCarriedForward > 0 && ` · £${loss.lossesCarriedForward.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} losses c/fwd`}
         </p>
       </a>
       <div className="flex items-center gap-4">
         <div className="text-right">
-          <p className="font-bold text-slate-900">£{ct.corporationTax.toFixed(2)}</p>
+          <p className="font-bold text-slate-900">£{ct.corporationTax.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           <p className="text-xs text-slate-400">CT due</p>
         </div>
         <form action={deleteComputation.bind(null, comp.id)}>

@@ -147,8 +147,8 @@ export default async function InvoiceDetailPage({
                       )}
                     </td>
                     <td className="py-4 text-sm text-slate-600 text-right align-top">{line.qty}</td>
-                    <td className="py-4 text-sm text-slate-600 text-right align-top">£{Number(line.price).toFixed(2)}</td>
-                    <td className="py-4 text-sm font-medium text-slate-900 text-right align-top">£{Number(line.line_total).toFixed(2)}</td>
+                    <td className="py-4 text-sm text-slate-600 text-right align-top">£{Number(line.price).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="py-4 text-sm font-medium text-slate-900 text-right align-top">£{Number(line.line_total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   </tr>
                 ))}
               </tbody>
@@ -159,15 +159,15 @@ export default async function InvoiceDetailPage({
               <div className="max-w-xs ml-auto space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500">Subtotal</span>
-                  <span className="font-medium">£{Number(invoice.subtotal || 0).toFixed(2)}</span>
+                  <span className="font-medium">£{Number(invoice.subtotal || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500">VAT</span>
-                  <span className="font-medium">£{Number(invoice.vat || 0).toFixed(2)}</span>
+                  <span className="font-medium">£{Number(invoice.vat || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 <div className="flex justify-between text-base font-bold border-t border-slate-200 pt-2">
                   <span>Total</span>
-                  <span>£{Number(invoice.total || 0).toFixed(2)}</span>
+                  <span>£{Number(invoice.total || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 {invoice.status === "Paid" && invoice.paid_at && (
                   <div className="rounded-xl bg-green-50 border border-green-100 p-3 mt-3">

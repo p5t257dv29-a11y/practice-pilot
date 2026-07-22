@@ -205,7 +205,7 @@ export default async function CapitalGainsPage({
           <div className="flex items-center gap-4">
             <div className="text-right">
               <p className="font-bold text-slate-900">
-                {result.isCompany ? `£${result.taxableGain.toFixed(2)}` : `£${result.cgtDue.toFixed(2)}`}
+                {result.isCompany ? `£${result.taxableGain.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `£${result.cgtDue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
               </p>
               <p className="text-xs text-slate-400">{result.isCompany ? "chargeable gain" : "CGT due"}</p>
             </div>

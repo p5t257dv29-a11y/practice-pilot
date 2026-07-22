@@ -297,7 +297,7 @@ export default async function TimesheetsPage({
           </div>
           <div>
             <p className="text-xs text-slate-500">Billable Value</p>
-            <p className="text-2xl font-bold text-green-600 font-mono tabular-nums mt-1">£{billableValue.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-green-600 font-mono tabular-nums mt-1">£{billableValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           </div>
         </div>
       </div>

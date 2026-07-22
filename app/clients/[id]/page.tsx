@@ -572,11 +572,11 @@ export default async function ClientDetailPage({
               </div>
               <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
                 <p className="text-xs text-slate-500 uppercase tracking-wide">Fixed Assets NBV</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalNBV.toFixed(2)}</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalNBV.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               </div>
               <div className={`rounded-2xl p-4 shadow-sm ${outstandingInvoiceTotal > 0 ? "bg-orange-50 border border-orange-100" : "bg-white border border-slate-100"}`}>
                 <p className={`text-xs uppercase tracking-wide ${outstandingInvoiceTotal > 0 ? "text-orange-600" : "text-slate-500"}`}>Outstanding Invoices</p>
-                <p className={`text-2xl font-bold mt-1 ${outstandingInvoiceTotal > 0 ? "text-orange-700" : "text-slate-900"}`}>£{outstandingInvoiceTotal.toFixed(2)}</p>
+                <p className={`text-2xl font-bold mt-1 ${outstandingInvoiceTotal > 0 ? "text-orange-700" : "text-slate-900"}`}>£{outstandingInvoiceTotal.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               </div>
               <div className={`rounded-2xl p-4 shadow-sm ${amlNeedsAttention ? "bg-red-50 border border-red-100" : "bg-white border border-slate-100"}`}>
                 <p className={`text-xs uppercase tracking-wide ${amlNeedsAttention ? "text-red-600" : "text-slate-500"}`}>AML Status</p>
@@ -674,7 +674,7 @@ export default async function ClientDetailPage({
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Outstanding invoices</span>
-                    <span className="font-semibold text-slate-900">{outstandingInvoices.length} · £{outstandingInvoiceTotal.toFixed(2)}</span>
+                    <span className="font-semibold text-slate-900">{outstandingInvoices.length} · £{outstandingInvoiceTotal.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 </div>
               </div>
@@ -689,7 +689,7 @@ export default async function ClientDetailPage({
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Active fixed assets</span>
-                    <span className="font-semibold text-slate-900">{activeAssets.length} · £{assetsTotalCost.toFixed(2)} cost</span>
+                    <span className="font-semibold text-slate-900">{activeAssets.length} · £{assetsTotalCost.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} cost</span>
                   </div>
                 </div>
                 <a href={`/clients/${id}?tab=assets`} className="mt-3 block text-xs font-semibold text-blue-600 hover:underline">
@@ -1141,7 +1141,7 @@ export default async function ClientDetailPage({
                     </p>
                   </div>
                   <div className="flex items-center gap-4">
-                    <p className="font-bold text-slate-900">£{Number(quote.total || 0).toFixed(2)}</p>
+                    <p className="font-bold text-slate-900">£{Number(quote.total || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                     <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
                       quote.status === "Accepted" ? "bg-green-100 text-green-700"
                       : quote.status === "Sent" ? "bg-blue-100 text-blue-700"
@@ -1179,7 +1179,7 @@ export default async function ClientDetailPage({
                     </p>
                   </div>
                   <div className="flex items-center gap-4">
-                    <p className="font-bold text-slate-900">£{Number(invoice.total || 0).toFixed(2)}</p>
+                    <p className="font-bold text-slate-900">£{Number(invoice.total || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                     <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
                       invoice.status === "Paid" ? "bg-green-100 text-green-700"
                       : invoice.status === "Sent" ? "bg-blue-100 text-blue-700"
@@ -1274,7 +1274,7 @@ export default async function ClientDetailPage({
                     <p className="font-semibold text-slate-900">
                       {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
                     </p>
-                    <p className="text-sm text-slate-500">£{Number(comp.accounting_profit || 0).toFixed(2)} profit</p>
+                    <p className="text-sm text-slate-500">£{Number(comp.accounting_profit || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} profit</p>
                   </a>
                 ))}
                 {(!ctComputations || ctComputations.length === 0) && (
@@ -1298,11 +1298,11 @@ export default async function ClientDetailPage({
                 </div>
                 <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
                   <p className="text-xs text-slate-500 uppercase tracking-wide">Total Cost</p>
-                  <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalCost.toFixed(2)}</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalCost.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                 </div>
                 <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
                   <p className="text-xs text-slate-500 uppercase tracking-wide">Net Book Value</p>
-                  <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalNBV.toFixed(2)}</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">£{assetsTotalNBV.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                 </div>
               </div>
               <div className="flex flex-col gap-2 flex-shrink-0">
@@ -1411,8 +1411,8 @@ export default async function ClientDetailPage({
                         </div>
                         <div className="flex items-center gap-3">
                           <div className="text-right">
-                            <p className="font-bold text-slate-900">£{nbv.toFixed(2)}</p>
-                            <p className="text-xs text-slate-400">NBV (cost £{Number(asset.cost).toFixed(2)})</p>
+                            <p className="font-bold text-slate-900">£{nbv.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                            <p className="text-xs text-slate-400">NBV (cost £{Number(asset.cost).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</p>
                           </div>
                           <a
                             href={isDisposing ? `/clients/${id}?tab=assets` : `/clients/${id}?tab=assets&dispose=${asset.id}`}
@@ -1468,7 +1468,7 @@ export default async function ClientDetailPage({
                       <div>
                         <p className="font-semibold text-slate-900">{asset.description}</p>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          Disposed {new Date(asset.disposal_date!).toLocaleDateString("en-GB")} · Proceeds £{Number(asset.disposal_proceeds || 0).toFixed(2)}
+                          Disposed {new Date(asset.disposal_date!).toLocaleDateString("en-GB")} · Proceeds £{Number(asset.disposal_proceeds || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       </div>
                       <form action={clearDisposalWithId.bind(null, asset.id)}>
@@ -1633,7 +1633,7 @@ export default async function ClientDetailPage({
                                 <div>
                                   <p className="text-sm font-semibold text-slate-900">{rem.tax_year}</p>
                                   <p className="text-xs text-slate-500">
-                                    Salary £{Number(rem.salary).toFixed(2)} · Dividends £{Number(rem.dividends).toFixed(2)}
+                                    Salary £{Number(rem.salary).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Dividends £{Number(rem.dividends).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </p>
                                   <p className={`text-xs mt-0.5 ${isSynced ? "text-green-600" : "text-amber-600"}`}>
                                     {isSynced ? "✓ Synced to personal tax" : rem.synced_at ? "⚠ Changed since last sync" : "Not yet synced"}

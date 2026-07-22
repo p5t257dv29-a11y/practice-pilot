@@ -125,9 +125,9 @@ async function deleteClientRecord(id: string) {
 export default async function ClientsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ new?: string }>;
+  searchParams: Promise<{ new?: string; filter?: string }>;
 }) {
-  const { new: newParam } = await searchParams;
+  const { new: newParam, filter } = await searchParams;
 
   const { data: clients, error } = await supabase
     .from("clients")
@@ -141,6 +141,7 @@ export default async function ClientsPage({
       createAction={createClientRecord}
       deleteAction={deleteClientRecord}
       autoOpen={newParam === "true"}
+      initialFilter={filter}
     />
   );
 }

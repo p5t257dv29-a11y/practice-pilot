@@ -6,7 +6,7 @@ export default function SendP11DButton({
   computationId,
   defaultEmail,
   computationToken,
-  status,
+  status: approvalStatus,
   approvedAt,
   queriedAt,
 }: {
@@ -18,7 +18,7 @@ export default function SendP11DButton({
   queriedAt?: string | null;
 }) {
   const [email, setEmail] = useState(defaultEmail);
-  const [sendStatus, setSendStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [computationUrl, setComputationUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export default function SendP11DButton({
 
   const handleSend = async () => {
     if (!email) return;
-    setSendStatus("sending");
+    setStatus("sending");
 
     try {
       const res = await fetch("/api/send-p11d", {
@@ -41,33 +41,29 @@ export default function SendP11DButton({
       const data = await res.json();
 
       if (!res.ok) {
-        setSendStatus("error");
+        setStatus("error");
         return;
       }
 
-      setSendStatus("sent");
+      setStatus("sent");
       setComputationUrl(data.computationUrl);
     } catch {
-      setSendStatus("error");
+      setStatus("error");
     }
   };
 
   const fmtDateTime = (iso: string) =>
     `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 
-  const previouslySentUrl = computationToken
-    ? computationUrl || `/p11d/approve/${computationToken}`
-    : null;
-
   return (
     <div className="space-y-3">
-      {status === "Approved" && approvedAt && (
+      {approvalStatus === "Approved" && approvedAt && (
         <div className="rounded-xl bg-green-50 border border-green-100 p-3">
-          <p className="text-xs font-semibold text-green-700">Approved by client</p>
+          <p className="text-xs font-semibold text-green-700">✓ Approved by client</p>
           <p className="text-xs text-green-600 mt-0.5">{fmtDateTime(approvedAt)}</p>
         </div>
       )}
-      {status === "Queried" && queriedAt && (
+      {approvalStatus === "Queried" && queriedAt && (
         <div className="rounded-xl bg-yellow-50 border border-yellow-100 p-3">
           <p className="text-xs font-semibold text-yellow-700">Query raised by client</p>
           <p className="text-xs text-yellow-600 mt-0.5">{fmtDateTime(queriedAt)}</p>
@@ -76,38 +72,38 @@ export default function SendP11DButton({
 
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1">
-          Client Email
+          Employee/Director Email
         </label>
         <input
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-          placeholder="client@example.com"
+          placeholder="employee@example.com"
         />
       </div>
 
       <button
         onClick={handleSend}
-        disabled={sendStatus === "sending" || !email}
+        disabled={status === "sending" || !email}
         className="w-full rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
       >
-        {sendStatus === "sending" ? "Sending..." : sendStatus === "sent" ? "Sent!" : "Send for Approval"}
+        {status === "sending" ? "Sending..." : status === "sent" ? "✓ Sent!" : "Send for Approval"}
       </button>
 
-      {sendStatus === "error" && (
+      {status === "error" && (
         <p className="text-xs text-red-600">
           Failed to send. Please check the email and try again.
         </p>
       )}
 
-      {sendStatus === "sent" && computationUrl && (
+      {status === "sent" && computationUrl && (
         <div className="rounded-xl bg-green-50 border border-green-100 p-3">
-          <p className="text-xs font-semibold text-green-700 mb-1">P11D sent!</p>
+          <p className="text-xs font-semibold text-green-700 mb-1">P11D summary sent!</p>
           <p className="text-xs text-green-600 mb-2">
-            Client can also access it directly via this link:
+            They can also access it directly via this link:
           </p>
-  <a        
+          <a
             href={computationUrl}
             target="_blank"
             rel="noopener noreferrer"
@@ -118,16 +114,16 @@ export default function SendP11DButton({
         </div>
       )}
 
-      {computationToken && sendStatus === "idle" && previouslySentUrl && (
+      {computationToken && status === "idle" && (
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
           <p className="text-xs text-slate-500 mb-1">Previously sent — client link:</p>
-   <a       
-            href={previouslySentUrl}
+          <a
+            href={`/p11d/approve/${computationToken}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-blue-600 hover:underline break-all"
           >
-            {previouslySentUrl}
+            {typeof window !== "undefined" ? `${window.location.origin}/p11d/approve/${computationToken}` : `/p11d/approve/${computationToken}`}
           </a>
         </div>
       )}

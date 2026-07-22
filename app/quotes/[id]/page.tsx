@@ -31,9 +31,9 @@ async function syncEngagementLetter(quoteId: string) {
     .join("\n");
 
   const feeDescription =
-    `Subtotal: £${Number(quote.subtotal).toFixed(2)}\n` +
-    `VAT: £${Number(quote.vat).toFixed(2)}\n` +
-    `Total: £${Number(quote.total).toFixed(2)}`;
+    `Subtotal: £${Number(quote.subtotal).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
+    `VAT: £${Number(quote.vat).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
+    `Total: £${Number(quote.total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const { error } = await supabase
     .from("engagement_letters")
@@ -231,7 +231,7 @@ export default async function QuoteDetailPage({
                 {lines.map((line) => (
                   <div key={line.id} className="flex justify-between gap-4 text-xs text-slate-500">
                     <span className="truncate">{line.description}</span>
-                    <span className="flex-shrink-0">£{Number(line.line_total).toFixed(2)}</span>
+                    <span className="flex-shrink-0">£{Number(line.line_total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 ))}
               </div>
@@ -239,15 +239,15 @@ export default async function QuoteDetailPage({
             <div className="flex items-center justify-end gap-6 border-t border-slate-100 pt-2">
               <div>
                 <p className="text-xs text-slate-400">Subtotal</p>
-                <p className="text-sm font-semibold text-slate-700">£{Number(quote.subtotal || 0).toFixed(2)}</p>
+                <p className="text-sm font-semibold text-slate-700">£{Number(quote.subtotal || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               </div>
               <div>
                 <p className="text-xs text-slate-400">VAT</p>
-                <p className="text-sm font-semibold text-slate-700">£{Number(quote.vat || 0).toFixed(2)}</p>
+                <p className="text-sm font-semibold text-slate-700">£{Number(quote.vat || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               </div>
               <div>
                 <p className="text-xs text-slate-400">Total</p>
-                <p className="text-xl font-bold text-slate-900">£{Number(quote.total || 0).toFixed(2)}</p>
+                <p className="text-xl font-bold text-slate-900">£{Number(quote.total || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               </div>
             </div>
           </div>
@@ -322,11 +322,11 @@ export default async function QuoteDetailPage({
                     <div className="flex-1">
                       <p className="text-sm font-semibold text-slate-900">{line.description}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Qty: {line.qty} × £{Number(line.price).toFixed(2)} · VAT: {line.vat_rate}%
+                        Qty: {line.qty} × £{Number(line.price).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · VAT: {line.vat_rate}%
                       </p>
                     </div>
                     <div className="flex items-center gap-4">
-                      <p className="font-bold text-slate-900">£{Number(line.line_total).toFixed(2)}</p>
+                      <p className="font-bold text-slate-900">£{Number(line.line_total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                       <a href={`/quotes/${id}?edit_line=${line.id}`}
                         className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
                         Edit

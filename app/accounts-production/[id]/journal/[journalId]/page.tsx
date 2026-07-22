@@ -46,7 +46,7 @@ async function updateJournal(trialBalanceId: string, journalId: string, clientId
   const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
   const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
   if (Math.abs(totalDebit - totalCredit) >= 0.01) {
-    redirect(`/accounts-production/${trialBalanceId}/journal/${journalId}?journal_error=Journal+does+not+balance+%E2%80%94+Dr+£${totalDebit.toFixed(2)}+vs+Cr+£${totalCredit.toFixed(2)}`);
+    redirect(`/accounts-production/${trialBalanceId}/journal/${journalId}?journal_error=Journal+does+not+balance+%E2%80%94+Dr+£${totalDebit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}+vs+Cr+£${totalCredit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
   }
 
   await supabase.from("journals").update({ reference: reference || null, description, journal_date }).eq("id", journalId);

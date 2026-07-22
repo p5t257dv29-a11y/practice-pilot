@@ -46,7 +46,7 @@ async function postJournal(trialBalanceId: string, clientId: string, formData: F
   const totalDebit = rows.reduce((s, r) => s + r.debit, 0);
   const totalCredit = rows.reduce((s, r) => s + r.credit, 0);
   if (Math.abs(totalDebit - totalCredit) >= 0.01) {
-    redirect(`/accounts-production/${trialBalanceId}/journal?journal_error=Journal+does+not+balance+%E2%80%94+Dr+£${totalDebit.toFixed(2)}+vs+Cr+£${totalCredit.toFixed(2)}`);
+    redirect(`/accounts-production/${trialBalanceId}/journal?journal_error=Journal+does+not+balance+%E2%80%94+Dr+£${totalDebit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}+vs+Cr+£${totalCredit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
   }
 
   const { data: journal, error: journalError } = await supabase

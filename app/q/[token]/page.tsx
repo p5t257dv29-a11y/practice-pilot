@@ -149,10 +149,10 @@ export default async function PublicQuotePage({
                     <td className="py-4 text-sm text-slate-900">{line.description}</td>
                     <td className="py-4 text-sm text-slate-600 text-right">{line.qty}</td>
                     <td className="py-4 text-sm text-slate-600 text-right">
-                      £{Number(line.price).toFixed(2)}
+                      £{Number(line.price).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="py-4 text-sm font-medium text-slate-900 text-right">
-                      £{Number(line.line_total).toFixed(2)}
+                      £{Number(line.line_total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                   </tr>
                 ))}
@@ -166,19 +166,19 @@ export default async function PublicQuotePage({
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">Subtotal</span>
                 <span className="font-medium text-slate-900">
-                  £{Number(quote.subtotal || 0).toFixed(2)}
+                  £{Number(quote.subtotal || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">VAT</span>
                 <span className="font-medium text-slate-900">
-                  £{Number(quote.vat || 0).toFixed(2)}
+                  £{Number(quote.vat || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
               <div className="flex justify-between text-base font-bold border-t border-slate-200 pt-2 mt-2">
                 <span className="text-slate-900">Total</span>
                 <span className="text-slate-900">
-                  £{Number(quote.total || 0).toFixed(2)}
+                  £{Number(quote.total || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
             </div>

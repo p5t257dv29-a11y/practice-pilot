@@ -150,9 +150,9 @@ export default function NewQuoteForm({ clients, services }: { clients: Client[];
 
       <div className="mt-4 flex justify-end">
         <div className="w-64 space-y-1 text-sm">
-          <div className="flex justify-between"><span className="text-slate-500">Subtotal</span><span className="font-medium">£{subtotal.toFixed(2)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">VAT</span><span className="font-medium">£{vat.toFixed(2)}</span></div>
-          <div className="flex justify-between border-t border-slate-100 pt-1 font-bold"><span>Total</span><span>£{total.toFixed(2)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Subtotal</span><span className="font-medium">£{subtotal.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">VAT</span><span className="font-medium">£{vat.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+          <div className="flex justify-between border-t border-slate-100 pt-1 font-bold"><span>Total</span><span>£{total.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
         </div>
       </div>
 

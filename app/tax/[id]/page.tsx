@@ -258,7 +258,7 @@ export default async function TaxComputationDetailPage({
                 </div>
                 {result.unusedForeignTaxCredit > 0 && (
                   <p className="text-xs text-amber-700 mt-1">
-                    £{result.unusedForeignTaxCredit.toFixed(2)} of foreign tax paid exceeds the UK tax due on that income and cannot be relieved (not carried forward under UK rules).
+                    £{result.unusedForeignTaxCredit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of foreign tax paid exceeds the UK tax due on that income and cannot be relieved (not carried forward under UK rules).
                   </p>
                 )}
               </div>

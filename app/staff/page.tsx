@@ -117,7 +117,7 @@ export default async function StaffPage({
             {member.email && ` · ${member.email}`}
             {" · "}
             <span className="font-mono tabular-nums">
-              £{Number(member.charge_out_rate || 0).toFixed(2)}/hr
+              £{Number(member.charge_out_rate || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/hr
             </span>
           </p>
         </div>

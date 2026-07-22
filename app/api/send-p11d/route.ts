@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
 
   const { data: comp, error } = await supabase
     .from("p11d_computations")
-    .select("*, clients(client_name)")
+    .select("*, clients:client_id(client_name)")
     .eq("id", computationId)
     .single();
 
@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
   const computationUrl = `${baseUrl}/p11d/approve/${token}`;
 
+  // Recalculate totals for the email summary (mirrors the on-page calculation)
   const result = calculateP11D({
     carListPrice: Number(comp.car_list_price),
     carBenefitPercentage: Number(comp.car_benefit_percentage),
@@ -59,12 +60,12 @@ export async function POST(request: NextRequest) {
   const { error: emailError } = await resend.emails.send({
     from: "PracticePilot <onboarding@resend.dev>",
     to: clientEmail,
-    subject: `P11D Benefits Summary (${comp.tax_year}) — ${comp.employee_name}`,
+    subject: `Your ${comp.tax_year} P11D Benefits Summary from E&P Accountancy Services`,
     html: `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #0f172a;">P11D — ${comp.employee_name}</h2>
-        <p>Dear ${comp.clients?.client_name || "Client"},</p>
-        <p>Please find the P11D benefits-in-kind summary for ${comp.employee_name} (${comp.tax_year}) below. You can review the full breakdown and approve it by clicking the button below.</p>
+        <h2 style="color: #0f172a;">P11D Benefits Summary ${comp.tax_year}</h2>
+        <p>Dear ${comp.employee_name},</p>
+        <p>Please find a summary of your taxable benefits in kind for ${comp.tax_year}, reported by ${comp.clients?.client_name || "your employer"}. You can review the full breakdown and approve it by clicking the button below.</p>
 
         <div style="margin: 30px 0;">
           <table style="width: 100%; border-collapse: collapse;">
@@ -73,19 +74,15 @@ export async function POST(request: NextRequest) {
               <td style="padding: 12px; border: 1px solid #e2e8f0;">${comp.tax_year}</td>
             </tr>
             <tr>
-              <td style="padding: 12px; border: 1px solid #e2e8f0; font-weight: bold;">Total Benefits</td>
+              <td style="padding: 12px; border: 1px solid #e2e8f0; font-weight: bold;">Total Taxable Benefits</td>
               <td style="padding: 12px; border: 1px solid #e2e8f0;">£${result.totalBenefits.toFixed(2)}</td>
-            </tr>
-            <tr style="background: #f8fafc;">
-              <td style="padding: 12px; border: 1px solid #e2e8f0; font-weight: bold;">Class 1A NIC (Employer)</td>
-              <td style="padding: 12px; border: 1px solid #e2e8f0;">£${result.class1ANIC.toFixed(2)}</td>
             </tr>
           </table>
         </div>
 
         <a href="${computationUrl}"
            style="display: inline-block; background: #0f172a; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold;">
-          View &amp; Approve P11D
+          View &amp; Approve P11D Summary
         </a>
 
         <p style="margin-top: 30px; color: #64748b; font-size: 14px;">

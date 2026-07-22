@@ -151,8 +151,8 @@ export default async function FixedAssetsRegisterPage({
                     </div>
                     <div className="flex items-center gap-4">
                       <div className="text-right">
-                        <p className="font-bold text-slate-900">£{nbv.toFixed(2)}</p>
-                        <p className="text-xs text-slate-400">NBV (cost £{Number(asset.cost).toFixed(2)})</p>
+                        <p className="font-bold text-slate-900">£{nbv.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                        <p className="text-xs text-slate-400">NBV (cost £{Number(asset.cost).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</p>
                       </div>
                       <a href={isEditing ? `/fixed-assets/register${qs}` : `/fixed-assets/register${qs}${qs ? "&" : "?"}edit=${asset.id}`}
                         className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
@@ -269,7 +269,7 @@ export default async function FixedAssetsRegisterPage({
                     </p>
                   </div>
                   <p className="text-sm font-medium text-slate-600">
-                    Proceeds: £{Number(asset.disposal_proceeds || 0).toFixed(2)}
+                    Proceeds: £{Number(asset.disposal_proceeds || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </p>
                 </div>
               ))}

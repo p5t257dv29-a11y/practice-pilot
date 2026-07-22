@@ -143,11 +143,11 @@ export default async function FixedAssetsPage({
                   </div>
                   <div className="rounded-xl bg-slate-50 border border-slate-100 p-4">
                     <p className="text-xs text-slate-500 uppercase tracking-wide">Total Cost</p>
-                    <p className="text-xl font-bold text-slate-900 mt-1">£{browseTotalCost.toFixed(2)}</p>
+                    <p className="text-xl font-bold text-slate-900 mt-1">£{browseTotalCost.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                   </div>
                   <div className="rounded-xl bg-slate-50 border border-slate-100 p-4">
                     <p className="text-xs text-slate-500 uppercase tracking-wide">Net Book Value</p>
-                    <p className="text-xl font-bold text-slate-900 mt-1">£{browseTotalNBV.toFixed(2)}</p>
+                    <p className="text-xl font-bold text-slate-900 mt-1">£{browseTotalNBV.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                   </div>
                 </div>
 
@@ -171,7 +171,7 @@ export default async function FixedAssetsPage({
                             </p>
                           </div>
                           <div className="flex items-center gap-3">
-                            <p className="font-bold text-slate-900">£{nbv.toFixed(2)}</p>
+                            <p className="font-bold text-slate-900">£{nbv.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                             <a href={`/fixed-assets/dispose?client=${browseClientId}&asset=${asset.id}`}
                               className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
                               Dispose
@@ -204,7 +204,7 @@ export default async function FixedAssetsPage({
                             </p>
                           </div>
                           <p className="text-sm font-medium text-slate-600">
-                            Proceeds: £{Number(asset.disposal_proceeds || 0).toFixed(2)}
+                            Proceeds: £{Number(asset.disposal_proceeds || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </p>
                         </div>
                       ))}

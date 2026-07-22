@@ -512,7 +512,7 @@ export default async function JobDetailPage({
                 <p className="text-xs text-slate-500">Billable</p>
               </div>
               <div>
-                <p className="text-xl font-bold text-green-600">£{chargeOutValue.toFixed(2)}</p>
+                <p className="text-xl font-bold text-green-600">£{chargeOutValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                 <p className="text-xs text-slate-500">Value</p>
               </div>
             </div>
@@ -540,14 +540,14 @@ export default async function JobDetailPage({
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-900">Current WIP</p>
                 <p className={`text-sm font-bold ${currentWip > 0 ? "text-orange-600" : "text-green-600"}`}>
-                  £{currentWip.toFixed(2)}
+                  £{currentWip.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
               </div>
               {invoicedAmount > 0 && (
-                <p className="text-xs text-slate-500">Invoiced to date: £{invoicedAmount.toFixed(2)}</p>
+                <p className="text-xs text-slate-500">Invoiced to date: £{invoicedAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               )}
               {writtenOffAmount > 0 && (
-                <p className="text-xs text-slate-500">Written off to date: £{writtenOffAmount.toFixed(2)}</p>
+                <p className="text-xs text-slate-500">Written off to date: £{writtenOffAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               )}
 
               <WriteOffWipForm jobId={id} currentWip={currentWip} />
@@ -559,7 +559,7 @@ export default async function JobDetailPage({
                     <div key={w.id} className="rounded-lg border border-slate-100 p-2.5">
                       <div className="flex items-start justify-between">
                         <p className="text-xs font-semibold text-slate-700">{w.reason_category}</p>
-                        <p className="text-xs font-bold text-slate-900">£{Number(w.amount).toFixed(2)}</p>
+                        <p className="text-xs font-bold text-slate-900">£{Number(w.amount).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                       </div>
                       {w.notes && <p className="text-xs text-slate-500 mt-0.5">{w.notes}</p>}
                       <p className="text-xs text-slate-400 mt-0.5">

@@ -44,7 +44,7 @@ export default function WriteOffWipForm({
 
     if (parsedAmount > currentWip) {
       setStatus("error");
-      setErrorMessage(`Amount exceeds current WIP balance of £${currentWip.toFixed(2)}.`);
+      setErrorMessage(`Amount exceeds current WIP balance of £${currentWip.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`);
       return;
     }
 
@@ -92,7 +92,7 @@ export default function WriteOffWipForm({
     >
       <p className="text-sm font-semibold text-slate-900">Write off WIP</p>
       <p className="text-xs text-slate-500">
-        Current WIP balance: £{currentWip.toFixed(2)}
+        Current WIP balance: £{currentWip.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
       </p>
 
       <div>

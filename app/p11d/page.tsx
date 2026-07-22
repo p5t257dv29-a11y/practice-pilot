@@ -140,7 +140,7 @@ export default async function P11DPage({
           {comp.employee_name} — {(comp.clients as any)?.client_name || "No employer"}
         </p>
         <p className="text-sm text-slate-500">
-          {comp.tax_year} · Total benefits: £{result.totalBenefits.toFixed(2)} · Class 1A NIC: £{result.class1ANIC.toFixed(2)}
+          {comp.tax_year} · Total benefits: £{result.totalBenefits.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Class 1A NIC: £{result.class1ANIC.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </p>
       </a>
       <form action={deleteComputation.bind(null, comp.id)}>

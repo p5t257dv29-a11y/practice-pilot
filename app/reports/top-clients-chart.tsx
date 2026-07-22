@@ -19,7 +19,7 @@ export default function TopClientsChart({ data }: { data: ClientBar[] }) {
           <XAxis type="number" tickFormatter={(v) => `£${v}`} tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
           <YAxis type="category" dataKey="shortName" width={110} tick={{ fontSize: 12, fill: "#334155" }} axisLine={false} tickLine={false} />
           <Tooltip
-            formatter={(value: any, key: any) => [`£${Number(value).toFixed(2)}`, key === "wip" ? "WIP" : "Invoiced"]}
+            formatter={(value: any, key: any) => [`£${Number(value).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, key === "wip" ? "WIP" : "Invoiced"]}
             labelFormatter={(_: any, payload: any) => payload?.[0]?.payload?.name || ""}
             contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }}
           />

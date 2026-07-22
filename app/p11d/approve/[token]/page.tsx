@@ -35,11 +35,14 @@ export default async function PublicP11DPage({
 
   const { data: comp, error } = await supabase
     .from("p11d_computations")
-    .select("*, clients(client_name)")
+    .select("*, clients!p11d_computations_client_id_fkey(client_name)")
     .eq("token", token)
     .single();
 
-  if (error || !comp) notFound();
+  if (error || !comp) {
+    console.error("P11D approve page lookup failed:", { token, error });
+    notFound();
+  }
 
   const approveWithToken = approveComputation.bind(null, token);
   const queryWithToken = queryComputation.bind(null, token);

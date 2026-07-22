@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import { calculateP11D, P11D_RATES } from "../page";
+import SendP11DButton from "../send-p11d-button";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +48,7 @@ export default async function P11DDetailPage({
 
   const { data: comp, error } = await supabase
     .from("p11d_computations")
-    .select("*, clients:client_id(client_name)")
+    .select("*, clients:client_id(client_name), employee_client:employee_client_id(email)")
     .eq("id", id)
     .single();
 
@@ -70,6 +71,7 @@ export default async function P11DDetailPage({
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const updateWithId = updateComputation.bind(null, id);
+  const employeeClient = comp.employee_client as any;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -183,6 +185,23 @@ export default async function P11DDetailPage({
             <p className="text-xs text-yellow-800">
               Working paper only, not a filable P11D or P11D(b). Company car benefit % must be looked up from HMRC's current CO2-based table — this tool doesn't encode it. Fuel multiplier and official rate of interest are editable defaults — confirm against GOV.UK before relying on them.
             </p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Send to Employee</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Send this benefits summary by email for digital approval.
+            </p>
+            <div className="mt-4">
+              <SendP11DButton
+                computationId={id}
+                defaultEmail={comp.client_email || employeeClient?.email || ""}
+                computationToken={comp.token}
+                status={comp.status}
+                approvedAt={comp.approved_at}
+                queriedAt={comp.queried_at}
+              />
+            </div>
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">

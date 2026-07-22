@@ -164,14 +164,14 @@ export default async function DirectorsLoanAccountPage({
           {dla.director_name} — {(dla.clients as any)?.client_name}
         </p>
         <p className="text-sm text-slate-500 mt-0.5">
-          Year ended {new Date(dla.period_end).toLocaleDateString("en-GB")} · Closing balance £{Number(dla.closing_balance).toFixed(2)}
+          Year ended {new Date(dla.period_end).toLocaleDateString("en-GB")} · Closing balance £{Number(dla.closing_balance).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           {result.isOverdrawn && ` · S455 due date ${result.dueDate.toLocaleDateString("en-GB")}`}
         </p>
       </div>
       <div className="flex items-center gap-4">
         {result.s455Due > 0 ? (
           <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700">
-            S455: £{result.s455Due.toFixed(2)}
+            S455: £{result.s455Due.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
         ) : result.isOverdrawn ? (
           <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">✓ Cleared in time</span>
@@ -290,7 +290,7 @@ export default async function DirectorsLoanAccountPage({
                       <div>
                         <p className="font-semibold text-slate-900">{d.description}</p>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          Opening: £{d.openingBalance.toFixed(2)} · Closing: £{d.closingBalance.toFixed(2)}
+                          Opening: £{d.openingBalance.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Closing: £{d.closingBalance.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           {d.closingBalance <= 0 && " (not overdrawn — no S455 risk)"}
                         </p>
                       </div>

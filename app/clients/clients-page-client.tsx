@@ -11,6 +11,9 @@ interface Client {
   email: string | null;
   onboarding_status: string | null;
   accounts_next_due: string | null;
+  aml_id_verified: boolean | null;
+  aml_risk_rating: string | null;
+  aml_next_review_due: string | null;
 }
 
 export default function ClientsPageClient({
@@ -19,20 +22,32 @@ export default function ClientsPageClient({
   createAction,
   deleteAction,
   autoOpen,
+  initialFilter,
 }: {
   clients: Client[];
   error?: string;
   createAction: (formData: FormData) => Promise<void>;
   deleteAction: (id: string) => Promise<void>;
   autoOpen?: boolean;
+  initialFilter?: string;
 }) {
   const [showModal, setShowModal] = useState(autoOpen || false);
   const [search, setSearch] = useState("");
   const [entityFilter, setEntityFilter] = useState("");
+  const [amlFilter, setAmlFilter] = useState(initialFilter === "aml");
 
   const entityTypes = Array.from(
     new Set(clients.map((c) => c.entity_type).filter(Boolean))
   ) as string[];
+
+  // Same "needs attention" logic as the Dashboard's AML Checks count
+  const needsAmlAttention = (c: Client) => {
+    if (c.onboarding_status !== "Active Client" && c.onboarding_status !== "Onboarding") {
+      return false;
+    }
+    const reviewOverdue = c.aml_next_review_due && new Date(c.aml_next_review_due) < new Date();
+    return !c.aml_id_verified || !c.aml_risk_rating || reviewOverdue;
+  };
 
   const filtered = clients.filter(c => {
     const matchesSearch =
@@ -40,7 +55,8 @@ export default function ClientsPageClient({
       c.client_ref?.toLowerCase().includes(search.toLowerCase()) ||
       c.email?.toLowerCase().includes(search.toLowerCase());
     const matchesEntity = !entityFilter || c.entity_type === entityFilter;
-    return matchesSearch && matchesEntity;
+    const matchesAml = !amlFilter || needsAmlAttention(c);
+    return matchesSearch && matchesEntity && matchesAml;
   });
 
   const handleCreate = async (formData: FormData) => {
@@ -69,7 +85,7 @@ export default function ClientsPageClient({
         </div>
 
         {/* Search + Filter */}
-        <div className="mt-4 flex gap-3">
+        <div className="mt-4 flex gap-3 items-center">
           <input
             type="text"
             value={search}
@@ -87,6 +103,16 @@ export default function ClientsPageClient({
               <option key={type} value={type}>{type}</option>
             ))}
           </select>
+
+          {amlFilter && (
+            <button
+              onClick={() => setAmlFilter(false)}
+              className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-100 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 transition-colors"
+            >
+              AML review needed
+              <span className="text-red-400">✕</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -138,6 +164,11 @@ export default function ClientsPageClient({
                       Accounts due: {new Date(client.accounts_next_due).toLocaleDateString("en-GB")}
                     </p>
                   )}
+                  {needsAmlAttention(client) && (
+                    <p className="text-xs text-red-500 mt-0.5 font-semibold">
+                      AML review needed
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -168,11 +199,11 @@ export default function ClientsPageClient({
             {filtered.length === 0 && (
               <div className="px-6 py-12 text-center">
                 <p className="text-slate-500 text-sm">
-                  {search || entityFilter
+                  {search || entityFilter || amlFilter
                     ? "No clients matching your search/filter."
                     : "No clients yet."}
                 </p>
-                {!search && !entityFilter && (
+                {!search && !entityFilter && !amlFilter && (
                   <button
                     onClick={() => setShowModal(true)}
                     className="mt-3 text-blue-600 text-sm hover:underline"

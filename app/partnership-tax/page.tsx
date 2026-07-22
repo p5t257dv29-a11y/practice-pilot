@@ -172,7 +172,7 @@ export default async function PartnershipTaxPage({
             {(comp.clients as any)?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
           </p>
           <p className="text-sm text-slate-500">
-            Adjusted profit: £{adjustedProfit.toFixed(2)} · Capital allowances: £{ca.totalCapitalAllowances.toFixed(2)} · {partners.length} partner{partners.length !== 1 ? "s" : ""}
+            Adjusted profit: £{adjustedProfit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Capital allowances: £{ca.totalCapitalAllowances.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {partners.length} partner{partners.length !== 1 ? "s" : ""}
           </p>
         </a>
         <form action={deleteComputation.bind(null, comp.id)}>
