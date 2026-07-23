@@ -10,9 +10,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// Standard categories a trial balance line can be mapped to.
-// P&L categories roll up into the Profit & Loss account; Balance Sheet
-// categories roll up into the Balance Sheet. Covers a typical small company.
 export const PL_CATEGORIES = [
   "Turnover",
   "Cost of Sales",
@@ -34,13 +31,6 @@ export const PL_CATEGORIES = [
   "Interest Receivable",
 ];
 
-// --- Fixed asset movement schedule ---
-// For each asset class (tangible or intangible) we generate a full set of
-// six movement categories, matching a standard FRS102 fixed asset note:
-// Cost/Valuation B/F, Additions, Disposals (Cost), Accumulated Depreciation
-// B/F, Depreciation Charge for Year, Depreciation on Disposals. The Fixed
-// Asset Register derives all of these automatically from each asset's
-// acquisition/disposal dates — see accounts-production/[id]/page.tsx.
 export type AssetMovementCategories = {
   costBf: string;
   additions: string;
@@ -77,21 +67,11 @@ const fixedAssetMovementCategoryList = FIXED_ASSET_CLASSES.flatMap(
   ({ assetClass }) => Object.values(FIXED_ASSET_MOVEMENT[assetClass])
 );
 
-// Categories within the movement schedule that are naturally CREDIT balances:
-// disposing of cost, and accumulated depreciation (a contra-asset) both being
-// credit-normal. Depreciation-on-disposals removes that contra, so it's debit-normal.
 const fixedAssetCreditNormalCategories = FIXED_ASSET_CLASSES.flatMap(({ assetClass }) => {
   const m = FIXED_ASSET_MOVEMENT[assetClass];
   return [m.disposalsCost, m.depBf, m.depCharge];
 });
 
-// Director's Loan Account movement schedule — the flat "Directors' Loan
-// Account" category still exists as a catch-all for whatever hasn't been
-// split out. These sub-categories are optional detail on top of it. All are
-// posted using ordinary debit/credit convention (debit = director owes the
-// company more, credit = company owes the director more) — no special
-// CREDIT_NORMAL handling needed, since the parent category already works
-// this way and simply summing keeps that consistent.
 export const DLA_MOVEMENT_CATEGORIES = [
   "Directors' Loan Account - Balance B/F",
   "Directors' Loan Account - Capital Introduced",
@@ -124,8 +104,6 @@ export const BS_CATEGORIES = [
 
 export const ALL_CATEGORIES = [...PL_CATEGORIES, ...BS_CATEGORIES];
 
-// Categories that are naturally CREDIT balances (income, liabilities, equity).
-// Everything else is treated as a naturally DEBIT balance (assets, expenses).
 export const CREDIT_NORMAL = new Set([
   "Turnover", "Interest Receivable",
   "Trade Creditors", "Accruals and Deferred Income", "VAT Liability", "PAYE/NI Liability",
@@ -137,10 +115,6 @@ export const CREDIT_NORMAL = new Set([
 
 export type PLGroup = "turnover" | "cost_of_sales" | "admin_expenses" | "interest_payable" | "interest_receivable";
 
-// Every built-in P&L category's group — this is what actually drives the
-// summary totals now, not a fixed list. Custom categories (added via the
-// Chart of Accounts page, stored in custom_pl_categories) supply their own
-// group at read time and get merged in by callers — see accounts-production/[id]/frs102/page.tsx.
 export const PL_CATEGORY_GROUPS: Record<string, PLGroup> = {
   "Turnover": "turnover",
   "Cost of Sales": "cost_of_sales",
@@ -162,12 +136,6 @@ export const PL_CATEGORY_GROUPS: Record<string, PLGroup> = {
   "Interest Receivable": "interest_receivable",
 };
 
-// Computes a Profit & Loss summary from a set of mapped trial balance lines.
-// Shared by the formatted accounts page and the Corporation Tax auto-fill.
-// customGroups lets a caller merge in practice- or client-specific categories
-// (e.g. from custom_pl_categories) without changing this function — any
-// category not found in either map is simply excluded from every total, so
-// an un-configured category fails safe rather than silently double-counting.
 export function calculateProfitAndLoss(lines: any[], customGroups: Record<string, PLGroup> = {}) {
   const totals = new Map<string, number>();
   (lines || []).forEach((l) => {
@@ -198,9 +166,6 @@ export function calculateProfitAndLoss(lines: any[], customGroups: Record<string
   return { totals, turnover, costOfSales, grossProfit, depreciation, adminExpenses, operatingProfit, interestReceivable, interestPayable, profitBeforeTax };
 }
 
-// Fetches practice-defined custom P&L categories and returns them in the
-// shapes callers need: a flat name list (for dropdowns, appended to
-// PL_CATEGORIES) and a name->group map (for calculateProfitAndLoss).
 export async function getCustomPLCategories(supabaseClient: any) {
   const { data } = await supabaseClient.from("custom_pl_categories").select("name, category_group").order("name", { ascending: true });
   const names = (data || []).map((c: any) => c.name);
@@ -208,7 +173,6 @@ export async function getCustomPLCategories(supabaseClient: any) {
   return { names, groups };
 }
 
-// Simple CSV line parser handling quoted fields with commas inside them
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = "";
@@ -251,7 +215,6 @@ async function uploadTrialBalance(formData: FormData) {
   const debitIdx = headers.findIndex((h) => h.includes("debit"));
   const creditIdx = headers.findIndex((h) => h.includes("credit"));
 
-  // Create the trial balance record
   const { data: tb, error: tbError } = await supabase
     .from("trial_balances")
     .insert({
@@ -269,8 +232,6 @@ async function uploadTrialBalance(formData: FormData) {
     return;
   }
 
-  // Load client-specific mappings (highest priority) and the master
-  // Chart of Accounts (fallback for codes not yet seen for this client)
   const [{ data: clientMappings }, { data: masterAccounts }] = await Promise.all([
     supabase.from("nominal_code_mappings").select("nominal_code, category").eq("client_id", client_id),
     supabase.from("chart_of_accounts").select("nominal_code, category"),
@@ -323,9 +284,9 @@ async function deleteTrialBalance(id: string) {
 export default async function AccountsProductionPage({
   searchParams,
 }: {
-  searchParams: Promise<{ job?: string; mode?: string; client?: string }>;
+  searchParams: Promise<{ job?: string; mode?: string }>;
 }) {
-  const { job: jobId, mode, client: browseClientId } = await searchParams;
+  const { job: jobId, mode } = await searchParams;
 
   const [{ data: trialBalances, error }, { data: clients }, { data: jobs }] = await Promise.all([
     supabase
@@ -344,9 +305,19 @@ export default async function AccountsProductionPage({
 
   const selectedJob = jobId ? (jobs || []).find((j) => j.id === jobId) : null;
 
-  const browseResults = browseClientId
-    ? (trialBalances || []).filter((tb) => tb.client_id === browseClientId)
-    : [];
+  const allRows = trialBalances || [];
+  const openRows = allRows.filter((tb) => tb.approval_status !== "Approved");
+  const completedRows = allRows.filter((tb) => tb.approval_status === "Approved");
+
+  const statusBadge = (status: string | null | undefined) => {
+    const s = status || "Draft";
+    const style =
+      s === "Sent" ? "bg-yellow-100 text-yellow-700"
+      : s === "Queried" ? "bg-orange-100 text-orange-700"
+      : s === "Approved" ? "bg-green-100 text-green-700"
+      : "bg-slate-100 text-slate-600";
+    return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
+  };
 
   const renderTbRow = (tb: any) => {
     const lineCount = tb.trial_balance_lines?.length || 0;
@@ -356,12 +327,14 @@ export default async function AccountsProductionPage({
     return (
       <div key={tb.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
         <a href={`/accounts-production/${tb.id}`} className="flex-1">
-          <p className="font-semibold text-slate-900">
-            {(tb.clients as any)?.client_name || "No client"} — {new Date(tb.period_start).toLocaleDateString("en-GB")} to {new Date(tb.period_end).toLocaleDateString("en-GB")}
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="font-semibold text-slate-900">
+              {(tb.clients as any)?.client_name || "No client"} — {new Date(tb.period_start).toLocaleDateString("en-GB")} to {new Date(tb.period_end).toLocaleDateString("en-GB")}
+            </p>
+            {statusBadge(tb.approval_status)}
+          </div>
           <p className="text-sm text-slate-500 mt-0.5">
             {lineCount} lines{(tb.jobs as any)?.job_name && ` · Job: ${(tb.jobs as any).job_name}`}
-            {tb.approval_status && ` · ${tb.approval_status}`}
           </p>
         </a>
         <div className="flex items-center gap-4">
@@ -404,14 +377,20 @@ export default async function AccountsProductionPage({
           </div>
         )}
 
-        {/* Entry choice: Browse existing vs Start New */}
-        <div className="grid gap-4 md:grid-cols-2 mb-6">
-          <a href="/accounts-production?mode=browse"
+        <div className="grid gap-4 md:grid-cols-3 mb-6">
+          <a href="/accounts-production?mode=open"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+              mode === "open" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
             }`}>
-            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
-            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a client's active or historical accounts</p>
+            <p className={`font-bold text-lg ${mode === "open" ? "text-white" : "text-slate-900"}`}>Open</p>
+            <p className={`text-sm mt-1 ${mode === "open" ? "text-slate-300" : "text-slate-500"}`}>{openRows.length} not yet completed</p>
+          </a>
+          <a href="/accounts-production?mode=completed"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "completed" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "completed" ? "text-white" : "text-slate-900"}`}>Completed</p>
+            <p className={`text-sm mt-1 ${mode === "completed" ? "text-slate-300" : "text-slate-500"}`}>{completedRows.length} approved</p>
           </a>
           <a href="/accounts-production?mode=new"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
@@ -422,40 +401,34 @@ export default async function AccountsProductionPage({
           </a>
         </div>
 
-        {/* BROWSE MODE */}
-        {mode === "browse" && (
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 mb-6">
-            <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
-            <form method="get" className="mt-4 flex gap-2">
-              <input type="hidden" name="mode" value="browse" />
-              <select name="client" defaultValue={browseClientId || ""}
-                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                <option value="">Select a client</option>
-                {(clients || []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.client_name}</option>
-                ))}
-              </select>
-              <button type="submit"
-                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                Show
-              </button>
-            </form>
-
-            {browseClientId && (
-              <div className="mt-6 space-y-2">
-                {browseResults.map(renderTbRow)}
-                {browseResults.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-8">No accounts on file for this client yet.</p>
-                )}
+        {mode === "open" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Open Accounts</h2>
+            {openRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No open accounts — everything's approved.</p>
+            ) : (
+              <div className="mt-4 space-y-2">
+                {openRows.map(renderTbRow)}
               </div>
             )}
           </div>
         )}
 
-        {/* NEW MODE */}
+        {mode === "completed" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Completed Accounts</h2>
+            {completedRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">Nothing approved yet.</p>
+            ) : (
+              <div className="mt-4 space-y-2">
+                {completedRows.map(renderTbRow)}
+              </div>
+            )}
+          </div>
+        )}
+
         {mode === "new" && (
           <>
-            {/* Select a job — client and period derive automatically */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Select Job</h2>
               <p className="text-sm text-slate-500 mt-0.5">
@@ -482,7 +455,6 @@ export default async function AccountsProductionPage({
               </form>
             </div>
 
-            {/* Upload form — appears once a job is selected, or via manual fallback below */}
             {selectedJob && (
               <div className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <h2 className="text-lg font-bold text-slate-900">Upload Trial Balance</h2>
@@ -525,7 +497,6 @@ export default async function AccountsProductionPage({
               </div>
             )}
 
-            {/* Fallback: manual client + period, for clients without a job set up */}
             <details className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <summary className="text-sm font-semibold text-slate-600 cursor-pointer">
                 Or select client and period manually →

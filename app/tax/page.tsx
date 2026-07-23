@@ -8,14 +8,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// UK tax year rates. Add a new entry each April when HMRC rates change.
 export const TAX_RATES: Record<string, any> = {
   "2026/27": {
     personalAllowance: 12570,
     paTaperStart: 100000,
     paTaperEnd: 125140,
-    basicRateLimit: 37700, // width of basic rate band, applied to taxable (post-allowance) income
-    additionalRateThreshold: 125140, // taxable income threshold
+    basicRateLimit: 37700,
+    additionalRateThreshold: 125140,
     basicRate: 0.20,
     higherRate: 0.40,
     additionalRate: 0.45,
@@ -23,7 +22,7 @@ export const TAX_RATES: Record<string, any> = {
     dividendBasicRate: 0.1075,
     dividendHigherRate: 0.3575,
     dividendAdditionalRate: 0.3935,
-    startingRateForSavingsBand: 5000, // 0% band, only available if non-savings income is low
+    startingRateForSavingsBand: 5000,
     startingRateForSavings: 0,
     personalSavingsAllowanceBasic: 1000,
     personalSavingsAllowanceHigher: 500,
@@ -35,7 +34,6 @@ export const TAX_RATES: Record<string, any> = {
   },
 };
 
-// "2026/27" -> "2025/26"
 export function previousTaxYear(taxYear: string) {
   const startYear = parseInt(taxYear.split("/")[0], 10);
   return `${startYear - 1}/${String(startYear).slice(-2)}`;
@@ -44,29 +42,24 @@ export function previousTaxYear(taxYear: string) {
 type TaxInput = {
   employmentIncome: number;
   selfEmploymentIncome: number;
-  rentalIncome: number; // gross UK rental income
-  propertyExpenses?: number; // allowable UK property expenses excluding finance costs
-  propertyFinanceCosts?: number; // UK finance costs for the year
-  financeCostsBf?: number; // unused UK finance costs brought forward
+  rentalIncome: number;
+  propertyExpenses?: number;
+  propertyFinanceCosts?: number;
+  financeCostsBf?: number;
   pensionIncome: number;
   interestIncome: number;
   dividendIncome: number;
   foreignEmploymentIncome?: number;
   foreignInterestIncome?: number;
   foreignDividendIncome?: number;
-  foreignRentalIncome?: number; // gross foreign rental income
+  foreignRentalIncome?: number;
   foreignPropertyExpenses?: number;
   foreignPropertyFinanceCosts?: number;
   foreignFinanceCostsBf?: number;
-  foreignTaxPaid?: number; // total foreign tax suffered, for credit relief
+  foreignTaxPaid?: number;
   taxYear: string;
 };
 
-// Core banding computation — everything except Foreign Tax Credit Relief,
-// which the exported calculateTax derives by calling this twice (see below).
-// UK and foreign property are kept as separate pools throughout, matching
-// how HMRC treats them as distinct property businesses, even though both
-// feed into the same combined non-savings income tier for band purposes.
 function computeCore(input: TaxInput) {
   const r = TAX_RATES[input.taxYear] || TAX_RATES["2026/27"];
   const propertyExpenses = input.propertyExpenses || 0;
@@ -80,29 +73,23 @@ function computeCore(input: TaxInput) {
   const foreignPropertyFinanceCosts = input.foreignPropertyFinanceCosts || 0;
   const foreignFinanceCostsBf = input.foreignFinanceCostsBf || 0;
 
-  // Property profit excludes finance costs entirely — since 2020/21 these no
-  // longer reduce property profit, they only generate a 20% tax reducer,
-  // separately capped and carried forward for the UK and overseas businesses.
   const propertyProfit = Math.max(0, input.rentalIncome - propertyExpenses);
   const foreignPropertyProfit = Math.max(0, foreignRentalIncome - foreignPropertyExpenses);
 
   const combinedInterestIncome = input.interestIncome + foreignInterestIncome;
   const combinedDividendIncome = input.dividendIncome + foreignDividendIncome;
 
-  // Tier 1: non-savings, non-dividend income — UK and foreign sources combined
   const nonSavingsIncome =
     input.employmentIncome + foreignEmploymentIncome + input.selfEmploymentIncome +
     propertyProfit + foreignPropertyProfit + input.pensionIncome;
   const totalIncome = nonSavingsIncome + combinedInterestIncome + combinedDividendIncome;
 
-  // Personal allowance taper: £1 lost for every £2 of total income over £100,000
   let personalAllowance = r.personalAllowance;
   if (totalIncome > r.paTaperStart) {
     const reduction = Math.floor((totalIncome - r.paTaperStart) / 2);
     personalAllowance = Math.max(0, r.personalAllowance - reduction);
   }
 
-  // Apply personal allowance to non-savings income first, spill remainder to savings, then dividends
   const paUsedAgainstNonSavings = Math.min(personalAllowance, nonSavingsIncome);
   let paRemaining = personalAllowance - paUsedAgainstNonSavings;
 
@@ -120,14 +107,6 @@ function computeCore(input: TaxInput) {
     higherBandNonDiv * r.higherRate +
     additionalBandNonDiv * r.additionalRate;
 
-  // Property finance cost tax reducer (s274A ITTOIA / "Section 24"): relief is
-  // 20% of the LOWER of (a) finance costs for the year plus any brought-forward
-  // unused amount, (b) property profit, (c) "adjusted total income" — non-savings/
-  // non-dividend income less the personal allowance, floored at 0 (= taxableNonSavings,
-  // since the personal allowance is applied against non-savings income first).
-  // UK and overseas property are each capped independently against the same
-  // adjustedTotalIncome figure — this mirrors HMRC's own worked examples, which
-  // apply the cap per property business rather than splitting it between them.
   const adjustedTotalIncome = taxableNonSavings;
 
   const totalFinanceCostsAvailable = propertyFinanceCosts + financeCostsBf;
@@ -140,17 +119,14 @@ function computeCore(input: TaxInput) {
   const foreignFinanceCostTaxReducer = foreignFinanceCostReliefCap * r.basicRate;
   const unusedForeignFinanceCostsCf = Math.max(0, totalForeignFinanceCostsAvailable - foreignFinanceCostReliefCap);
 
-  // Tier 2: savings income (interest) — apply remaining PA, then starting rate band, then PSA
   const paUsedAgainstSavings = Math.min(paRemaining, combinedInterestIncome);
   paRemaining -= paUsedAgainstSavings;
   const savingsAfterPA = Math.max(0, combinedInterestIncome - paUsedAgainstSavings);
 
-  // Starting rate band (0%) — only has room if non-savings income hasn't already used it up
   const startingRateRemaining = Math.max(0, r.startingRateForSavingsBand - taxableNonSavings);
   const startingRateUsed = Math.min(savingsAfterPA, startingRateRemaining);
   const afterStartingRate = savingsAfterPA - startingRateUsed;
 
-  // Personal Savings Allowance depends on the band reached by non-savings income
   let psa = r.personalSavingsAllowanceBasic;
   if (taxableNonSavings >= r.additionalRateThreshold) psa = r.personalSavingsAllowanceAdditional;
   else if (taxableNonSavings >= r.basicRateLimit) psa = r.personalSavingsAllowanceHigher;
@@ -158,7 +134,6 @@ function computeCore(input: TaxInput) {
   const psaUsed = Math.min(afterStartingRate, psa);
   const taxableSavings = afterStartingRate - psaUsed;
 
-  // Savings stacks on top of non-savings income for band purposes
   const savingsBase = taxableNonSavings;
   const savingsBasicRemaining = Math.max(0, r.basicRateLimit - savingsBase);
   const savingsHigherRemaining = Math.max(0, r.additionalRateThreshold - Math.max(savingsBase, r.basicRateLimit));
@@ -172,7 +147,6 @@ function computeCore(input: TaxInput) {
     savingsHigher * r.higherRate +
     savingsAdditional * r.additionalRate;
 
-  // Tier 3: dividends stack on top of non-savings + savings income
   const dividendsAfterPA = Math.max(0, combinedDividendIncome - paRemaining);
   const dividendAllowanceUsed = Math.min(r.dividendAllowance, dividendsAfterPA);
   const taxableDividends = dividendsAfterPA - dividendAllowanceUsed;
@@ -190,7 +164,6 @@ function computeCore(input: TaxInput) {
     divHigher * r.dividendHigherRate +
     divAdditional * r.dividendAdditionalRate;
 
-  // Class 4 NI on UK self-employment profit only
   const class4Basic = Math.max(0, Math.min(input.selfEmploymentIncome, r.class4UpperLimit) - r.class4LowerLimit);
   const class4Upper = Math.max(0, input.selfEmploymentIncome - r.class4UpperLimit);
   const class4NI = Math.max(0, class4Basic) * r.class4MainRate + class4Upper * r.class4UpperRate;
@@ -236,15 +209,6 @@ function computeCore(input: TaxInput) {
 export function calculateTax(input: TaxInput) {
   const actual = computeCore(input);
 
-  // Foreign Tax Credit Relief: capped at the LOWER of the foreign tax actually
-  // suffered and the UK tax attributable to the foreign income. That UK-tax
-  // figure is derived by comparing the actual computation against a baseline
-  // with all foreign income (and the foreign property pool) zeroed out — the
-  // difference is the marginal UK tax generated by adding the foreign income.
-  // This is a practical, source-blind approximation (it doesn't allocate relief
-  // between different foreign countries/rates individually) rather than a full
-  // per-source DTA calculation — reasonable for an estimate, but worth checking
-  // against the actual foreign tax certificates before filing.
   const baseline = computeCore({
     ...input,
     foreignEmploymentIncome: 0,
@@ -275,21 +239,16 @@ export function calculateTax(input: TaxInput) {
   };
 }
 
-// Computes the Self Assessment payment schedule: balancing payment + payments on account
-// towards the following tax year, following HMRC's actual rules.
 export function getPaymentSchedule(taxYear: string, totalLiability: number, taxPaidAtSource: number) {
   const balanceDue = totalLiability - taxPaidAtSource;
 
-  // Payments on account are required if the SA bill exceeds £1,000
-  // and less than 80% of the total liability was collected at source (e.g. PAYE)
   const proportionAtSource = totalLiability > 0 ? taxPaidAtSource / totalLiability : 1;
   const poaRequired = balanceDue > 1000 && proportionAtSource < 0.8;
   const poaAmount = poaRequired ? balanceDue / 2 : 0;
 
-  // Parse "2026/27" -> startYear 2026. Balancing payment & first POA due 31 Jan two years after start.
   const startYear = parseInt(taxYear.split("/")[0], 10);
-  const balancingPaymentDate = new Date(Date.UTC(startYear + 2, 0, 31)); // 31 January
-  const poa2Date = new Date(Date.UTC(startYear + 2, 6, 31)); // 31 July
+  const balancingPaymentDate = new Date(Date.UTC(startYear + 2, 0, 31));
+  const poa2Date = new Date(Date.UTC(startYear + 2, 6, 31));
 
   return {
     balanceDue,
@@ -373,12 +332,10 @@ async function deleteComputation(id: string) {
 export default async function PersonalTaxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mode?: string; client?: string; self_employment?: string; browseClient?: string; tax_year?: string }>;
+  searchParams: Promise<{ mode?: string; client?: string; self_employment?: string; tax_year?: string }>;
 }) {
-  const { mode: modeParam, client: selectedClient, self_employment: prefillSelfEmployment, browseClient: browseClientId, tax_year: selectedTaxYear } = await searchParams;
+  const { mode: modeParam, client: selectedClient, self_employment: prefillSelfEmployment, tax_year: selectedTaxYear } = await searchParams;
 
-  // Arriving with a pre-filled client (e.g. handed off from Partnership Tax) should
-  // land straight in the New form, without needing that other module to know about modes.
   const mode = modeParam || (selectedClient ? "new" : undefined);
   const taxYear = selectedTaxYear || "2026/27";
 
@@ -393,9 +350,6 @@ export default async function PersonalTaxPage({
       .order("client_name", { ascending: true }),
   ]);
 
-  // Look up the prior tax year's unused finance costs (UK and foreign) for this
-  // client, so the New form can default the brought-forward figures instead of
-  // relying on the preparer to remember and re-type them.
   let financeCostsBfDefault = 0;
   let foreignFinanceCostsBfDefault = 0;
   if (selectedClient) {
@@ -434,9 +388,19 @@ export default async function PersonalTaxPage({
     return { comp, result, balanceDue };
   };
 
-  const browseRows = browseClientId
-    ? (computations || []).filter((c) => c.client_id === browseClientId).map(withResult)
-    : [];
+  const allRows = (computations || []).map(withResult);
+  const openRows = allRows.filter((r) => r.comp.status !== "Approved");
+  const completedRows = allRows.filter((r) => r.comp.status === "Approved");
+
+  const statusBadge = (status: string | null | undefined) => {
+    const s = status || "Draft";
+    const style =
+      s === "Sent" ? "bg-yellow-100 text-yellow-700"
+      : s === "Queried" ? "bg-orange-100 text-orange-700"
+      : s === "Approved" ? "bg-green-100 text-green-700"
+      : "bg-slate-100 text-slate-600";
+    return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
+  };
 
   const renderRow = ({ comp, result, balanceDue }: ReturnType<typeof withResult>) => {
     const carryForwardNote = [
@@ -446,9 +410,12 @@ export default async function PersonalTaxPage({
     return (
     <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
       <a href={`/tax/${comp.id}`} className="flex-1">
-        <p className="font-semibold text-slate-900">
-          {comp.clients?.client_name || "No client"} — {comp.tax_year}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="font-semibold text-slate-900">
+            {comp.clients?.client_name || "No client"} — {comp.tax_year}
+          </p>
+          {statusBadge(comp.status)}
+        </div>
         <p className="text-sm text-slate-500">
           Total liability: £{result.totalLiability.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           {carryForwardNote && ` · ${carryForwardNote}`}
@@ -486,14 +453,20 @@ export default async function PersonalTaxPage({
           </div>
         )}
 
-        {/* Entry choice: Browse existing vs Start New */}
-        <div className="grid gap-4 md:grid-cols-2 mb-6">
-          <a href="/tax?mode=browse"
+        <div className="grid gap-4 md:grid-cols-3 mb-6">
+          <a href="/tax?mode=open"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+              mode === "open" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
             }`}>
-            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
-            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a client's personal tax computations</p>
+            <p className={`font-bold text-lg ${mode === "open" ? "text-white" : "text-slate-900"}`}>Open</p>
+            <p className={`text-sm mt-1 ${mode === "open" ? "text-slate-300" : "text-slate-500"}`}>{openRows.length} not yet completed</p>
+          </a>
+          <a href="/tax?mode=completed"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "completed" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "completed" ? "text-white" : "text-slate-900"}`}>Completed</p>
+            <p className={`text-sm mt-1 ${mode === "completed" ? "text-slate-300" : "text-slate-500"}`}>{completedRows.length} approved</p>
           </a>
           <a href="/tax?mode=new"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
@@ -504,37 +477,32 @@ export default async function PersonalTaxPage({
           </a>
         </div>
 
-        {/* BROWSE MODE */}
-        {mode === "browse" && (
+        {mode === "open" && (
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
-            <form method="get" className="mt-4 flex gap-2">
-              <input type="hidden" name="mode" value="browse" />
-              <select name="browseClient" defaultValue={browseClientId || ""}
-                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                <option value="">Select a client</option>
-                {(clients || []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.client_name}</option>
-                ))}
-              </select>
-              <button type="submit"
-                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                Show
-              </button>
-            </form>
-
-            {browseClientId && (
-              <div className="mt-6 space-y-3">
-                {browseRows.map(renderRow)}
-                {browseRows.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-8">No personal tax computations on file for this client yet.</p>
-                )}
+            <h2 className="text-lg font-bold text-slate-900">Open Computations</h2>
+            {openRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No open computations — everything's approved.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {openRows.map(renderRow)}
               </div>
             )}
           </div>
         )}
 
-        {/* NEW MODE — step 1: pick client & tax year, so we can look up any brought-forward finance costs */}
+        {mode === "completed" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Completed Computations</h2>
+            {completedRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">Nothing approved yet.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {completedRows.map(renderRow)}
+              </div>
+            )}
+          </div>
+        )}
+
         {mode === "new" && !selectedClient && (
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Select Client & Tax Year</h2>
@@ -567,7 +535,6 @@ export default async function PersonalTaxPage({
           </div>
         )}
 
-        {/* NEW MODE — step 2: full form */}
         {mode === "new" && selectedClient && (
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <div className="flex items-center justify-between">
@@ -640,7 +607,6 @@ export default async function PersonalTaxPage({
                 </div>
               </div>
 
-              {/* Property income section */}
               <div className="mt-6 rounded-xl border border-slate-200 p-4">
                 <h3 className="text-sm font-bold text-slate-900">Rental Property Income</h3>
                 <p className="text-xs text-slate-400 mt-0.5">
@@ -672,7 +638,6 @@ export default async function PersonalTaxPage({
                 </div>
               </div>
 
-              {/* Foreign income section */}
               <div className="mt-6 rounded-xl border border-slate-200 p-4">
                 <h3 className="text-sm font-bold text-slate-900">Foreign Income</h3>
                 <p className="text-xs text-slate-400 mt-0.5">

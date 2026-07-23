@@ -10,7 +10,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// 2026/27 Corporation Tax rates
 const CT_RATES = {
   smallProfitsRate: 0.19,
   mainRate: 0.25,
@@ -19,9 +18,6 @@ const CT_RATES = {
   marginalReliefFraction: 3 / 200,
 };
 
-// Applies brought-forward trading losses against current period profit.
-// Losses can only offset up to the available profit; anything unused (plus
-// any fresh loss made this period) carries forward to the next computation.
 export function applyLossRelief(taxableProfitBeforeLosses: number, lossesBroughtForward: number) {
   let lossesUsed = 0;
   let newLossThisPeriod = 0;
@@ -69,7 +65,6 @@ export function calculateCorporationTax(input: {
     band = "Main Rate";
     effectiveRate = CT_RATES.mainRate;
   } else {
-    // Marginal relief band. Assumes augmented profits = taxable profits (no exempt group dividends).
     const taxAtMainRate = profit * CT_RATES.mainRate;
     marginalRelief = (mainRateThreshold - profit) * CT_RATES.marginalReliefFraction;
     corporationTax = taxAtMainRate - marginalRelief;
@@ -146,7 +141,6 @@ export default async function CorporationTaxPage({
       .order("job_name", { ascending: true }),
   ]);
 
-  // Compute results for each row, pulling capital allowances live from the fixed asset register
   const rows = await Promise.all(
     (computations || []).map(async (comp) => {
       const { data: assets } = await supabase
@@ -183,7 +177,9 @@ export default async function CorporationTaxPage({
     })
   );
 
-  // Suggest brought-forward losses from the selected client's most recent prior computation
+  const openRows = rows.filter((r) => r.comp.status !== "Approved");
+  const completedRows = rows.filter((r) => r.comp.status === "Approved");
+
   let suggestedLossesBfwd = 0;
   let priorComputation: any = null;
   if (selectedClientId) {
@@ -198,8 +194,6 @@ export default async function CorporationTaxPage({
 
   const selectedClient = (clients || []).find((c) => c.id === selectedClientId);
 
-  // If a job is selected, look up its most recent linked trial balance and
-  // suggest Turnover / Accounting Profit / Depreciation from the accounts
   let linkedTrialBalance: any = null;
   let suggestedTurnover = 0;
   let suggestedAccountingProfit = 0;
@@ -231,13 +225,26 @@ export default async function CorporationTaxPage({
 
   const browseRows = browseClientId ? rows.filter((r) => r.comp.client_id === browseClientId) : [];
 
+  const statusBadge = (status: string | null | undefined) => {
+    const s = status || "Draft";
+    const style =
+      s === "Sent" ? "bg-yellow-100 text-yellow-700"
+      : s === "Queried" ? "bg-orange-100 text-orange-700"
+      : s === "Approved" ? "bg-green-100 text-green-700"
+      : "bg-slate-100 text-slate-600";
+    return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
+  };
+
   const renderRow = ({ comp, ca, loss, ct }: (typeof rows)[number]) => (
     <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
       <a href={`/corporation-tax/${comp.id}`} className="flex-1">
-        <p className="font-semibold text-slate-900">
-          {(comp.clients as any)?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
-          {(comp.jobs as any)?.job_name && ` · ${(comp.jobs as any)?.job_name}`}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="font-semibold text-slate-900">
+            {(comp.clients as any)?.client_name || "No client"} — {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+            {(comp.jobs as any)?.job_name && ` · ${(comp.jobs as any)?.job_name}`}
+          </p>
+          {statusBadge(comp.status)}
+        </div>
         <p className="text-sm text-slate-500">
           Taxable profit: £{loss.taxableProfitAfterLosses.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Capital allowances: £{ca.totalCapitalAllowances.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {ct.band}
           {loss.lossesCarriedForward > 0 && ` · £${loss.lossesCarriedForward.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} losses c/fwd`}
@@ -273,14 +280,21 @@ export default async function CorporationTaxPage({
           </div>
         )}
 
-        {/* Entry choice: Browse existing vs Start New */}
-        <div className="grid gap-4 md:grid-cols-2 mb-6">
-          <a href="/corporation-tax?mode=browse"
+        {/* Entry choice: Open / Completed / New */}
+        <div className="grid gap-4 md:grid-cols-3 mb-6">
+          <a href="/corporation-tax?mode=open"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+              mode === "open" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
             }`}>
-            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
-            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find a client's CT computations</p>
+            <p className={`font-bold text-lg ${mode === "open" ? "text-white" : "text-slate-900"}`}>Open</p>
+            <p className={`text-sm mt-1 ${mode === "open" ? "text-slate-300" : "text-slate-500"}`}>{openRows.length} not yet completed</p>
+          </a>
+          <a href="/corporation-tax?mode=completed"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "completed" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "completed" ? "text-white" : "text-slate-900"}`}>Completed</p>
+            <p className={`text-sm mt-1 ${mode === "completed" ? "text-slate-300" : "text-slate-500"}`}>{completedRows.length} approved</p>
           </a>
           <a href="/corporation-tax?mode=new"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
@@ -291,31 +305,29 @@ export default async function CorporationTaxPage({
           </a>
         </div>
 
-        {/* BROWSE MODE */}
-        {mode === "browse" && (
+        {/* OPEN MODE */}
+        {mode === "open" && (
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
-            <form method="get" className="mt-4 flex gap-2">
-              <input type="hidden" name="mode" value="browse" />
-              <select name="browseClient" defaultValue={browseClientId || ""}
-                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                <option value="">Select a client</option>
-                {(clients || []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.client_name}</option>
-                ))}
-              </select>
-              <button type="submit"
-                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                Show
-              </button>
-            </form>
+            <h2 className="text-lg font-bold text-slate-900">Open Computations</h2>
+            {openRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No open computations — everything's approved.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {openRows.map(renderRow)}
+              </div>
+            )}
+          </div>
+        )}
 
-            {browseClientId && (
-              <div className="mt-6 space-y-3">
-                {browseRows.map(renderRow)}
-                {browseRows.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-8">No CT computations on file for this client yet.</p>
-                )}
+        {/* COMPLETED MODE */}
+        {mode === "completed" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Completed Computations</h2>
+            {completedRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">Nothing approved yet.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {completedRows.map(renderRow)}
               </div>
             )}
           </div>
@@ -329,7 +341,6 @@ export default async function CorporationTaxPage({
               Capital allowances are calculated automatically from assets acquired in this period in the Fixed Asset Register.
             </p>
 
-            {/* Step 1: pick a client so we can look up their prior losses carried forward */}
             <form method="get" className="mt-4 flex gap-2 items-end">
               <input type="hidden" name="mode" value="new" />
               <div className="flex-1 max-w-sm">

@@ -8,15 +8,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// 2026/27 figures. Class 1A NIC was consistent across sources at time of writing.
-// The fuel multiplier and official rate of interest genuinely varied between sources —
-// treat these as sensible defaults and confirm against GOV.UK before relying on them.
 export const P11D_RATES = {
   class1ANicRate: 0.15,
   defaultFuelMultiplier: 29200,
   defaultOfficialRateOfInterest: 3.75,
-  loanDeMinimis: 10000, // no benefit arises if total loan balance never exceeds this
-  carContributionCap: 5000, // max capital contribution that reduces the car's list price
+  loanDeMinimis: 10000,
+  carContributionCap: 5000,
 };
 
 export function calculateP11D(input: {
@@ -46,7 +43,6 @@ export function calculateP11D(input: {
 
   const medicalBenefit = Math.max(0, input.medicalPremium - input.medicalEmployeeContribution);
 
-  // No benefit at all if the loan never exceeded the de minimis threshold
   const loanBenefit = input.loanBalance > P11D_RATES.loanDeMinimis
     ? Math.max(0, input.loanBalance * (input.officialRateOfInterest / 100) - input.loanInterestPaid)
     : 0;
@@ -101,9 +97,9 @@ async function deleteComputation(id: string) {
 export default async function P11DPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mode?: string; browseClient?: string }>;
+  searchParams: Promise<{ mode?: string }>;
 }) {
-  const { mode, browseClient: browseClientId } = await searchParams;
+  const { mode } = await searchParams;
 
   const [{ data: computations, error }, { data: clients }] = await Promise.all([
     supabase
@@ -131,14 +127,28 @@ export default async function P11DPage({
     return { comp, result };
   });
 
-  const browseRows = browseClientId ? rows.filter((r) => r.comp.client_id === browseClientId) : [];
+  const openRows = rows.filter((r) => r.comp.status !== "Approved");
+  const completedRows = rows.filter((r) => r.comp.status === "Approved");
+
+  const statusBadge = (status: string | null | undefined) => {
+    const s = status || "Draft";
+    const style =
+      s === "Sent" ? "bg-yellow-100 text-yellow-700"
+      : s === "Queried" ? "bg-orange-100 text-orange-700"
+      : s === "Approved" ? "bg-green-100 text-green-700"
+      : "bg-slate-100 text-slate-600";
+    return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
+  };
 
   const renderRow = ({ comp, result }: (typeof rows)[number]) => (
     <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
       <a href={`/p11d/${comp.id}`} className="flex-1">
-        <p className="font-semibold text-slate-900">
-          {comp.employee_name} — {(comp.clients as any)?.client_name || "No employer"}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="font-semibold text-slate-900">
+            {comp.employee_name} — {(comp.clients as any)?.client_name || "No employer"}
+          </p>
+          {statusBadge(comp.status)}
+        </div>
         <p className="text-sm text-slate-500">
           {comp.tax_year} · Total benefits: £{result.totalBenefits.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Class 1A NIC: £{result.class1ANIC.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </p>
@@ -167,14 +177,20 @@ export default async function P11DPage({
           </div>
         )}
 
-        {/* Entry choice: Browse existing vs Start New */}
-        <div className="grid gap-4 md:grid-cols-2 mb-6">
-          <a href="/p11d?mode=browse"
+        <div className="grid gap-4 md:grid-cols-3 mb-6">
+          <a href="/p11d?mode=open"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+              mode === "open" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
             }`}>
-            <p className={`font-bold text-lg ${mode === "browse" ? "text-white" : "text-slate-900"}`}>Browse Existing</p>
-            <p className={`text-sm mt-1 ${mode === "browse" ? "text-slate-300" : "text-slate-500"}`}>Find an employer's P11D computations</p>
+            <p className={`font-bold text-lg ${mode === "open" ? "text-white" : "text-slate-900"}`}>Open</p>
+            <p className={`text-sm mt-1 ${mode === "open" ? "text-slate-300" : "text-slate-500"}`}>{openRows.length} not yet completed</p>
+          </a>
+          <a href="/p11d?mode=completed"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "completed" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "completed" ? "text-white" : "text-slate-900"}`}>Completed</p>
+            <p className={`text-sm mt-1 ${mode === "completed" ? "text-slate-300" : "text-slate-500"}`}>{completedRows.length} approved</p>
           </a>
           <a href="/p11d?mode=new"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
@@ -185,37 +201,32 @@ export default async function P11DPage({
           </a>
         </div>
 
-        {/* BROWSE MODE */}
-        {mode === "browse" && (
+        {mode === "open" && (
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Find Employer</h2>
-            <form method="get" className="mt-4 flex gap-2">
-              <input type="hidden" name="mode" value="browse" />
-              <select name="browseClient" defaultValue={browseClientId || ""}
-                className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                <option value="">Select an employer</option>
-                {(clients || []).map((c) => (
-                  <option key={c.id} value={c.id}>{c.client_name}</option>
-                ))}
-              </select>
-              <button type="submit"
-                className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-                Show
-              </button>
-            </form>
-
-            {browseClientId && (
-              <div className="mt-6 space-y-3">
-                {browseRows.map(renderRow)}
-                {browseRows.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-8">No P11D computations on file for this employer yet.</p>
-                )}
+            <h2 className="text-lg font-bold text-slate-900">Open Computations</h2>
+            {openRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No open computations — everything's approved.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {openRows.map(renderRow)}
               </div>
             )}
           </div>
         )}
 
-        {/* NEW MODE */}
+        {mode === "completed" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Completed Computations</h2>
+            {completedRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">Nothing approved yet.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {completedRows.map(renderRow)}
+              </div>
+            )}
+          </div>
+        )}
+
         {mode === "new" && (
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">New P11D Computation</h2>
@@ -259,7 +270,6 @@ export default async function P11DPage({
                 </select>
               </div>
 
-              {/* Company Car */}
               <div className="border-t border-slate-100 pt-4">
                 <h3 className="text-sm font-bold text-slate-900 mb-1">Company Car</h3>
                 <p className="text-xs text-slate-400 mb-3">Look up the correct benefit % for the car's CO2 emissions/fuel type from HMRC's published table.</p>
@@ -299,7 +309,6 @@ export default async function P11DPage({
                 </div>
               </div>
 
-              {/* Medical */}
               <div className="border-t border-slate-100 pt-4">
                 <h3 className="text-sm font-bold text-slate-900 mb-3">Private Medical Insurance</h3>
                 <div className="grid gap-4 md:grid-cols-2">
@@ -316,7 +325,6 @@ export default async function P11DPage({
                 </div>
               </div>
 
-              {/* Beneficial Loan */}
               <div className="border-t border-slate-100 pt-4">
                 <h3 className="text-sm font-bold text-slate-900 mb-1">Beneficial Loan</h3>
                 <p className="text-xs text-slate-400 mb-3">No benefit arises if the balance never exceeds £10,000 in the year — often relevant for an overdrawn director's loan account.</p>
@@ -340,7 +348,6 @@ export default async function P11DPage({
                 </div>
               </div>
 
-              {/* Other */}
               <div className="border-t border-slate-100 pt-4">
                 <h3 className="text-sm font-bold text-slate-900 mb-3">Other Benefits</h3>
                 <div className="grid gap-4 md:grid-cols-2">
