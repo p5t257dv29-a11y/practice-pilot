@@ -30,8 +30,6 @@ async function updateNote(trialBalanceId: string, field: string, formData: FormD
   revalidatePath(`/accounts-production/${trialBalanceId}/frs102`);
 }
 
-// Computes the full Balance Sheet position from a set of trial balance lines
-// and, if available, the Fixed Asset Register (for a more accurate NBV).
 async function computeBalanceSheet(clientId: string, periodEnd: string, lines: any[], customPLGroups: Record<string, PLGroup> = {}) {
   const totals = new Map<string, number>();
   lines.forEach((l) => {
@@ -41,10 +39,6 @@ async function computeBalanceSheet(clientId: string, periodEnd: string, lines: a
   });
   const get = (cat: string) => totals.get(cat) || 0;
 
-  // TB-side fallback for a fixed asset class's NBV, using the granular
-  // movement categories (all already sign-adjusted via CREDIT_NORMAL above,
-  // so they can just be summed directly): Cost B/F + Additions - Disposals
-  // minus Depreciation B/F + Charge - Disposals-of-depreciation.
   function classNBVFromTB(assetClass: string) {
     const m = FIXED_ASSET_MOVEMENT[assetClass];
     const cost = get(m.costBf) + get(m.additions) - get(m.disposalsCost);
@@ -57,10 +51,6 @@ async function computeBalanceSheet(clientId: string, periodEnd: string, lines: a
   const tbIntangibleNBV = get("Intangible Fixed Assets") +
     [...INTANGIBLE_CLASS_SET].reduce((s, c) => s + classNBVFromTB(c), 0);
 
-  // Prefer the Fixed Asset Register when it has entries for this client —
-  // keyed by client_id rather than job_id, since assets aren't always linked
-  // to a specific job. Falls back to the trial balance figures above if the
-  // client has no register entries at all.
   let fixedAssetsNBV = tbTangibleNBV;
   let intangibleAssetsNBV = tbIntangibleNBV;
   const { data: clientAssets } = await supabase.from("fixed_assets").select("*").eq("client_id", clientId);
@@ -120,6 +110,13 @@ export default async function FRS102AccountsPage({
 
   if (error || !tb) notFound();
 
+  const { data: practiceSettings } = await supabase
+    .from("practice_settings")
+    .select("firm_name")
+    .limit(1)
+    .maybeSingle();
+  const firmName = practiceSettings?.firm_name || "Your Firm Name";
+
   const [{ data: lines }, { data: officers }] = await Promise.all([
     supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", id),
     supabase.from("company_officers").select("*").eq("client_id", tb.client_id).eq("is_active", true).limit(1),
@@ -133,8 +130,6 @@ export default async function FRS102AccountsPage({
 
   const current = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups);
 
-  // Look up the most recent prior trial balance for this client (a different period,
-  // ending before this one starts) to show as the comparative year, as real filed accounts do.
   const { data: priorTb } = await supabase
     .from("trial_balances")
     .select("*")
@@ -152,10 +147,6 @@ export default async function FRS102AccountsPage({
 
   const isBalanced = Math.abs(current.netAssets - current.shareholdersFunds) < 1;
 
-  // Detailed Profit and Loss breakdown — every category with data, grouped
-  // by its P&L group. Built dynamically from whatever categories are actually
-  // in use for this client, so a custom category shows up automatically
-  // without any code change here.
   const groupOf = (cat: string) => PL_CATEGORY_GROUPS[cat] || customPL.groups[cat];
   const detailedPLGroups: { key: PLGroup; label: string; rows: { name: string; value: number; priorValue: number | null }[] }[] =
     (["turnover", "cost_of_sales", "admin_expenses", "interest_payable", "interest_receivable"] as PLGroup[]).map((key) => {
@@ -171,8 +162,6 @@ export default async function FRS102AccountsPage({
       return { key, label, rows };
     }).filter((g) => g.rows.length > 0);
 
-  // Fixed asset note — cost/depreciation movement by category, for every
-  // asset belonging to this client (tangible and intangible together).
   const { data: registerAssetsRaw } = await supabase.from("fixed_assets").select("*").eq("client_id", tb.client_id);
   const registerAssets = registerAssetsRaw || [];
   const categoryRows = (() => {
@@ -214,8 +203,6 @@ export default async function FRS102AccountsPage({
   const currentYearLabel = new Date(tb.period_end).getFullYear();
   const priorYearLabel = priorTb ? new Date(priorTb.period_end).getFullYear() : null;
 
-  // Note numbering: General Info, Accounting Policies, [Fixed Assets if any], Share Capital, Employees,
-  // Directors' Advances, Related Party Transactions, Post Balance Sheet Events, Ultimate Controlling Party
   let noteNum = 1;
   const nGeneral = noteNum++;
   const nPolicies = noteNum++;
@@ -239,7 +226,6 @@ export default async function FRS102AccountsPage({
 
   const ultimateControllingDefault = `In the opinion of the director, there is no ultimate controlling party.`;
 
-  // Two-column balance sheet row: current year + prior year (if available)
   const BSRow = ({ label, value, priorValue, bold, caps, note }: { label: string; value: number; priorValue?: number | null; bold?: boolean; caps?: boolean; note?: string }) => (
     <tr className={bold ? "font-bold" : ""}>
       <td className={`py-1.5 ${caps ? "uppercase" : ""}`}>{label}</td>
@@ -271,7 +257,6 @@ export default async function FRS102AccountsPage({
           </div>
         )}
 
-        {/* Cover Page */}
         <div className="bg-white shadow-sm border border-slate-200 p-12 rounded-2xl">
           <p className="text-xs text-slate-500 text-right">Registered number: {client?.company_number || "________"}</p>
           <div className="text-center mt-20">
@@ -280,11 +265,10 @@ export default async function FRS102AccountsPage({
             <p className="text-base text-slate-600">For The Year Ended {periodEndFormatted}</p>
           </div>
           <div className="mt-24 text-center text-sm text-slate-500">
-            <p>E&amp;P Accountancy Services Limited</p>
+            <p>{firmName}</p>
           </div>
         </div>
 
-        {/* Contents */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Contents</h2>
           <table className="w-full text-sm">
@@ -296,7 +280,6 @@ export default async function FRS102AccountsPage({
           </table>
         </div>
 
-        {/* Company Information */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Company Information</h2>
           <table className="w-full text-sm">
@@ -304,7 +287,7 @@ export default async function FRS102AccountsPage({
               <tr><td className="py-2 font-bold w-1/3">Director</td><td className="py-2">{directorName}</td></tr>
               <tr><td className="py-2 font-bold">Company Number</td><td className="py-2">{client?.company_number || "Not on file"}</td></tr>
               <tr><td className="py-2 font-bold">Registered Office</td><td className="py-2">{client?.address || "Not on file"}</td></tr>
-              <tr><td className="py-2 font-bold">Accountants</td><td className="py-2">E&amp;P Accountancy Services Limited</td></tr>
+              <tr><td className="py-2 font-bold">Accountants</td><td className="py-2">{firmName}</td></tr>
               {client?.bank_name && (
                 <tr><td className="py-2 font-bold">Bankers</td><td className="py-2">{client.bank_name}</td></tr>
               )}
@@ -312,7 +295,6 @@ export default async function FRS102AccountsPage({
           </table>
         </div>
 
-        {/* Balance Sheet */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <p className="text-xs text-slate-500">Registered number: {client?.company_number || "________"}</p>
           <h2 className="text-lg font-bold text-slate-900 text-center mt-2">Balance Sheet</h2>
@@ -380,7 +362,6 @@ export default async function FRS102AccountsPage({
           </div>
         </div>
 
-        {/* Profit & Loss (for members / HMRC — small companies may also take filing exemption) */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <h2 className="text-lg font-bold text-slate-900 text-center">Profit and Loss Account</h2>
           <p className="text-sm text-slate-500 text-center mb-1">For the Year Ended {periodEndFormatted}</p>
@@ -397,8 +378,6 @@ export default async function FRS102AccountsPage({
           </table>
         </div>
 
-        {/* Detailed Profit & Loss — every category with data, grouped, since
-            this genuinely varies client to client based on what's mapped. */}
         {detailedPLGroups.length > 0 && (
           <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
             <h2 className="text-lg font-bold text-slate-900 text-center">Detailed Profit and Loss Account</h2>
@@ -420,7 +399,6 @@ export default async function FRS102AccountsPage({
           </div>
         )}
 
-        {/* Notes */}
         <div className="bg-white shadow-sm border border-slate-200 p-8 rounded-2xl">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Notes to the Financial Statements</h2>
 
