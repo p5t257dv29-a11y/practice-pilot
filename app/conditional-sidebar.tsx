@@ -45,6 +45,7 @@ const navSections = [
   {
     label: "Settings",
     items: [
+      { href: "/practice-settings", label: "Practice Details", icon: "🏛️" },
       { href: "/services", label: "Services", icon: "🏷️" },
       { href: "/checklists", label: "Checklists", icon: "✅" },
       { href: "/staff", label: "Staff", icon: "🧑‍💼" },
