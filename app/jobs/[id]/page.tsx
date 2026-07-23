@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import WriteOffWipForm from "../../write-off-wip-form";
+import JobNotesForm from "../../job-notes-form";
 
 export const dynamic = "force-dynamic";
 
@@ -60,6 +61,14 @@ async function attachChecklist(jobId: string, formData: FormData) {
 async function toggleChecklistItem(jobId: string, itemId: string, currentStatus: boolean) {
   "use server";
   await supabase.from("job_checklist_items").update({ is_received: !currentStatus }).eq("id", itemId);
+  revalidatePath(`/jobs/${jobId}`);
+}
+
+async function addJobNote(jobId: string, formData: FormData) {
+  "use server";
+  const noteText = String(formData.get("note_text") || "").trim();
+  if (!noteText) return;
+  await supabase.from("job_notes").insert({ job_id: jobId, note_text: noteText });
   revalidatePath(`/jobs/${jobId}`);
 }
 
@@ -136,6 +145,7 @@ export default async function JobDetailPage({
     { data: trialBalance },
     { data: invoices },
     { data: writeoffs },
+    { data: jobNotes },
   ] = await Promise.all([
     supabase.from("jobs").select("*, clients(client_name)").eq("id", id).single(),
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
@@ -146,15 +156,18 @@ export default async function JobDetailPage({
     supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("invoices").select("subtotal, status").eq("job_id", id),
     supabase.from("wip_writeoffs").select("*").eq("job_id", id).order("created_at", { ascending: false }),
+    supabase.from("job_notes").select("*").eq("job_id", id).order("created_at", { ascending: false }),
   ]);
 
   if (error || !job) notFound();
 
   const updateWithId = updateJobRecord.bind(null, id);
   const attachChecklistWithId = attachChecklist.bind(null, id);
+  const addJobNoteWithId = addJobNote.bind(null, id);
   const safeChecklistItems = checklistItems || [];
   const safeTimeEntries = timeEntries || [];
   const safeWriteoffs = writeoffs || [];
+  const safeJobNotes = jobNotes || [];
   const receivedCount = safeChecklistItems.filter((i) => i.is_received).length;
 
   const totalHours = safeTimeEntries.reduce((sum, e) => sum + Number(e.hours), 0);
@@ -525,6 +538,26 @@ export default async function JobDetailPage({
               </div>
             )}
           </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Notes</h2>
+            <div className="mt-4">
+              <JobNotesForm addAction={addJobNoteWithId} />
+            </div>
+            {safeJobNotes.length > 0 && (
+              <div className="mt-4 space-y-2">
+                {safeJobNotes.map((n: any) => (
+                  <div key={n.id} className="rounded-lg border border-slate-100 p-2.5">
+                    <p className="text-sm text-slate-700 whitespace-pre-wrap">{n.note_text}</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {new Date(n.created_at).toLocaleDateString("en-GB")} at {new Date(n.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
         </div>
 
       </div>

@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { calculateNBV } from "../../../fixed-assets/page";
-import { calculateProfitAndLoss, CREDIT_NORMAL } from "../../page";
+import { calculateProfitAndLoss, CREDIT_NORMAL, PL_CATEGORY_GROUPS, getCustomPLCategories, type PLGroup } from "../../page";
 
 export const dynamic = "force-dynamic";
 
@@ -30,19 +30,31 @@ export default async function FormattedAccountsPage({
     .select("*")
     .eq("trial_balance_id", id);
 
-  // Sum each category to its natural positive balance
+  const customPL = await getCustomPLCategories(supabase);
+  const groupOf = (cat: string) => PL_CATEGORY_GROUPS[cat] || customPL.groups[cat];
+
   const totals = new Map<string, number>();
+  const linesByCategory = new Map<string, any[]>();
   (lines || []).forEach((l) => {
     if (!l.category) return;
     const net = CREDIT_NORMAL.has(l.category)
       ? Number(l.credit) - Number(l.debit)
       : Number(l.debit) - Number(l.credit);
     totals.set(l.category, (totals.get(l.category) || 0) + net);
+    const arr = linesByCategory.get(l.category) || [];
+    arr.push(l);
+    linesByCategory.set(l.category, arr);
   });
   const get = (cat: string) => totals.get(cat) || 0;
 
-  // Fixed Assets: prefer the Fixed Asset Register (via linked job) over the TB category,
-  // since the register holds the detailed, depreciation-correct figure.
+  const adminExpenseLines: { category: string; value: number }[] = [];
+  totals.forEach((value, cat) => {
+    if (groupOf(cat) === "admin_expenses") {
+      adminExpenseLines.push({ category: cat, value });
+    }
+  });
+  adminExpenseLines.sort((a, b) => b.value - a.value);
+
   let fixedAssetsNBV = get("Tangible Fixed Assets");
   let fixedAssetsFromRegister = false;
   if (tb.job_id) {
@@ -58,7 +70,6 @@ export default async function FormattedAccountsPage({
     }
   }
 
-  // Corporation Tax: pull from the CT module if a computation exists for the same job
   let corporationTax = 0;
   let ctComputationId: string | null = null;
   if (tb.job_id) {
@@ -71,16 +82,13 @@ export default async function FormattedAccountsPage({
       .maybeSingle();
     if (ct) {
       ctComputationId = ct.id;
-      // Re-derive CT due would require importing the full calc chain; instead
-      // link through and let that module be the source of truth for the figure.
     }
   }
 
-  // --- Profit & Loss (shared calculation, also used by Corporation Tax auto-fill) ---
-  const pl = calculateProfitAndLoss(lines || []);
-  const { turnover, costOfSales, grossProfit, adminExpenses, operatingProfit, interestReceivable, interestPayable, profitBeforeTax } = pl;
+  const pl = calculateProfitAndLoss(lines || [], customPL.groups);
+  const { turnover, costOfSales, grossProfit, adminExpenses, operatingProfit, interestReceivable, interestPayable, profitBeforeTax, depreciation } = pl;
+  const profitBeforeDepreciationAndTax = profitBeforeTax + depreciation;
 
-  // --- Balance Sheet ---
   const stock = get("Stock");
   const debtors = get("Trade Debtors");
   const prepayments = get("Prepayments and Accrued Income");
@@ -90,10 +98,12 @@ export default async function FormattedAccountsPage({
   const dla = get("Directors' Loan Account");
   const dlaIsAsset = dla > 0;
 
+  const creditor1yrCategories = [
+    "Trade Creditors", "Accruals and Deferred Income", "VAT Liability",
+    "PAYE/NI Liability", "Corporation Tax Liability", "Bank Loans - Due Within One Year",
+  ];
   const creditors1yr =
-    get("Trade Creditors") + get("Accruals and Deferred Income") + get("VAT Liability") +
-    get("PAYE/NI Liability") + get("Corporation Tax Liability") + get("Bank Loans - Due Within One Year") +
-    (dlaIsAsset ? 0 : -dla);
+    creditor1yrCategories.reduce((s, c) => s + get(c), 0) + (dlaIsAsset ? 0 : -dla);
 
   const netCurrentAssets = currentAssets + (dlaIsAsset ? dla : 0) - creditors1yr;
   const totalAssetsLessCurrentLiabilities = fixedAssetsNBV + netCurrentAssets;
@@ -103,7 +113,7 @@ export default async function FormattedAccountsPage({
 
   const shareCapital = get("Called Up Share Capital");
   const plReserveBfwd = get("Profit and Loss Reserve");
-  const plReserveCfwd = plReserveBfwd + profitBeforeTax; // pre-tax shown; CT reduces this if applicable
+  const plReserveCfwd = plReserveBfwd + profitBeforeTax;
   const capitalAndReserves = shareCapital + plReserveCfwd;
 
   const isBalanced = Math.abs(netAssets - capitalAndReserves) < 1;
@@ -117,6 +127,52 @@ export default async function FormattedAccountsPage({
       <span>{fmtSigned(value)}</span>
     </div>
   );
+
+  // Deepest level: the actual trial balance lines under one category —
+  // each links straight into the trial balance page's inline edit for that line.
+  const LineDetail = ({ category }: { category: string }) => {
+    const catLines = linesByCategory.get(category) || [];
+    if (catLines.length === 0) return null;
+    return (
+      <div className="pl-6 pr-1 pb-2 space-y-1 border-l-2 border-slate-100 ml-1.5 mt-1">
+        {catLines.map((l) => {
+          const lineNet = CREDIT_NORMAL.has(category)
+            ? Number(l.credit) - Number(l.debit)
+            : Number(l.debit) - Number(l.credit);
+          return (
+            <div key={l.id} className="flex justify-between text-xs">
+              <a href={`/accounts-production/${id}?line_edit=${l.id}`} className="text-slate-500 hover:text-blue-600 hover:underline">
+                {l.nominal_code && <span className="font-mono mr-1">{l.nominal_code}</span>}
+                {l.description}
+              </a>
+              <span className="text-slate-600">{fmtSigned(lineNet)}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // A category row: expands to show its underlying trial balance lines if there's
+  // more than one, otherwise renders as a plain non-expandable row.
+const CategoryRow = ({ label, category, value, indent }: { label: string; category: string; value: number; indent?: boolean }) => {
+    const catLines = linesByCategory.get(category) || [];
+    if (catLines.length === 0) {
+      return <Row label={label} value={value} indent={indent} />;
+    }
+  return (
+      <details className="group">
+        <summary className={`flex justify-between py-1.5 text-sm cursor-pointer list-none ${indent ? "pl-4" : ""}`}>
+          <span className="text-slate-600 flex items-center gap-1.5">
+            <span className="text-slate-400 text-xs group-open:rotate-90 transition-transform">▶</span>
+            {label}
+          </span>
+          <span>{fmtSigned(value)}</span>
+        </summary>
+        <LineDetail category={category} />
+      </details>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -159,18 +215,40 @@ export default async function FormattedAccountsPage({
         {/* Profit & Loss */}
         <div className="rounded-2xl bg-white shadow-sm border border-slate-100 p-6">
           <h2 className="text-lg font-bold text-slate-900 mb-4">Profit and Loss Account</h2>
-          <Row label="Turnover" value={turnover} />
-          <Row label="Cost of Sales" value={-costOfSales} />
+          <CategoryRow label="Turnover" category="Turnover" value={turnover} />
+          <CategoryRow label="Cost of Sales" category="Cost of Sales" value={-costOfSales} />
           <Row label="Gross Profit" value={grossProfit} bold />
-          <Row label="Administrative Expenses" value={-adminExpenses} />
+
+          {adminExpenseLines.length > 0 ? (
+            <details className="group">
+              <summary className="flex justify-between py-1.5 text-sm cursor-pointer list-none">
+                <span className="text-slate-600 flex items-center gap-1.5">
+                  <span className="text-slate-400 text-xs group-open:rotate-90 transition-transform">▶</span>
+                  Administrative Expenses
+                </span>
+                <span>{fmtSigned(-adminExpenses)}</span>
+              </summary>
+              <div className="pl-6 pr-1 pb-2 space-y-1 border-l-2 border-slate-100 ml-1.5 mt-1">
+                {adminExpenseLines.map((l) => (
+                  <CategoryRow key={l.category} label={l.category} category={l.category} value={-l.value} />
+                ))}
+              </div>
+            </details>
+          ) : (
+            <Row label="Administrative Expenses" value={-adminExpenses} />
+          )}
+
           <Row label="Operating Profit" value={operatingProfit} bold />
           {(interestReceivable !== 0 || interestPayable !== 0) && (
             <>
-              <Row label="Interest Receivable" value={interestReceivable} />
-              <Row label="Interest Payable" value={-interestPayable} />
+              <CategoryRow label="Interest Receivable" category="Interest Receivable" value={interestReceivable} />
+              <CategoryRow label="Interest Payable" category="Bank Charges and Interest Payable" value={-interestPayable} />
             </>
           )}
           <Row label="Profit Before Tax" value={profitBeforeTax} bold />
+          {depreciation !== 0 && (
+            <Row label="Profit Before Depreciation and Tax" value={profitBeforeDepreciationAndTax} />
+          )}
           <p className="text-xs text-slate-400 mt-2">
             {ctComputationId
               ? "Corporation Tax is calculated in the linked Corporation Tax computation — see link above for the figure to deduct."
@@ -186,15 +264,31 @@ export default async function FormattedAccountsPage({
           <Row label={fixedAssetsFromRegister ? "Tangible Fixed Assets (per Fixed Asset Register)" : "Tangible Fixed Assets"} value={fixedAssetsNBV} />
 
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mt-4 mb-1">Current Assets</p>
-          <Row label="Stock" value={stock} indent />
-          <Row label="Trade Debtors" value={debtors} indent />
-          <Row label="Prepayments and Accrued Income" value={prepayments} indent />
-          <Row label="Cash at Bank and in Hand" value={cash} indent />
-          {dlaIsAsset && dla !== 0 && <Row label="Directors' Loan Account" value={dla} indent />}
+          <CategoryRow label="Stock" category="Stock" value={stock} indent />
+          <CategoryRow label="Trade Debtors" category="Trade Debtors" value={debtors} indent />
+          <CategoryRow label="Prepayments and Accrued Income" category="Prepayments and Accrued Income" value={prepayments} indent />
+          <CategoryRow label="Cash at Bank and in Hand" category="Cash at Bank and in Hand" value={cash} indent />
+          {dlaIsAsset && dla !== 0 && <CategoryRow label="Directors' Loan Account" category="Directors' Loan Account" value={dla} indent />}
           <Row label="Total Current Assets" value={currentAssets + (dlaIsAsset ? dla : 0)} />
 
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mt-4 mb-1">Creditors: Amounts Falling Due Within One Year</p>
-          <Row label="Creditors due within one year" value={-creditors1yr} />
+          <details className="group">
+            <summary className="flex justify-between py-1.5 text-sm cursor-pointer list-none">
+              <span className="text-slate-600 flex items-center gap-1.5">
+                <span className="text-slate-400 text-xs group-open:rotate-90 transition-transform">▶</span>
+                Creditors due within one year
+              </span>
+              <span>{fmtSigned(-creditors1yr)}</span>
+            </summary>
+            <div className="pl-6 pr-1 pb-2 space-y-1 border-l-2 border-slate-100 ml-1.5 mt-1">
+              {creditor1yrCategories.filter((c) => get(c) !== 0).map((c) => (
+                <CategoryRow key={c} label={c} category={c} value={-get(c)} />
+              ))}
+              {!dlaIsAsset && dla !== 0 && (
+                <CategoryRow label="Directors' Loan Account" category="Directors' Loan Account" value={dla} />
+              )}
+            </div>
+          </details>
 
           <Row label="Net Current Assets" value={netCurrentAssets} bold />
           <Row label="Total Assets Less Current Liabilities" value={totalAssetsLessCurrentLiabilities} bold />
@@ -202,14 +296,14 @@ export default async function FormattedAccountsPage({
           {creditorsAfter1yr !== 0 && (
             <>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mt-4 mb-1">Creditors: Amounts Falling Due After More Than One Year</p>
-              <Row label="Bank Loans" value={-creditorsAfter1yr} />
+              <CategoryRow label="Bank Loans" category="Bank Loans - Due After One Year" value={-creditorsAfter1yr} />
             </>
           )}
 
           <Row label="Net Assets" value={netAssets} bold />
 
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mt-4 mb-1">Capital and Reserves</p>
-          <Row label="Called Up Share Capital" value={shareCapital} indent />
+          <CategoryRow label="Called Up Share Capital" category="Called Up Share Capital" value={shareCapital} indent />
           <Row label="Profit and Loss Reserve" value={plReserveCfwd} indent />
           <Row label="Total Capital and Reserves" value={capitalAndReserves} bold />
         </div>
