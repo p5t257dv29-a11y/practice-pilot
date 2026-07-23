@@ -217,7 +217,7 @@ export default async function TimesheetsPage({
           <p className="text-sm text-slate-500 mt-1">{entry.description}</p>
         </div>
         <div className="flex items-center gap-6 flex-shrink-0">
-          <p className="font-bold text-slate-900 font-mono tabular-nums text-lg">{Number(entry.hours).toFixed(2)}h</p>
+          <p className="font-semibold text-slate-900 tabular-nums text-lg">{Number(entry.hours).toFixed(2)}h</p>
           {!isClosed && (
             <div className="flex items-center gap-3">
               <a href={entryEditHref(entry.id)} className="text-sm font-semibold text-slate-500 hover:text-slate-700">Edit</a>
@@ -289,15 +289,15 @@ export default async function TimesheetsPage({
         <div className="mt-6" style={{ display: "flex", gap: "2.5rem" }}>
           <div>
             <p className="text-xs text-slate-500">Total Hours</p>
-            <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-1">{totalHours.toFixed(2)}</p>
+            <p className="text-2xl font-semibold text-slate-900 tabular-nums mt-1">{totalHours.toFixed(2)}</p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Billable Hours</p>
-            <p className="text-2xl font-bold text-blue-600 font-mono tabular-nums mt-1">{billableHours.toFixed(2)}</p>
+            <p className="text-2xl font-semibold text-blue-600 tabular-nums mt-1">{billableHours.toFixed(2)}</p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Billable Value</p>
-            <p className="text-2xl font-bold text-green-600 font-mono tabular-nums mt-1">£{billableValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="text-2xl font-semibold text-green-600 tabular-nums mt-1">£{billableValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           </div>
         </div>
       </div>
@@ -319,7 +319,7 @@ export default async function TimesheetsPage({
                 <p className={`text-xs mt-0.5 ${isSelected ? "text-slate-300" : "text-slate-400"}`}>
                   {new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
                 </p>
-                <p className={`text-sm font-bold font-mono tabular-nums mt-1.5 ${isSelected ? "text-white" : dayTotal > 0 ? "text-slate-700" : "text-slate-300"}`}>
+                <p className={`text-sm font-semibold tabular-nums mt-1.5 ${isSelected ? "text-white" : dayTotal > 0 ? "text-slate-700" : "text-slate-300"}`}>
                   {dayTotal > 0 ? `${dayTotal.toFixed(1)}h` : "—"}
                 </p>
               </a>
@@ -350,7 +350,7 @@ export default async function TimesheetsPage({
                       {new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long" })}
                     </span>
                   </h2>
-                  {dayTotal > 0 && <span className="text-sm font-bold text-slate-600 font-mono tabular-nums">{dayTotal.toFixed(2)}h</span>}
+                  {dayTotal > 0 && <span className="text-sm font-semibold text-slate-600 tabular-nums">{dayTotal.toFixed(2)}h</span>}
                 </div>
               )}
 

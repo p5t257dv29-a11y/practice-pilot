@@ -86,7 +86,7 @@ export default function TimesheetLogForm({
 
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-1.5">Charge-out Rate</label>
-        <div className="w-full rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600 font-mono tabular-nums">
+        <div className="w-full rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600 tabular-nums">
           £{currentStaffRate.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/hr
         </div>
       </div>
