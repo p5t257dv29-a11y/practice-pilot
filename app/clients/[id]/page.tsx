@@ -144,8 +144,6 @@ async function deleteIdDocument(clientId: string, docId: string, storagePath: st
   revalidatePath(`/clients/${clientId}`);
 }
 
-// Fixed assets — client is fixed via the bound clientId, never a form field,
-// since this action only ever runs from within that client's own page.
 async function addAssetForClient(clientId: string, formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -170,8 +168,6 @@ async function addAssetForClient(clientId: string, formData: FormData) {
   revalidatePath("/fixed-assets/register");
 }
 
-// Only ever touches disposal_date / disposal_proceeds — same narrow pattern as
-// the standalone Dispose Asset page, so this can't blank out other asset fields.
 async function disposeAssetForClient(clientId: string, assetId: string, formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -199,7 +195,6 @@ async function clearDisposalForClient(clientId: string, assetId: string) {
   revalidatePath("/fixed-assets/register");
 }
 
-// Links an officer to an existing individual client record.
 async function linkOfficerToExistingClient(companyClientId: string, officerId: string, formData: FormData) {
   "use server";
   const linkedClientId = String(formData.get("linked_client_id") || "").trim();
@@ -209,7 +204,6 @@ async function linkOfficerToExistingClient(companyClientId: string, officerId: s
   revalidatePath(`/clients/${companyClientId}`);
 }
 
-// Creates a brand-new "Individual" client for this officer and links it in one step.
 async function createAndLinkClient(companyClientId: string, officerId: string, officerName: string) {
   "use server";
 
@@ -253,9 +247,6 @@ async function unlinkOfficer(companyClientId: string, officerId: string) {
   revalidatePath(`/clients/${companyClientId}`);
 }
 
-// Salary/dividends the accountant enters when finalizing the company's accounts
-// for a specific director + tax year — kept separate from the trial balance
-// mapping system, since that works at whole-company level.
 async function saveDirectorRemuneration(companyClientId: string, officerId: string, formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -280,11 +271,6 @@ async function deleteDirectorRemuneration(companyClientId: string, id: string) {
   revalidatePath(`/clients/${companyClientId}`);
 }
 
-// Pushes salary/dividends into the linked director's personal tax computation
-// for the matching tax year — creating it if it doesn't exist yet. Uses the
-// DELTA between this sync and the last one, so editing the remuneration figures
-// and re-syncing adjusts the computation correctly rather than double-counting
-// or overwriting other income entered separately on the personal tax side.
 async function syncDirectorRemuneration(companyClientId: string, remunerationId: string) {
   "use server";
 
@@ -335,6 +321,75 @@ async function syncDirectorRemuneration(companyClientId: string, remunerationId:
   revalidatePath("/tax");
 }
 
+async function enablePortalAccess(clientId: string, formData: FormData) {
+  "use server";
+  const email = String(formData.get("email") || "").trim();
+  if (!email) return;
+
+  const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+    data: { client_id: clientId, role: "portal" },
+  });
+
+  if (authError || !authUser?.user) {
+    console.error("Could not invite portal user:", authError?.message);
+    return;
+  }
+
+  await supabase.from("portal_users").insert({
+    client_id: clientId,
+    email,
+    auth_user_id: authUser.user.id,
+  });
+
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function removePortalAccess(clientId: string, portalUserId: string, authUserId: string | null) {
+  "use server";
+  if (authUserId) {
+    await supabase.auth.admin.deleteUser(authUserId);
+  }
+  await supabase.from("portal_users").delete().eq("id", portalUserId);
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function uploadClientDocument(clientId: string, formData: FormData) {
+  "use server";
+  const file = formData.get("document") as File | null;
+  const description = String(formData.get("description") || "").trim();
+  if (!file || file.size === 0) return;
+
+  const storagePath = `${clientId}/${Date.now()}-${file.name}`;
+  const fileBuffer = await file.arrayBuffer();
+
+  const { error: uploadError } = await supabase.storage
+    .from("client-portal-documents")
+    .upload(storagePath, fileBuffer, { contentType: file.type });
+
+  if (uploadError) {
+    console.error("Could not upload document:", uploadError.message);
+    return;
+  }
+
+  await supabase.from("client_documents").insert({
+    client_id: clientId,
+    uploaded_by: "staff",
+    file_name: file.name,
+    storage_path: storagePath,
+    file_size: file.size,
+    description: description || null,
+  });
+
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function deleteClientDocument(clientId: string, docId: string, storagePath: string) {
+  "use server";
+  await supabase.storage.from("client-portal-documents").remove([storagePath]);
+  await supabase.from("client_documents").delete().eq("id", docId);
+  revalidatePath(`/clients/${clientId}`);
+}
+
 export default async function ClientDetailPage({
   params,
   searchParams,
@@ -361,6 +416,8 @@ export default async function ClientDetailPage({
     { data: idDocuments },
     { data: individualClients },
     { data: directorRemuneration },
+    { data: portalUser },
+    { data: clientDocuments },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", id).order("is_active", { ascending: false }),
@@ -377,6 +434,8 @@ export default async function ClientDetailPage({
     supabase.from("client_id_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
     supabase.from("clients").select("id, client_name").in("entity_type", ["Individual", "Sole Trader"]).order("client_name", { ascending: true }),
     supabase.from("director_remuneration").select("*").eq("client_id", id).order("tax_year", { ascending: false }),
+    supabase.from("portal_users").select("*").eq("client_id", id).maybeSingle(),
+    supabase.from("client_documents").select("*").eq("client_id", id).order("created_at", { ascending: false }),
   ]);
 
   if (error || !client) notFound();
@@ -393,15 +452,25 @@ export default async function ClientDetailPage({
   const saveRemunerationWithId = saveDirectorRemuneration.bind(null, id);
   const deleteRemunerationWithId = deleteDirectorRemuneration.bind(null, id);
   const syncRemunerationWithId = syncDirectorRemuneration.bind(null, id);
+  const enablePortalWithId = enablePortalAccess.bind(null, id);
+  const uploadDocWithId = uploadClientDocument.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
 
-  // Bucket is private, so each document needs a short-lived signed URL to download
   const idDocumentsWithUrls = await Promise.all(
     (idDocuments || []).map(async (doc) => {
       const { data: signed } = await supabase.storage
         .from("client-id-documents")
+        .createSignedUrl(doc.storage_path, 300);
+      return { ...doc, url: signed?.signedUrl || null };
+    })
+  );
+
+  const clientDocumentsWithUrls = await Promise.all(
+    (clientDocuments || []).map(async (doc) => {
+      const { data: signed } = await supabase.storage
+        .from("client-portal-documents")
         .createSignedUrl(doc.storage_path, 300);
       return { ...doc, url: signed?.signedUrl || null };
     })
@@ -414,17 +483,14 @@ export default async function ClientDetailPage({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  // AML status check — flags if ID hasn't been verified, no risk rating set, or a review is overdue
   const amlReviewOverdue = client.aml_next_review_due && new Date(client.aml_next_review_due) < new Date();
   const amlNeedsAttention = !client.aml_id_verified || !client.aml_risk_rating || amlReviewOverdue;
 
-  // Fixed assets for this client
   const activeAssets = (fixedAssets || []).filter((a) => !a.disposal_date);
   const disposedAssets = (fixedAssets || []).filter((a) => a.disposal_date);
   const assetsTotalCost = activeAssets.reduce((sum, a) => sum + Number(a.cost), 0);
   const assetsTotalNBV = activeAssets.reduce((sum, a) => sum + calculateNBV(a).nbv, 0);
 
-  // Overview tab summary figures
   const outstandingInvoices = (invoices || []).filter((i) => i.status !== "Paid");
   const outstandingInvoiceTotal = outstandingInvoices.reduce((sum, i) => sum + Number(i.total || 0), 0);
   const pendingQuotes = (quotes || []).filter((q) => q.status === "Sent");
@@ -456,6 +522,7 @@ export default async function ClientDetailPage({
     { key: "overview", label: "Overview" },
     { key: "details", label: "Details" },
     { key: "aml", label: "AML" },
+    { key: "portal", label: "Portal" },
     { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
     { key: "quotes", label: `Quotes (${quotes?.length ?? 0})` },
     { key: "invoices", label: `Invoices (${invoices?.length ?? 0})` },
@@ -513,7 +580,6 @@ export default async function ClientDetailPage({
           </div>
         </div>
 
-        {/* Filing deadlines bar */}
         {(client.accounts_next_due || client.confirmation_statement_next_due) && (
           <div className="mt-4 flex gap-6 text-sm">
             {client.accounts_next_due && (
@@ -539,7 +605,6 @@ export default async function ClientDetailPage({
 
       <div className="p-8 flex gap-6">
 
-        {/* Vertical tab rail */}
         <nav className="w-56 flex-shrink-0 space-y-1">
           {tabs.map((t) => (
             <a
@@ -564,7 +629,6 @@ export default async function ClientDetailPage({
         {tab === "overview" && (
           <div className="space-y-6">
 
-            {/* Stat cards */}
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
                 <p className="text-xs text-slate-500 uppercase tracking-wide">Active Jobs</p>
@@ -586,7 +650,6 @@ export default async function ClientDetailPage({
               </div>
             </div>
 
-            {/* Deadlines */}
             {nextDeadlines.length > 0 && (
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <h2 className="text-lg font-bold text-slate-900">Upcoming Deadlines</h2>
@@ -605,7 +668,6 @@ export default async function ClientDetailPage({
 
             <div className="grid gap-6 lg:grid-cols-2">
 
-              {/* Active jobs */}
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-900">Active Jobs</h2>
@@ -633,7 +695,6 @@ export default async function ClientDetailPage({
                 </div>
               </div>
 
-              {/* Recent tax computations */}
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-900">Recent Tax Activity</h2>
@@ -661,7 +722,6 @@ export default async function ClientDetailPage({
                 </div>
               </div>
 
-              {/* Quotes & invoices */}
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-900">Billing</h2>
@@ -679,7 +739,6 @@ export default async function ClientDetailPage({
                 </div>
               </div>
 
-              {/* Engagement & fixed assets snapshot */}
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <h2 className="text-lg font-bold text-slate-900">Engagement & Assets</h2>
                 <div className="mt-4 space-y-2 text-sm">
@@ -763,7 +822,6 @@ export default async function ClientDetailPage({
               </div>
             </div>
 
-            {/* Tax Deadline Settings */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Tax Deadline Settings</h2>
               <p className="text-sm text-slate-500 mt-0.5">
@@ -987,7 +1045,6 @@ export default async function ClientDetailPage({
               </button>
             </form>
 
-            {/* ID Documents — own form, kept separate since file uploads need their own action/encoding */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">ID Documents</h2>
               <p className="text-sm text-slate-500 mt-0.5">Scanned or photographed identity documents held for this client.</p>
@@ -1035,6 +1092,102 @@ export default async function ClientDetailPage({
                     <option>Bank Statement</option>
                     <option>Other</option>
                   </select>
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Upload File</label>
+                  <input name="document" type="file" required
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <button type="submit"
+                  className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Upload
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* PORTAL TAB */}
+        {tab === "portal" && (
+          <div className="space-y-6">
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Portal Access</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Give this client their own login to view approvals and exchange documents with you.
+              </p>
+
+              {portalUser ? (
+                <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-4">
+                  <p className="text-sm font-semibold text-green-700">✓ Portal access enabled</p>
+                  <p className="text-xs text-green-600 mt-1">{portalUser.email}</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {portalUser.last_login_at
+                      ? `Last logged in ${new Date(portalUser.last_login_at).toLocaleDateString("en-GB")}`
+                      : "Invited, not yet logged in"}
+                  </p>
+                  <form action={removePortalAccess.bind(null, id, portalUser.id, portalUser.auth_user_id)} className="mt-3">
+                    <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                      Revoke Access
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <form action={enablePortalWithId} className="mt-4 flex gap-2 items-end">
+                  <div className="flex-1 max-w-sm">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Client Email</label>
+                    <input name="email" type="email" required defaultValue={client.email || ""}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <button type="submit"
+                    className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                    Enable Portal Access
+                  </button>
+                </form>
+              )}
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Documents</h2>
+              <p className="text-sm text-slate-500 mt-0.5">Shared between you and the client — visible on both sides once the portal goes live.</p>
+
+              <div className="mt-4 space-y-2">
+                {clientDocumentsWithUrls.map((doc) => (
+                  <div key={doc.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-lg flex-shrink-0">📄</span>
+                      <div className="min-w-0">
+                        {doc.url ? (
+                          <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                            className="text-sm font-medium text-blue-600 hover:underline truncate block">
+                            {doc.file_name}
+                          </a>
+                        ) : (
+                          <span className="text-sm font-medium text-slate-900 truncate block">{doc.file_name}</span>
+                        )}
+                        <p className="text-xs text-slate-400">
+                          {doc.uploaded_by === "client" ? "Uploaded by client" : "Uploaded by you"}
+                          {doc.description && ` · ${doc.description}`}
+                          {" · "}{new Date(doc.created_at).toLocaleDateString("en-GB")}
+                        </p>
+                      </div>
+                    </div>
+                    <form action={deleteClientDocument.bind(null, id, doc.id, doc.storage_path)}>
+                      <button className="rounded-lg bg-red-50 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors flex-shrink-0">
+                        Delete
+                      </button>
+                    </form>
+                  </div>
+                ))}
+                {clientDocumentsWithUrls.length === 0 && (
+                  <p className="text-sm text-slate-400 text-center py-3">No documents shared yet.</p>
+                )}
+              </div>
+
+              <form action={uploadDocWithId} className="mt-4 flex flex-wrap gap-2 items-end border-t border-slate-100 pt-4">
+                <div className="flex-1 min-w-[160px]">
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Description (optional)</label>
+                  <input name="description"
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
                 <div className="flex-1 min-w-[200px]">
                   <label className="block text-xs font-medium text-slate-700 mb-1">Upload File</label>
@@ -1289,7 +1442,6 @@ export default async function ClientDetailPage({
         {tab === "assets" && (
           <div className="space-y-6">
 
-            {/* Summary + links to cross-client views */}
             <div className="flex items-center justify-between">
               <div className="grid grid-cols-3 gap-4 flex-1 mr-4">
                 <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
@@ -1317,7 +1469,6 @@ export default async function ClientDetailPage({
               </div>
             </div>
 
-            {/* Add Asset */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Add Asset</h2>
               <form action={addAssetWithId} className="mt-4 grid gap-4 md:grid-cols-3">
@@ -1388,7 +1539,6 @@ export default async function ClientDetailPage({
               </form>
             </div>
 
-            {/* Active assets, with dispose + link out to full edit */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Active Assets ({activeAssets.length})</h2>
               <div className="mt-4 space-y-2">
@@ -1458,7 +1608,6 @@ export default async function ClientDetailPage({
               </div>
             </div>
 
-            {/* Disposed assets */}
             {disposedAssets.length > 0 && (
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <h2 className="text-lg font-bold text-slate-900">Disposed Assets ({disposedAssets.length})</h2>
@@ -1561,7 +1710,6 @@ export default async function ClientDetailPage({
                         </div>
                       </div>
 
-                      {/* Link panel — pick an existing individual client, or create one */}
                       {isLinking && !linkedClient && (
                         <div className="mt-4 border-t border-slate-100 pt-4 space-y-3">
                           <form action={linkOfficerWithId.bind(null, officer.id)} className="flex gap-2 items-end">
@@ -1594,7 +1742,6 @@ export default async function ClientDetailPage({
                         </div>
                       )}
 
-                      {/* Salary & Dividends — only once linked */}
                       {linkedClient && isEditingRemun && (
                         <div className="mt-4 border-t border-slate-100 pt-4">
                           <form action={saveRemunerationWithId.bind(null, officer.id)} className="grid gap-3 md:grid-cols-4 items-end">
@@ -1623,7 +1770,6 @@ export default async function ClientDetailPage({
                         </div>
                       )}
 
-                      {/* Existing remuneration records for this officer, with sync status */}
                       {linkedClient && officerRemuneration.length > 0 && (
                         <div className="mt-4 border-t border-slate-100 pt-4 space-y-2">
                           {officerRemuneration.map((rem: any) => {
@@ -1762,7 +1908,6 @@ export default async function ClientDetailPage({
               </div>
             </div>
 
-            {/* Add shareholding form */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 h-fit">
               <h2 className="text-lg font-bold text-slate-900">Add Shareholding</h2>
               <form action={addShareholdingWithId} className="mt-4 space-y-4">
