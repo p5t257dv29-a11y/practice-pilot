@@ -1,4 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import WriteOffWipForm from "../../write-off-wip-form";
@@ -68,7 +70,35 @@ async function addJobNote(jobId: string, formData: FormData) {
   "use server";
   const noteText = String(formData.get("note_text") || "").trim();
   if (!noteText) return;
-  await supabase.from("job_notes").insert({ job_id: jobId, note_text: noteText });
+
+  let createdBy: string | null = null;
+  try {
+    const cookieStore = await cookies();
+    const supabaseAuth = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll();
+          },
+          setAll() {},
+        },
+      }
+    );
+    const { data: { user } } = await supabaseAuth.auth.getUser();
+    createdBy = user?.email || null;
+  } catch {
+    createdBy = null;
+  }
+
+  await supabase.from("job_notes").insert({ job_id: jobId, note_text: noteText, created_by: createdBy });
+  revalidatePath(`/jobs/${jobId}`);
+}
+
+async function deleteJobNote(jobId: string, noteId: string) {
+  "use server";
+  await supabase.from("job_notes").delete().eq("id", noteId);
   revalidatePath(`/jobs/${jobId}`);
 }
 
@@ -94,7 +124,6 @@ async function updateJobRecord(id: string, formData: FormData) {
     period_end: get("period_end") || null,
     due_date: get("due_date") || null,
     assigned_to: get("assigned_to"),
-    notes: get("notes"),
     is_recurring: isRecurring,
     recurrence_frequency: isRecurring ? get("recurrence_frequency") || null : null,
   }).eq("id", id);
@@ -164,6 +193,7 @@ export default async function JobDetailPage({
   const updateWithId = updateJobRecord.bind(null, id);
   const attachChecklistWithId = attachChecklist.bind(null, id);
   const addJobNoteWithId = addJobNote.bind(null, id);
+  const deleteJobNoteWithId = deleteJobNote.bind(null, id);
   const safeChecklistItems = checklistItems || [];
   const safeTimeEntries = timeEntries || [];
   const safeWriteoffs = writeoffs || [];
@@ -378,15 +408,6 @@ export default async function JobDetailPage({
               </div>
             </div>
 
-            <div className="rounded-2xl bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-bold text-slate-900">Notes</h2>
-              <div className="mt-4">
-                <textarea name="notes" defaultValue={job.notes || ""} rows={4}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                  placeholder="Any notes about this job" />
-              </div>
-            </div>
-
             <button type="submit"
               className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
               Save Changes
@@ -548,8 +569,16 @@ export default async function JobDetailPage({
               <div className="mt-4 space-y-2">
                 {safeJobNotes.map((n: any) => (
                   <div key={n.id} className="rounded-lg border border-slate-100 p-2.5">
-                    <p className="text-sm text-slate-700 whitespace-pre-wrap">{n.note_text}</p>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap flex-1">{n.note_text}</p>
+                      <form action={deleteJobNoteWithId.bind(null, n.id)}>
+                        <button className="text-xs font-semibold text-red-500 hover:text-red-700 transition-colors flex-shrink-0">
+                          Delete
+                        </button>
+                      </form>
+                    </div>
                     <p className="text-xs text-slate-400 mt-1">
+                      {n.created_by && `${n.created_by} · `}
                       {new Date(n.created_at).toLocaleDateString("en-GB")} at {new Date(n.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </div>

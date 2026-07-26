@@ -189,8 +189,7 @@ export default async function FixedAssetsPage({
                     )}
                   </div>
                 </div>
-
-                {/* Disposed assets */}
+{/* Disposed assets */}
                 {browseDisposed.length > 0 && (
                   <div>
                     <h3 className="text-sm font-bold text-slate-900 mb-2">Disposed Assets ({browseDisposed.length})</h3>
@@ -203,9 +202,15 @@ export default async function FixedAssetsPage({
                               Disposed {new Date(asset.disposal_date!).toLocaleDateString("en-GB")}
                             </p>
                           </div>
-                          <p className="text-sm font-medium text-slate-600">
-                            Proceeds: £{Number(asset.disposal_proceeds || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </p>
+                          <div className="flex items-center gap-3">
+                            <p className="text-sm font-medium text-slate-600">
+                              Proceeds: £{Number(asset.disposal_proceeds || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </p>
+                            <a href={`/fixed-assets/register?client=${browseClientId}&edit=${asset.id}`}
+                              className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                              Edit
+                            </a>
+                          </div>
                         </div>
                       ))}
                     </div>
