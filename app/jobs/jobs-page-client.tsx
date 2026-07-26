@@ -212,7 +212,7 @@ export default function JobsPageClient({
   return (
     <div className="p-8">
 
-      {/* Header */}
+{/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Jobs</h1>
@@ -220,14 +220,19 @@ export default function JobsPageClient({
             {filtered.length} of {jobs.length} job{jobs.length !== 1 ? "s" : ""}
           </p>
         </div>
-        <button
-          onClick={() => { resetNewJobState(); setShowModal(true); }}
-          className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
-        >
-          + New Job
-        </button>
+        <div className="flex items-center gap-2">
+          <a href="/jobs/board"
+            className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+            Board View →
+          </a>
+          <button
+            onClick={() => { resetNewJobState(); setShowModal(true); }}
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
+          >
+            + New Job
+          </button>
+        </div>
       </div>
-
       {error && (
         <div className="mt-4 rounded-xl bg-red-100 p-3 text-sm text-red-700">
           Could not load jobs: {error}
