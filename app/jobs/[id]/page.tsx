@@ -114,7 +114,7 @@ async function updateJobRecord(id: string, formData: FormData) {
     .eq("id", id)
     .single();
 
-  await supabase.from("jobs").update({
+await supabase.from("jobs").update({
     client_id: get("client_id"),
     job_name: get("job_name"),
     job_type: get("job_type"),
@@ -126,8 +126,9 @@ async function updateJobRecord(id: string, formData: FormData) {
     assigned_to: get("assigned_to"),
     is_recurring: isRecurring,
     recurrence_frequency: isRecurring ? get("recurrence_frequency") || null : null,
+    budgeted_hours: get("budgeted_hours") ? parseFloat(get("budgeted_hours")) : null,
+    budgeted_fee: get("budgeted_fee") ? parseFloat(get("budgeted_fee")) : null,
   }).eq("id", id);
-
   const wasAlreadyCompleted = currentJob?.status === "Completed";
   if (isRecurring && newStatus === "Completed" && !wasAlreadyCompleted) {
     const nextDueDate = getNextDueDate(get("due_date") || currentJob?.due_date, get("recurrence_frequency"));
@@ -376,12 +377,31 @@ export default async function JobDetailPage({
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
 
-                <div>
+<div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Due Date</label>
                   <input name="due_date" type="date" defaultValue={job.due_date || ""}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
 
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900">Budget</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Set an expected budget to compare against actual time value on Reports.
+              </p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Budgeted Hours</label>
+                  <input name="budgeted_hours" type="number" step="0.1" min="0" defaultValue={job.budgeted_hours || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Budgeted Fee (£)</label>
+                  <input name="budgeted_fee" type="number" step="0.01" min="0" defaultValue={job.budgeted_fee || ""}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
               </div>
             </div>
 
@@ -426,7 +446,7 @@ export default async function JobDetailPage({
               </a>
             </div>
 
-            <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+<div className="mt-4 grid grid-cols-3 gap-3 text-center">
               <div>
                 <p className="text-xl font-bold text-slate-900">{totalHours.toFixed(1)}h</p>
                 <p className="text-xs text-slate-500">Total</p>
@@ -440,6 +460,42 @@ export default async function JobDetailPage({
                 <p className="text-xs text-slate-500">Value</p>
               </div>
             </div>
+
+            {(job.budgeted_hours || job.budgeted_fee) && (
+              <div className="mt-4 rounded-xl border border-slate-100 p-3 space-y-2">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Budget</p>
+                {job.budgeted_hours && (
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-500">Hours: {totalHours.toFixed(1)} / {Number(job.budgeted_hours).toFixed(1)}</span>
+                      <span className={totalHours > Number(job.budgeted_hours) ? "font-bold text-red-600" : "text-slate-500"}>
+                        {((totalHours / Number(job.budgeted_hours)) * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-2">
+                      <div className={`h-2 rounded-full ${totalHours > Number(job.budgeted_hours) ? "bg-red-500" : "bg-blue-500"}`}
+                        style={{ width: Math.min((totalHours / Number(job.budgeted_hours)) * 100, 100) + "%" }} />
+                    </div>
+                  </div>
+                )}
+                {job.budgeted_fee && (
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-slate-500">
+                        Value: £{chargeOutValue.toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 })} / £{Number(job.budgeted_fee).toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      </span>
+                      <span className={chargeOutValue > Number(job.budgeted_fee) ? "font-bold text-red-600" : "text-slate-500"}>
+                        {((chargeOutValue / Number(job.budgeted_fee)) * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-2">
+                      <div className={`h-2 rounded-full ${chargeOutValue > Number(job.budgeted_fee) ? "bg-red-500" : "bg-green-500"}`}
+                        style={{ width: Math.min((chargeOutValue / Number(job.budgeted_fee)) * 100, 100) + "%" }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {totalHours > billableHours && (
               <div className="mt-4">

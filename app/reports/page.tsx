@@ -97,8 +97,10 @@ export default async function ReportsPage({
     const jobWriteoffs = (writeoffs || []).filter(w => w.job_id === job.id);
     const writtenOffAmount = jobWriteoffs.reduce((sum, w) => sum + Number(w.amount), 0);
 
-    const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
-    const overBudget = invoicedAmount > 0 && chargeOutValue > invoicedAmount;
+const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
+    const overBudget = job.budgeted_fee
+      ? chargeOutValue > Number(job.budgeted_fee)
+      : (invoicedAmount > 0 && chargeOutValue > invoicedAmount);
     const hasActivity = totalHours > 0 || invoicedAmount > 0 || writtenOffAmount > 0;
 
     return {
