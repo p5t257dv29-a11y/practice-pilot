@@ -326,10 +326,11 @@ async function enablePortalAccess(clientId: string, formData: FormData) {
   const email = String(formData.get("email") || "").trim();
   if (!email) return;
 
-const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+  const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
     data: { client_id: clientId, role: "portal" },
     redirectTo: "https://practice-pilot-six.vercel.app/portal/set-password",
   });
+
   if (authError || !authUser?.user) {
     console.error("Could not invite portal user:", authError?.message);
     return;
@@ -367,10 +368,11 @@ async function resendPortalInvite(clientId: string, email: string) {
     await supabase.auth.admin.deleteUser(portalUser.auth_user_id);
   }
 
-const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+  const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
     data: { client_id: clientId, role: "portal" },
     redirectTo: "https://practice-pilot-six.vercel.app/portal/set-password",
   });
+
   if (authError || !authUser?.user) {
     console.error("Could not resend invite:", authError?.message);
     return;
@@ -383,6 +385,7 @@ const { data: authUser, error: authError } = await supabase.auth.admin.inviteUse
 
   revalidatePath(`/clients/${clientId}`);
 }
+
 async function uploadClientDocument(clientId: string, formData: FormData) {
   "use server";
   const file = formData.get("document") as File | null;
@@ -420,6 +423,44 @@ async function deleteClientDocument(clientId: string, docId: string, storagePath
   revalidatePath(`/clients/${clientId}`);
 }
 
+async function uploadGeneralDocument(clientId: string, formData: FormData) {
+  "use server";
+  const file = formData.get("document") as File | null;
+  const category = String(formData.get("category") || "").trim();
+  const description = String(formData.get("description") || "").trim();
+  if (!file || file.size === 0) return;
+
+  const storagePath = `${clientId}/${Date.now()}-${file.name}`;
+  const fileBuffer = await file.arrayBuffer();
+
+  const { error: uploadError } = await supabase.storage
+    .from("client-general-documents")
+    .upload(storagePath, fileBuffer, { contentType: file.type });
+
+  if (uploadError) {
+    console.error("Could not upload document:", uploadError.message);
+    return;
+  }
+
+  await supabase.from("client_general_documents").insert({
+    client_id: clientId,
+    category: category || null,
+    description: description || null,
+    file_name: file.name,
+    storage_path: storagePath,
+    file_size: file.size,
+  });
+
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function deleteGeneralDocument(clientId: string, docId: string, storagePath: string) {
+  "use server";
+  await supabase.storage.from("client-general-documents").remove([storagePath]);
+  await supabase.from("client_general_documents").delete().eq("id", docId);
+  revalidatePath(`/clients/${clientId}`);
+}
+
 export default async function ClientDetailPage({
   params,
   searchParams,
@@ -448,6 +489,7 @@ export default async function ClientDetailPage({
     { data: directorRemuneration },
     { data: portalUser },
     { data: clientDocuments },
+    { data: generalDocuments },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", id).order("is_active", { ascending: false }),
@@ -466,6 +508,7 @@ export default async function ClientDetailPage({
     supabase.from("director_remuneration").select("*").eq("client_id", id).order("tax_year", { ascending: false }),
     supabase.from("portal_users").select("*").eq("client_id", id).maybeSingle(),
     supabase.from("client_documents").select("*").eq("client_id", id).order("created_at", { ascending: false }),
+    supabase.from("client_general_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
   ]);
 
   if (error || !client) notFound();
@@ -485,6 +528,7 @@ export default async function ClientDetailPage({
   const enablePortalWithId = enablePortalAccess.bind(null, id);
   const uploadDocWithId = uploadClientDocument.bind(null, id);
   const resendInviteWithId = resendPortalInvite.bind(null, id);
+  const uploadGeneralDocWithId = uploadGeneralDocument.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
@@ -502,6 +546,15 @@ export default async function ClientDetailPage({
     (clientDocuments || []).map(async (doc) => {
       const { data: signed } = await supabase.storage
         .from("client-portal-documents")
+        .createSignedUrl(doc.storage_path, 300);
+      return { ...doc, url: signed?.signedUrl || null };
+    })
+  );
+
+  const generalDocumentsWithUrls = await Promise.all(
+    (generalDocuments || []).map(async (doc) => {
+      const { data: signed } = await supabase.storage
+        .from("client-general-documents")
         .createSignedUrl(doc.storage_path, 300);
       return { ...doc, url: signed?.signedUrl || null };
     })
@@ -553,6 +606,7 @@ export default async function ClientDetailPage({
     { key: "overview", label: "Overview" },
     { key: "details", label: "Details" },
     { key: "aml", label: "AML" },
+    { key: "documents", label: "Documents" },
     { key: "portal", label: "Portal" },
     { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
     { key: "quotes", label: `Quotes (${quotes?.length ?? 0})` },
@@ -1138,6 +1192,76 @@ export default async function ClientDetailPage({
           </div>
         )}
 
+        {/* DOCUMENTS TAB */}
+        {tab === "documents" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Documents</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              General file storage for this client — signed letters, correspondence, HMRC notices, and anything else worth keeping on file.
+            </p>
+
+            <div className="mt-4 space-y-2">
+              {generalDocumentsWithUrls.map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="text-lg flex-shrink-0">📄</span>
+                    <div className="min-w-0">
+                      {doc.url ? (
+                        <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                          className="text-sm font-medium text-blue-600 hover:underline truncate block">
+                          {doc.file_name}
+                        </a>
+                      ) : (
+                        <span className="text-sm font-medium text-slate-900 truncate block">{doc.file_name}</span>
+                      )}
+                      <p className="text-xs text-slate-400">
+                        {doc.category && `${doc.category} · `}
+                        {doc.description && `${doc.description} · `}
+                        {fmtFileSize(doc.file_size)} · {new Date(doc.uploaded_at).toLocaleDateString("en-GB")}
+                      </p>
+                    </div>
+                  </div>
+                  <form action={deleteGeneralDocument.bind(null, id, doc.id, doc.storage_path)}>
+                    <button className="rounded-lg bg-red-50 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors flex-shrink-0">
+                      Delete
+                    </button>
+                  </form>
+                </div>
+              ))}
+              {generalDocumentsWithUrls.length === 0 && (
+                <p className="text-sm text-slate-400 text-center py-3">No documents uploaded yet.</p>
+              )}
+            </div>
+
+            <form action={uploadGeneralDocWithId} className="mt-4 flex flex-wrap gap-2 items-end border-t border-slate-100 pt-4">
+              <div className="w-48">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Category</label>
+                <select name="category" className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">General</option>
+                  <option>Engagement Letter</option>
+                  <option>Correspondence</option>
+                  <option>HMRC Notice</option>
+                  <option>Companies House</option>
+                  <option>Bank Documents</option>
+                  <option>Contracts</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <div className="flex-1 min-w-[160px]">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Description (optional)</label>
+                <input name="description" className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div className="flex-1 min-w-[200px]">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Upload File</label>
+                <input name="document" type="file" required className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Upload
+              </button>
+            </form>
+          </div>
+        )}
+
         {/* PORTAL TAB */}
         {tab === "portal" && (
           <div className="space-y-6">
@@ -1607,11 +1731,12 @@ export default async function ClientDetailPage({
                           <a
                             href={isDisposing ? `/clients/${id}?tab=assets` : `/clients/${id}?tab=assets&dispose=${asset.id}`}
                             className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
-                          >
+                          >a
                             {isDisposing ? "Close" : "Dispose"}
                           </a>
-                          <a
+                          
                             href={`/fixed-assets/register?client=${id}&edit=${asset.id}`}
+                            <a
                             className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
                           >
                             Edit

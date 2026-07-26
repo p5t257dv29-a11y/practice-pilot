@@ -8,7 +8,7 @@ import GlobalSearch from "./global-search";
 
 const navSections = [
   
-    {
+{
     label: "Practice",
     items: [
       { href: "/my-day", label: "My Day", icon: "☀️" },
@@ -25,6 +25,7 @@ const navSections = [
       { href: "/company-secretarial", label: "Company Secretarial", icon: "📜" },
       { href: "/communications", label: "Communications", icon: "📬" },
       { href: "/onboarding", label: "Onboarding", icon: "🚀" },
+      { href: "/aml", label: "AML Reviews", icon: "🛡️" },
       { href: "/engagement", label: "Engagement", icon: "📝" },
       { href: "/quotes", label: "Quotes", icon: "📋" },
       { href: "/invoices", label: "Invoices", icon: "🧾" },

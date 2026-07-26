@@ -95,6 +95,37 @@ async function addJobNote(jobId: string, formData: FormData) {
   await supabase.from("job_notes").insert({ job_id: jobId, note_text: noteText, created_by: createdBy });
   revalidatePath(`/jobs/${jobId}`);
 }
+async function sendChaseReminder(jobId: string, clientEmail: string, clientName: string, outstandingItems: string[]) {
+  "use server";
+  if (!clientEmail || outstandingItems.length === 0) return;
+
+  const { data: settings } = await supabase.from("practice_settings").select("firm_name").limit(1).maybeSingle();
+  const firmName = settings?.firm_name || "Your Accountant";
+
+  const itemsList = outstandingItems.map((item) => `<li>${item}</li>`).join("");
+
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: `${firmName} <onboarding@resend.dev>`,
+      to: clientEmail,
+      subject: `Outstanding information needed — ${firmName}`,
+      html: `
+        <p>Hello,</p>
+        <p>We're still waiting on a few items from you to progress your work. Could you send these over when you get a chance?</p>
+        <ul>${itemsList}</ul>
+        <p>Thanks,<br>${firmName}</p>
+      `,
+    }),
+  });
+
+  await supabase.from("jobs").update({ last_chased_at: new Date().toISOString() }).eq("id", jobId);
+  revalidatePath(`/jobs/${jobId}`);
+}
 
 async function deleteJobNote(jobId: string, noteId: string) {
   "use server";
@@ -177,7 +208,7 @@ export default async function JobDetailPage({
     { data: writeoffs },
     { data: jobNotes },
   ] = await Promise.all([
-    supabase.from("jobs").select("*, clients(client_name)").eq("id", id).single(),
+supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).single(),
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
     supabase.from("job_checklist_items").select("*").eq("job_id", id).order("sort_order", { ascending: true }),
     supabase.from("checklist_templates").select("id, name").order("name", { ascending: true }),
@@ -564,7 +595,7 @@ export default async function JobDetailPage({
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+<div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">Information Checklist</h2>
               {safeChecklistItems.length > 0 && (
@@ -574,6 +605,29 @@ export default async function JobDetailPage({
               )}
             </div>
 
+            {(() => {
+              const outstandingItems = safeChecklistItems.filter((i) => !i.is_received).map((i) => i.item_text);
+              const clientEmail = (job.clients as any)?.email;
+              if (outstandingItems.length === 0) return null;
+              return (
+                <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-50 border border-amber-100 px-3 py-2">
+                  <p className="text-xs text-amber-700">
+                    {job.last_chased_at
+                      ? `Last chased ${new Date(job.last_chased_at).toLocaleDateString("en-GB")}`
+                      : "Not yet chased"}
+                  </p>
+                  {clientEmail ? (
+                    <form action={sendChaseReminder.bind(null, id, clientEmail, (job.clients as any)?.client_name || "", outstandingItems)}>
+                      <button className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 transition-colors">
+                        Send Reminder
+                      </button>
+                    </form>
+                  ) : (
+                    <span className="text-xs text-slate-400">No client email on file</span>
+                  )}
+                </div>
+              );
+            })()}
             {safeChecklistItems.length === 0 ? (
               <div className="mt-4">
                 <p className="text-sm text-slate-500 mb-3">
