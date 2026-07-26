@@ -24,12 +24,31 @@ export default function SetPasswordPage() {
       }
     });
 
-    // Also check immediately in case the session is already established
-    // by the time this page mounts (the redirect can arrive with the
-    // session already set rather than firing a fresh event).
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) setReady(true);
-    });
+    // Supabase's browser client doesn't always auto-process tokens that
+    // arrive as a URL hash fragment (#access_token=...&refresh_token=...),
+    // which is the format invite links use. Read it ourselves and set the
+    // session explicitly, rather than waiting for automatic detection.
+    const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+    const hashParams = new URLSearchParams(hash);
+    const accessToken = hashParams.get("access_token");
+    const refreshToken = hashParams.get("refresh_token");
+    const hashError = hashParams.get("error_description");
+
+    if (hashError) {
+      setError(hashError.replace(/\+/g, " "));
+    } else if (accessToken && refreshToken) {
+      supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken }).then(({ data, error: sessionError }) => {
+        if (data.session) {
+          setReady(true);
+        } else if (sessionError) {
+          setError("This invite link is invalid or has expired. Please ask for a new invite.");
+        }
+      });
+    } else {
+      supabase.auth.getSession().then(({ data }) => {
+        if (data.session) setReady(true);
+      });
+    }
 
     return () => {
       listener.subscription.unsubscribe();
@@ -76,8 +95,15 @@ export default function SetPasswordPage() {
         <div className="bg-white rounded-2xl p-8 shadow-xl">
           <h2 className="text-xl font-bold text-slate-900 mb-6">Choose a Password</h2>
 
-          {!ready ? (
+          {!ready && !error ? (
             <p className="text-sm text-slate-500">Verifying your invite link...</p>
+          ) : error && !ready ? (
+            <div className="rounded-xl bg-red-50 border border-red-100 p-4 text-sm text-red-600">
+              {error}
+              <p className="mt-2 text-xs text-red-500">
+                Ask your accountant to resend the invite from your Portal Access settings.
+              </p>
+            </div>
           ) : (
             <>
               {error && (
