@@ -5,7 +5,7 @@ import { Fragment } from "react";
 import { calculateNBV } from "../../../fixed-assets/page";
 import { calculateProfitAndLoss, CREDIT_NORMAL, FIXED_ASSET_CLASSES, FIXED_ASSET_MOVEMENT, DLA_MOVEMENT_CATEGORIES, getCustomPLCategories, PL_CATEGORY_GROUPS, type PLGroup } from "../../page";
 import SendAccountsButton from "../../../send-accounts-button";
-
+import PrintButton from "../../../print-button";
 export const dynamic = "force-dynamic";
 
 const supabase = createClient(
@@ -225,10 +225,13 @@ export default async function FRS105AccountsPage({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="bg-white border-b border-slate-200 px-8 py-6 print:hidden">
-        <a href={`/accounts-production/${id}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
-          ← Back to Trial Balance
-        </a>
+<div className="bg-white border-b border-slate-200 px-8 py-6 print:hidden">
+        <div className="flex items-center justify-between">
+          <a href={`/accounts-production/${id}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+            ← Back to Trial Balance
+          </a>
+          <PrintButton />
+        </div>
         <h1 className="text-2xl font-bold text-slate-900 mt-4">FRS 105 Micro-Entity Accounts</h1>
         <p className="text-sm text-slate-500 mt-0.5">
           Use your browser's print function (⌘P) to save as PDF.

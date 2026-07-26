@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { calculateP11D, P11D_RATES } from "../../page";
+import PrintButton from "../../../print-button";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -33,16 +34,21 @@ export default async function PublicP11DPage({
 }) {
   const { token } = await params;
 
-  const { data: comp, error } = await supabase
-    .from("p11d_computations")
-    .select("*, clients!p11d_computations_client_id_fkey(client_name)")
-    .eq("token", token)
-    .single();
+  const [{ data: comp, error }, { data: practiceSettings }] = await Promise.all([
+    supabase
+      .from("p11d_computations")
+      .select("*, clients!p11d_computations_client_id_fkey(client_name)")
+      .eq("token", token)
+      .single(),
+    supabase.from("practice_settings").select("firm_name").limit(1).maybeSingle(),
+  ]);
 
   if (error || !comp) {
     console.error("P11D approve page lookup failed:", { token, error });
     notFound();
   }
+
+  const firmName = practiceSettings?.firm_name || "Your Accountant";
 
   const approveWithToken = approveComputation.bind(null, token);
   const queryWithToken = queryComputation.bind(null, token);
@@ -71,15 +77,15 @@ export default async function PublicP11DPage({
     `${new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="bg-slate-900 text-white px-8 py-6">
+    <div className="min-h-screen bg-slate-50 print:bg-white">
+      <div className="bg-slate-900 text-white px-8 py-6 print:bg-white print:text-slate-900 print:border-b print:border-slate-300">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold">E&P Accountancy Services</h1>
-            <p className="text-slate-400 text-sm mt-0.5">Practice Management</p>
+            <h1 className="text-xl font-bold">{firmName}</h1>
+            <p className="text-slate-400 text-sm mt-0.5 print:text-slate-500">Practice Management</p>
           </div>
           <div className="text-right">
-            <p className="text-sm text-slate-400">P11D — Benefits in Kind</p>
+            <p className="text-sm text-slate-400 print:text-slate-500">P11D — Benefits in Kind</p>
             <p className="font-bold text-lg">{comp.tax_year}</p>
           </div>
         </div>
@@ -87,8 +93,12 @@ export default async function PublicP11DPage({
 
       <div className="max-w-3xl mx-auto p-8">
 
+        <div className="flex justify-end mb-4 print:hidden">
+          <PrintButton />
+        </div>
+
         {isApproved && (
-          <div className="mb-6 rounded-2xl bg-green-50 border border-green-200 p-4 text-center">
+          <div className="mb-6 rounded-2xl bg-green-50 border border-green-200 p-4 text-center print:hidden">
             <p className="text-green-700 font-bold text-lg">✓ P11D Approved</p>
             <p className="text-green-600 text-sm mt-1">Thank you! We'll proceed to file this.</p>
             {comp.approved_at && (
@@ -98,7 +108,7 @@ export default async function PublicP11DPage({
         )}
 
         {isQueried && (
-          <div className="mb-6 rounded-2xl bg-yellow-50 border border-yellow-200 p-4 text-center">
+          <div className="mb-6 rounded-2xl bg-yellow-50 border border-yellow-200 p-4 text-center print:hidden">
             <p className="text-yellow-700 font-bold text-lg">Query Raised</p>
             <p className="text-yellow-600 text-sm mt-1">Thanks for letting us know. We'll be in touch to go through it with you.</p>
             {comp.queried_at && (
@@ -107,7 +117,7 @@ export default async function PublicP11DPage({
           </div>
         )}
 
-        <div className="rounded-2xl bg-white shadow-sm border border-slate-100 overflow-hidden">
+        <div className="rounded-2xl bg-white shadow-sm border border-slate-100 overflow-hidden print:border-0 print:shadow-none">
           <div className="p-6 border-b border-slate-100">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Prepared for</p>
             <p className="mt-1 font-bold text-slate-900 text-lg">{comp.employee_name}</p>
@@ -153,7 +163,7 @@ export default async function PublicP11DPage({
         </div>
 
         {!isResponded && (
-          <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100 print:hidden">
             <h2 className="text-lg font-bold text-slate-900 text-center">Do these figures look correct?</h2>
             <p className="text-sm text-slate-500 text-center mt-1">Please approve below, or raise a query if anything needs checking.</p>
 
@@ -173,7 +183,7 @@ export default async function PublicP11DPage({
         )}
 
         <p className="text-center text-xs text-slate-400 mt-6">
-          This document was prepared by E&P Accountancy Services · {comp.tax_year} · Working paper for approval purposes only, not a filed P11D or P11D(b).
+          This document was prepared by {firmName} · {comp.tax_year} · Working paper for approval purposes only, not a filed P11D or P11D(b).
         </p>
       </div>
     </div>

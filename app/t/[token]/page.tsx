@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { calculateTax, getPaymentSchedule } from "../../tax/page";
+import PrintButton from "../../print-button";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -33,13 +34,18 @@ export default async function PublicTaxComputationPage({
 }) {
   const { token } = await params;
 
-  const { data: comp, error } = await supabase
-    .from("tax_computations")
-    .select("*, clients(client_name)")
-    .eq("token", token)
-    .single();
+  const [{ data: comp, error }, { data: practiceSettings }] = await Promise.all([
+    supabase
+      .from("tax_computations")
+      .select("*, clients(client_name)")
+      .eq("token", token)
+      .single(),
+    supabase.from("practice_settings").select("firm_name").limit(1).maybeSingle(),
+  ]);
 
   if (error || !comp) notFound();
+
+  const firmName = practiceSettings?.firm_name || "Your Accountant";
 
   const approveWithToken = approveComputation.bind(null, token);
   const queryWithToken = queryComputation.bind(null, token);
@@ -76,17 +82,17 @@ export default async function PublicTaxComputationPage({
   const hasPropertyIncome = Number(comp.rental_income) > 0 || Number(comp.finance_costs_bf) > 0;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50 print:bg-white">
 
       {/* Header */}
-      <div className="bg-slate-900 text-white px-8 py-6">
+      <div className="bg-slate-900 text-white px-8 py-6 print:bg-white print:text-slate-900 print:border-b print:border-slate-300">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold">E&P Accountancy Services</h1>
-            <p className="text-slate-400 text-sm mt-0.5">Practice Management</p>
+            <h1 className="text-xl font-bold">{firmName}</h1>
+            <p className="text-slate-400 text-sm mt-0.5 print:text-slate-500">Practice Management</p>
           </div>
           <div className="text-right">
-            <p className="text-sm text-slate-400">Tax Computation</p>
+            <p className="text-sm text-slate-400 print:text-slate-500">Tax Computation</p>
             <p className="font-bold text-lg">{comp.tax_year}</p>
           </div>
         </div>
@@ -94,9 +100,13 @@ export default async function PublicTaxComputationPage({
 
       <div className="max-w-3xl mx-auto p-8">
 
+        <div className="flex justify-end mb-4 print:hidden">
+          <PrintButton />
+        </div>
+
         {/* Status Banner */}
         {isApproved && (
-          <div className="mb-6 rounded-2xl bg-green-50 border border-green-200 p-4 text-center">
+          <div className="mb-6 rounded-2xl bg-green-50 border border-green-200 p-4 text-center print:hidden">
             <p className="text-green-700 font-bold text-lg">✓ Computation Approved</p>
             <p className="text-green-600 text-sm mt-1">
               Thank you! We'll proceed to file your return.
@@ -110,7 +120,7 @@ export default async function PublicTaxComputationPage({
         )}
 
         {isQueried && (
-          <div className="mb-6 rounded-2xl bg-yellow-50 border border-yellow-200 p-4 text-center">
+          <div className="mb-6 rounded-2xl bg-yellow-50 border border-yellow-200 p-4 text-center print:hidden">
             <p className="text-yellow-700 font-bold text-lg">Query Raised</p>
             <p className="text-yellow-600 text-sm mt-1">
               Thanks for letting us know. We'll be in touch to go through it with you.
@@ -123,7 +133,7 @@ export default async function PublicTaxComputationPage({
           </div>
         )}
 
-        <div className="rounded-2xl bg-white shadow-sm border border-slate-100 overflow-hidden">
+        <div className="rounded-2xl bg-white shadow-sm border border-slate-100 overflow-hidden print:border-0 print:shadow-none">
 
           {/* Client Info */}
           <div className="p-6 border-b border-slate-100">
@@ -238,7 +248,7 @@ export default async function PublicTaxComputationPage({
           </div>
 
           {/* Payment Schedule */}
-          <div className="p-6 bg-slate-50">
+          <div className="p-6 bg-slate-50 print:bg-white">
             <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Payment Schedule</h2>
             <div className="space-y-3">
               <div className="rounded-xl bg-white border border-slate-100 p-3">
@@ -276,7 +286,7 @@ export default async function PublicTaxComputationPage({
 
         {/* Approve / Query Buttons */}
         {!isResponded && (
-          <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100 print:hidden">
             <h2 className="text-lg font-bold text-slate-900 text-center">
               Do these figures look correct?
             </h2>
@@ -307,7 +317,7 @@ export default async function PublicTaxComputationPage({
         )}
 
         <p className="text-center text-xs text-slate-400 mt-6">
-          This computation was prepared by E&P Accountancy Services · {comp.tax_year} · This is an estimate for approval purposes and does not constitute a filed return.
+          This computation was prepared by {firmName} · {comp.tax_year} · This is an estimate for approval purposes and does not constitute a filed return.
         </p>
 
       </div>

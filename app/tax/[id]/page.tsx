@@ -114,10 +114,16 @@ export default async function TaxComputationDetailPage({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <a href="/tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
-          ← Back to Tax
-        </a>
+<div className="bg-white border-b border-slate-200 px-8 py-6">
+        <div className="flex items-center justify-between">
+          <a href="/tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+            ← Back to Tax
+          </a>
+          <a href={`/tax/${id}/sa100`}
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+            View SA100 Summary →
+          </a>
+        </div>
         <div className="mt-4">
           <h1 className="text-2xl font-bold text-slate-900">
             {comp.clients?.client_name || "No client"}
@@ -125,7 +131,6 @@ export default async function TaxComputationDetailPage({
           <p className="text-sm text-slate-500 mt-0.5">Tax Year {comp.tax_year}</p>
         </div>
       </div>
-
       <div className="p-8 grid gap-6 lg:grid-cols-3">
 
         {/* Left - breakdown */}
