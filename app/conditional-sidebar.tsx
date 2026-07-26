@@ -7,9 +7,11 @@ import SignOutButton from "./signout-button";
 import GlobalSearch from "./global-search";
 
 const navSections = [
-  {
+  
+    {
     label: "Practice",
     items: [
+      { href: "/my-day", label: "My Day", icon: "☀️" },
       { href: "/", label: "Dashboard", icon: "📊" },
       { href: "/deadlines", label: "Deadlines", icon: "📅" },
       { href: "/reports", label: "Reports & WIP", icon: "📈" },
