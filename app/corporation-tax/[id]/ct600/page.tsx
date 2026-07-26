@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { calculateCorporationTax, applyLossRelief } from "../../page";
 import { calculateCapitalAllowances } from "../../../fixed-assets/capital-allowances/page";
 import { calculateS455 } from "../../../directors-loan-account/page";
-
+import PrintButton from "../../../print-button";
 export const dynamic = "force-dynamic";
 
 const supabase = createClient(
@@ -90,10 +90,13 @@ export default async function CT600SummaryPage({
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="bg-white border-b border-slate-200 px-8 py-6 print:hidden">
-        <a href={`/corporation-tax/${id}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
-          ← Back to Computation
-        </a>
+<div className="bg-white border-b border-slate-200 px-8 py-6 print:hidden">
+        <div className="flex items-center justify-between">
+          <a href={`/corporation-tax/${id}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+            ← Back to Computation
+          </a>
+          <PrintButton />
+        </div>
         <h1 className="text-2xl font-bold text-slate-900 mt-4">CT600 Summary</h1>
         <p className="text-sm text-slate-500 mt-0.5">
           Mirrors the HMRC Company Tax Return form's box structure. For working papers and review — use your browser's print function (⌘P) to save as PDF.
