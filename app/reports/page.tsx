@@ -21,6 +21,8 @@ const FILTERS: Record<string, { label: string; test: (d: any) => boolean }> = {
   "status-Cancelled": { label: "Cancelled", test: (d) => !d.isGeneral && d.job.status === "Cancelled" },
 };
 
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 export default async function ReportsPage({
   searchParams,
 }: {
@@ -139,6 +141,95 @@ export default async function ReportsPage({
 
   const displayRows = activeFilter ? allRows.filter(FILTERS[activeFilter].test) : activityRows;
 
+  // --- Practice Overview: fee income, profitability, staff utilisation, YoY ---
+
+  // Fee income — trailing 12 months, keyed by invoice_date
+  const now = new Date();
+  const monthKeys: { key: string; label: string; year: number; month: number }[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    monthKeys.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: `${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()}`, year: d.getFullYear(), month: d.getMonth() });
+  }
+
+  const monthlyFeeIncome = monthKeys.map(({ key, label, year, month }) => {
+    const monthInvoices = (invoices || []).filter((i) => {
+      if (!i.invoice_date) return false;
+      const d = new Date(i.invoice_date);
+      return d.getFullYear() === year && d.getMonth() === month;
+    });
+    const invoicedTotal = monthInvoices.reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
+    const paidTotal = monthInvoices.filter((i) => i.status === "Paid").reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
+    return { key, label, invoicedTotal, paidTotal };
+  });
+
+  const maxMonthlyInvoiced = Math.max(1, ...monthlyFeeIncome.map((m) => m.invoicedTotal));
+
+  // Profitability by client — aggregate allRows (job + general) per client
+  const clientProfitMap = new Map<string, { clientId: string; clientName: string; invoiced: number; paid: number; writtenOff: number; timeValue: number; hours: number }>();
+  allRows.forEach((d) => {
+    const existing = clientProfitMap.get(d.clientId) || {
+      clientId: d.clientId, clientName: d.clientName, invoiced: 0, paid: 0, writtenOff: 0, timeValue: 0, hours: 0,
+    };
+    existing.invoiced += d.invoicedAmount;
+    existing.paid += d.paidAmount;
+    existing.writtenOff += d.writtenOffAmount;
+    existing.timeValue += d.chargeOutValue;
+    existing.hours += d.totalHours;
+    clientProfitMap.set(d.clientId, existing);
+  });
+
+  const clientProfitability = Array.from(clientProfitMap.values())
+    .filter((c) => c.invoiced > 0 || c.timeValue > 0)
+    .map((c) => ({
+      ...c,
+      realisation: c.timeValue > 0 ? (c.invoiced / c.timeValue) * 100 : 0,
+    }))
+    .sort((a, b) => b.invoiced - a.invoiced)
+    .slice(0, 10);
+
+  // Staff utilisation — group time entries by user_name
+  const staffMap = new Map<string, { name: string; totalHours: number; billableHours: number; chargeOutValue: number }>();
+  (entries || []).forEach((e) => {
+    const name = e.user_name || "Unassigned";
+    const existing = staffMap.get(name) || { name, totalHours: 0, billableHours: 0, chargeOutValue: 0 };
+    existing.totalHours += Number(e.hours);
+    if (e.billable) {
+      existing.billableHours += Number(e.hours);
+      existing.chargeOutValue += Number(e.hours) * Number(e.hourly_rate);
+    }
+    staffMap.set(name, existing);
+  });
+
+  const staffUtilisation = Array.from(staffMap.values())
+    .map((s) => ({ ...s, utilisation: s.totalHours > 0 ? (s.billableHours / s.totalHours) * 100 : 0 }))
+    .sort((a, b) => b.totalHours - a.totalHours);
+
+  // Year-on-year — fee income by calendar year
+  const currentYear = now.getFullYear();
+  const previousYear = currentYear - 1;
+
+  const yearTotal = (year: number, upToMonth?: number) =>
+    (invoices || [])
+      .filter((i) => {
+        if (!i.invoice_date) return false;
+        const d = new Date(i.invoice_date);
+        if (d.getFullYear() !== year) return false;
+        if (upToMonth !== undefined && d.getMonth() > upToMonth) return false;
+        return true;
+      })
+      .reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
+
+  const currentYearToDate = yearTotal(currentYear, now.getMonth());
+  const previousYearSamePeriod = yearTotal(previousYear, now.getMonth());
+  const yoyChange = previousYearSamePeriod > 0
+    ? ((currentYearToDate - previousYearSamePeriod) / previousYearSamePeriod) * 100
+    : null;
+  const currentYearFull = yearTotal(currentYear);
+  const previousYearFull = yearTotal(previousYear);
+
+  const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmt0 = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
   return (
     <div className="min-h-screen bg-slate-50">
 
@@ -157,28 +248,28 @@ export default async function ReportsPage({
           <Link href={activeFilter === "wip" ? "/reports" : "/reports?filter=wip"}
             className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "wip" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
             <p className="text-sm font-medium text-slate-500">Total WIP</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">£{totalWIP.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">{fmt(totalWIP)}</p>
             <p className="mt-1 text-xs text-slate-400">Unbilled work value</p>
           </Link>
 
           <Link href={activeFilter === "invoiced" ? "/reports" : "/reports?filter=invoiced"}
             className={`rounded-2xl bg-blue-600 p-6 shadow-sm transition-colors ${activeFilter === "invoiced" ? "ring-2 ring-blue-900" : "hover:bg-blue-700"}`}>
             <p className="text-sm font-medium text-blue-100">Total Invoiced</p>
-            <p className="mt-2 text-3xl font-semibold text-white tabular-nums">£{totalInvoiced.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="mt-2 text-3xl font-semibold text-white tabular-nums">{fmt(totalInvoiced)}</p>
             <p className="mt-1 text-xs text-blue-200">All invoices raised</p>
           </Link>
 
           <Link href={activeFilter === "paid" ? "/reports" : "/reports?filter=paid"}
             className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "paid" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
             <p className="text-sm font-medium text-slate-500">Total Paid</p>
-            <p className="mt-2 text-3xl font-semibold text-green-600 tabular-nums">£{totalPaid.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="mt-2 text-3xl font-semibold text-green-600 tabular-nums">{fmt(totalPaid)}</p>
             <p className="mt-1 text-xs text-slate-400">Cash received</p>
           </Link>
 
           <Link href={activeFilter === "writtenoff" ? "/reports" : "/reports?filter=writtenoff"}
             className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "writtenoff" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
             <p className="text-sm font-medium text-slate-500">Written Off</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-500 tabular-nums">£{totalWrittenOff.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-500 tabular-nums">{fmt(totalWrittenOff)}</p>
             <p className="mt-1 text-xs text-slate-400">WIP not being billed</p>
           </Link>
 
@@ -272,26 +363,26 @@ export default async function ReportsPage({
                         </div>
 
                         <div className="text-right">
-                          <p className="font-semibold text-slate-900 text-sm tabular-nums">£{d.chargeOutValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                          <p className="font-semibold text-slate-900 text-sm tabular-nums">{fmt(d.chargeOutValue)}</p>
                           <p className="text-xs text-slate-400">{d.billableHours.toFixed(1)}h billable</p>
                         </div>
 
                         <div className="text-right">
-                          <p className="font-semibold text-slate-900 text-sm tabular-nums">£{d.invoicedAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                          <p className="font-semibold text-slate-900 text-sm tabular-nums">{fmt(d.invoicedAmount)}</p>
                           {d.paidAmount > 0 && (
-                            <p className="text-xs text-green-600 tabular-nums">£{d.paidAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} paid</p>
+                            <p className="text-xs text-green-600 tabular-nums">{fmt(d.paidAmount)} paid</p>
                           )}
                         </div>
 
                         <div className="text-right">
                           <p className="text-sm text-slate-500 tabular-nums">
-                            {d.writtenOffAmount > 0 ? `£${d.writtenOffAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                            {d.writtenOffAmount > 0 ? fmt(d.writtenOffAmount) : "—"}
                           </p>
                         </div>
 
                         <div className="text-right">
                           <p className={`font-bold text-sm tabular-nums ${d.wip > 0 ? "text-orange-600" : "text-green-600"}`}>
-                            £{d.wip.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {fmt(d.wip)}
                           </p>
                           <p className="text-xs text-slate-400">unbilled</p>
                         </div>
@@ -309,22 +400,22 @@ export default async function ReportsPage({
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-900 text-sm tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.chargeOutValue, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {fmt(displayRows.reduce((sum, d) => sum + d.chargeOutValue, 0))}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-900 text-sm tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.invoicedAmount, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {fmt(displayRows.reduce((sum, d) => sum + d.invoicedAmount, 0))}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-slate-500 text-sm tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.writtenOffAmount, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {fmt(displayRows.reduce((sum, d) => sum + d.writtenOffAmount, 0))}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-orange-600 text-sm tabular-nums">
-                          £{displayRows.reduce((sum, d) => sum + d.wip, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {fmt(displayRows.reduce((sum, d) => sum + d.wip, 0))}
                         </p>
                       </div>
                     </div>
@@ -354,6 +445,136 @@ export default async function ReportsPage({
 
           </div>
         </div>
+
+        {/* ============ PRACTICE OVERVIEW ============ */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Practice Overview</h2>
+              <p className="text-sm text-slate-500 mt-0.5">Fee income, profitability, and staff utilisation across the whole practice.</p>
+            </div>
+          </div>
+
+          <div className="grid gap-8 lg:grid-cols-2">
+
+            {/* Fee Income by Month */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h3 className="text-base font-bold text-slate-900 mb-1">Fee Income — Last 12 Months</h3>
+              <p className="text-xs text-slate-400 mb-4">Based on invoice date. Bar shows invoiced; green shows paid portion.</p>
+              <div className="space-y-2">
+                {monthlyFeeIncome.map((m) => (
+                  <div key={m.key} className="flex items-center gap-3">
+                    <span className="w-16 flex-shrink-0 text-xs text-slate-500">{m.label}</span>
+                    <div className="flex-1 h-5 bg-slate-100 rounded-full overflow-hidden relative">
+                      <div className="h-full bg-blue-200 rounded-full absolute top-0 left-0"
+                        style={{ width: `${(m.invoicedTotal / maxMonthlyInvoiced) * 100}%` }} />
+                      <div className="h-full bg-blue-600 rounded-full absolute top-0 left-0"
+                        style={{ width: `${(m.paidTotal / maxMonthlyInvoiced) * 100}%` }} />
+                    </div>
+                    <span className="w-20 flex-shrink-0 text-right text-xs font-semibold text-slate-700 tabular-nums">{fmt0(m.invoicedTotal)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Year on Year */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h3 className="text-base font-bold text-slate-900 mb-1">Year-on-Year Comparison</h3>
+              <p className="text-xs text-slate-400 mb-4">Fee income invoiced, based on invoice date.</p>
+
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <p className="text-xs text-slate-500">{currentYear} year to date</p>
+                  <p className="text-xl font-bold text-slate-900 mt-1 tabular-nums">{fmt0(currentYearToDate)}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <p className="text-xs text-slate-500">{previousYear} same period</p>
+                  <p className="text-xl font-bold text-slate-900 mt-1 tabular-nums">{fmt0(previousYearSamePeriod)}</p>
+                </div>
+              </div>
+
+              {yoyChange !== null && (
+                <div className={`rounded-xl p-4 mb-4 ${yoyChange >= 0 ? "bg-green-50 border border-green-100" : "bg-red-50 border border-red-100"}`}>
+                  <p className={`text-sm font-bold ${yoyChange >= 0 ? "text-green-700" : "text-red-700"}`}>
+                    {yoyChange >= 0 ? "▲" : "▼"} {Math.abs(yoyChange).toFixed(1)}% vs same period last year
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-between text-sm border-t border-slate-100 pt-4">
+                <span className="text-slate-500">{previousYear} full year</span>
+                <span className="font-semibold text-slate-900 tabular-nums">{fmt0(previousYearFull)}</span>
+              </div>
+              <div className="flex justify-between text-sm mt-2">
+                <span className="text-slate-500">{currentYear} so far</span>
+                <span className="font-semibold text-slate-900 tabular-nums">{fmt0(currentYearFull)}</span>
+              </div>
+            </div>
+
+            {/* Profitability by Client */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h3 className="text-base font-bold text-slate-900 mb-1">Profitability by Client</h3>
+              <p className="text-xs text-slate-400 mb-4">Top 10 by invoiced value. Realisation = invoiced ÷ time value.</p>
+
+              {clientProfitability.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-6">No client activity yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 2fr) repeat(3, minmax(70px, 1fr))", gap: "0.5rem" }}
+                    className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-1">
+                    <div>Client</div>
+                    <div className="text-right">Invoiced</div>
+                    <div className="text-right">Time Value</div>
+                    <div className="text-right">Realisation</div>
+                  </div>
+                  {clientProfitability.map((c) => (
+                    <Link key={c.clientId} href={`/clients/${c.clientId}`}
+                      className="block rounded-xl border border-slate-100 p-3 hover:bg-slate-50 transition-colors">
+                      <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 2fr) repeat(3, minmax(70px, 1fr))", gap: "0.5rem" }}
+                        className="items-center">
+                        <span className="text-sm font-medium text-slate-900 truncate">{c.clientName}</span>
+                        <span className="text-right text-sm font-semibold text-slate-900 tabular-nums">{fmt0(c.invoiced)}</span>
+                        <span className="text-right text-sm text-slate-500 tabular-nums">{fmt0(c.timeValue)}</span>
+                        <span className={`text-right text-sm font-semibold tabular-nums ${c.realisation >= 100 ? "text-green-600" : c.realisation >= 80 ? "text-amber-600" : "text-red-600"}`}>
+                          {c.realisation.toFixed(0)}%
+                        </span>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Staff Utilisation */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h3 className="text-base font-bold text-slate-900 mb-1">Staff Utilisation</h3>
+              <p className="text-xs text-slate-400 mb-4">Billable hours as a share of all hours logged, all time.</p>
+
+              {staffUtilisation.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-6">No time entries logged yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {staffUtilisation.map((s) => (
+                    <div key={s.name}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium text-slate-900">{s.name}</span>
+                        <span className="text-xs text-slate-500 tabular-nums">
+                          {s.billableHours.toFixed(1)}h / {s.totalHours.toFixed(1)}h · {s.utilisation.toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${s.utilisation >= 70 ? "bg-green-500" : s.utilisation >= 50 ? "bg-amber-500" : "bg-red-500"}`}
+                          style={{ width: `${Math.min(s.utilisation, 100)}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
+        </div>
+
       </div>
     </div>
   );
