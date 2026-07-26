@@ -31,15 +31,60 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // If not logged in and not already on login page, redirect to login
-  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/q/") && !request.nextUrl.pathname.startsWith("/onboard/") && !request.nextUrl.pathname.startsWith("/sign/") && !request.nextUrl.pathname.startsWith("/p11d/approve/")){
+  const pathname = request.nextUrl.pathname;
+  const isPortalRoute = pathname.startsWith("/portal");
+  const isPortalUser = user?.user_metadata?.role === "portal";
+
+  // Public bypass routes — never require auth
+  const isPublicBypass =
+    pathname.startsWith("/q/") ||
+    pathname.startsWith("/onboard/") ||
+    pathname.startsWith("/sign/") ||
+    pathname.startsWith("/p11d/approve/");
+
+  if (isPublicBypass) {
+    return supabaseResponse;
+  }
+
+  // Not logged in
+  if (!user) {
+    if (isPortalRoute && pathname !== "/portal/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/portal/login";
+      return NextResponse.redirect(url);
+    }
+    if (!isPortalRoute && pathname !== "/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      return NextResponse.redirect(url);
+    }
+    return supabaseResponse;
+  }
+
+  // Logged in as a portal user — confine them to /portal/*
+  if (isPortalUser) {
+    if (!isPortalRoute) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/portal/dashboard";
+      return NextResponse.redirect(url);
+    }
+    if (pathname === "/portal/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/portal/dashboard";
+      return NextResponse.redirect(url);
+    }
+    return supabaseResponse;
+  }
+
+  // Logged in as staff — keep them out of the portal area entirely
+  if (isPortalRoute) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    url.pathname = "/";
     return NextResponse.redirect(url);
   }
 
-  // If logged in and on login page, redirect to dashboard
-  if (user && request.nextUrl.pathname === "/login") {
+  // Logged in and on the staff login page — redirect to dashboard
+  if (pathname === "/login") {
     const url = request.nextUrl.clone();
     url.pathname = "/";
     return NextResponse.redirect(url);

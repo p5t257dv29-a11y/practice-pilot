@@ -353,6 +353,36 @@ async function removePortalAccess(clientId: string, portalUserId: string, authUs
   revalidatePath(`/clients/${clientId}`);
 }
 
+async function resendPortalInvite(clientId: string, email: string) {
+  "use server";
+
+  const { data: portalUser } = await supabase
+    .from("portal_users")
+    .select("auth_user_id")
+    .eq("client_id", clientId)
+    .eq("email", email)
+    .maybeSingle();
+
+  if (portalUser?.auth_user_id) {
+    await supabase.auth.admin.deleteUser(portalUser.auth_user_id);
+  }
+
+  const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+    data: { client_id: clientId, role: "portal" },
+  });
+
+  if (authError || !authUser?.user) {
+    console.error("Could not resend invite:", authError?.message);
+    return;
+  }
+
+  await supabase.from("portal_users").update({
+    auth_user_id: authUser.user.id,
+    invited_at: new Date().toISOString(),
+  }).eq("client_id", clientId).eq("email", email);
+
+  revalidatePath(`/clients/${clientId}`);
+}
 async function uploadClientDocument(clientId: string, formData: FormData) {
   "use server";
   const file = formData.get("document") as File | null;
@@ -454,6 +484,7 @@ export default async function ClientDetailPage({
   const syncRemunerationWithId = syncDirectorRemuneration.bind(null, id);
   const enablePortalWithId = enablePortalAccess.bind(null, id);
   const uploadDocWithId = uploadClientDocument.bind(null, id);
+  const resendInviteWithId = resendPortalInvite.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
@@ -1125,11 +1156,20 @@ export default async function ClientDetailPage({
                       ? `Last logged in ${new Date(portalUser.last_login_at).toLocaleDateString("en-GB")}`
                       : "Invited, not yet logged in"}
                   </p>
-                  <form action={removePortalAccess.bind(null, id, portalUser.id, portalUser.auth_user_id)} className="mt-3">
-                    <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                      Revoke Access
-                    </button>
-                  </form>
+                  <div className="mt-3 flex gap-2">
+                    {!portalUser.last_login_at && (
+                      <form action={resendInviteWithId.bind(null, portalUser.email)}>
+                        <button className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors">
+                          Resend Invite
+                        </button>
+                      </form>
+                    )}
+                    <form action={removePortalAccess.bind(null, id, portalUser.id, portalUser.auth_user_id)}>
+                      <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                        Revoke Access
+                      </button>
+                    </form>
+                  </div>
                 </div>
               ) : (
                 <form action={enablePortalWithId} className="mt-4 flex gap-2 items-end">
