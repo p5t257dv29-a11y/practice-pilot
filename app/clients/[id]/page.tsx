@@ -27,7 +27,6 @@ const CATEGORY_OPTIONS = [
   "Office Equipment",
   "Other",
 ];
-
 async function updateClientRecord(id: string, formData: FormData) {
   "use server";
 
@@ -460,7 +459,28 @@ async function deleteGeneralDocument(clientId: string, docId: string, storagePat
   await supabase.from("client_general_documents").delete().eq("id", docId);
   revalidatePath(`/clients/${clientId}`);
 }
+async function sendStaffMessage(clientId: string, formData: FormData) {
+  "use server";
+  const messageText = String(formData.get("message_text") || "").trim();
+  if (!messageText) return;
 
+  await supabase.from("client_messages").insert({
+    client_id: clientId,
+    sender: "staff",
+    sender_name: "Staff",
+    message_text: messageText,
+    read_by_staff: true,
+    read_by_client: false,
+  });
+
+  revalidatePath(`/clients/${clientId}`);
+}
+
+async function markMessagesReadByStaff(clientId: string) {
+  "use server";
+  await supabase.from("client_messages").update({ read_by_staff: true }).eq("client_id", clientId).eq("read_by_staff", false);
+  revalidatePath(`/clients/${clientId}`);
+}
 export default async function ClientDetailPage({
   params,
   searchParams,
@@ -490,6 +510,7 @@ export default async function ClientDetailPage({
     { data: portalUser },
     { data: clientDocuments },
     { data: generalDocuments },
+    { data: messages },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", id).order("is_active", { ascending: false }),
@@ -509,6 +530,7 @@ export default async function ClientDetailPage({
     supabase.from("portal_users").select("*").eq("client_id", id).maybeSingle(),
     supabase.from("client_documents").select("*").eq("client_id", id).order("created_at", { ascending: false }),
     supabase.from("client_general_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
+  supabase.from("client_messages").select("*").eq("client_id", id).order("created_at", { ascending: true }),
   ]);
 
   if (error || !client) notFound();
@@ -529,6 +551,8 @@ export default async function ClientDetailPage({
   const uploadDocWithId = uploadClientDocument.bind(null, id);
   const resendInviteWithId = resendPortalInvite.bind(null, id);
   const uploadGeneralDocWithId = uploadGeneralDocument.bind(null, id);
+  const unreadFromClient = (messages || []).filter((m: any) => m.sender === "client" && !m.read_by_staff).length;
+  const sendStaffMessageWithId = sendStaffMessage.bind(null, id);
 
   const activeJobs = (jobs || []).filter((j) => j.status !== "Completed" && j.status !== "Cancelled");
   const historicalJobs = (jobs || []).filter((j) => j.status === "Completed" || j.status === "Cancelled");
@@ -602,13 +626,14 @@ export default async function ClientDetailPage({
   ].filter(Boolean) as { label: string; date: string }[];
   nextDeadlines.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-  const tabs = [
+const tabs = [
     { key: "overview", label: "Overview" },
     { key: "details", label: "Details" },
     { key: "aml", label: "AML" },
     { key: "documents", label: "Documents" },
+    { key: "messages", label: unreadFromClient > 0 ? `Messages (${unreadFromClient})` : "Messages" },
     { key: "portal", label: "Portal" },
-    { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
+  { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
     { key: "quotes", label: `Quotes (${quotes?.length ?? 0})` },
     { key: "invoices", label: `Invoices (${invoices?.length ?? 0})` },
     { key: "engagement", label: `Engagement (${engagementLetters?.length ?? 0})` },
@@ -1262,7 +1287,38 @@ export default async function ClientDetailPage({
           </div>
         )}
 
-        {/* PORTAL TAB */}
+      {/* MESSAGES TAB */}
+        {tab === "messages" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Messages</h2>
+            <p className="text-sm text-slate-500 mt-0.5">Two-way message thread with this client, visible in their portal.</p>
+
+            <div className="mt-4 space-y-3 max-h-96 overflow-y-auto">
+              {(messages || []).map((m: any) => (
+                <div key={m.id} className={`rounded-xl p-3 max-w-[80%] ${m.sender === "staff" ? "bg-slate-900 text-white ml-auto" : "bg-slate-100 text-slate-900"}`}>
+                  <p className="text-sm whitespace-pre-wrap">{m.message_text}</p>
+                  <p className={`text-xs mt-1 ${m.sender === "staff" ? "text-slate-300" : "text-slate-400"}`}>
+                    {m.sender === "staff" ? "You" : (client.client_name || "Client")} · {new Date(m.created_at).toLocaleDateString("en-GB")} at {new Date(m.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                  </p>
+                </div>
+              ))}
+              {(!messages || messages.length === 0) && (
+                <p className="text-sm text-slate-400 text-center py-6">No messages yet.</p>
+              )}
+            </div>
+
+            <form action={sendStaffMessageWithId} className="mt-4 flex gap-2 items-end border-t border-slate-100 pt-4">
+              <textarea name="message_text" rows={2} required placeholder="Type a message..."
+                className="flex-1 rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              <button type="submit"
+                className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Send
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* PORTAL TAB */}  {/* PORTAL TAB */}
         {tab === "portal" && (
           <div className="space-y-6">
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">

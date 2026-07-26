@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import PortalSignOutButton from "../portal-signout-button";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,58 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+async function sendPortalMessage(clientId: string, clientName: string, formData: FormData) {
+  "use server";
+  const messageText = String(formData.get("message_text") || "").trim();
+  if (!messageText) return;
+
+  await supabase.from("client_messages").insert({
+    client_id: clientId,
+    sender: "client",
+    sender_name: clientName,
+    message_text: messageText,
+    read_by_client: true,
+    read_by_staff: false,
+  });
+
+  revalidatePath("/portal/dashboard");
+}
+
+async function markMessagesReadByClient(clientId: string) {
+  "use server";
+  await supabase.from("client_messages").update({ read_by_client: true }).eq("client_id", clientId).eq("read_by_client", false);
+  revalidatePath("/portal/dashboard");
+}
+
+async function uploadClientPortalDocument(clientId: string, formData: FormData) {
+  "use server";
+  const file = formData.get("document") as File | null;
+  const description = String(formData.get("description") || "").trim();
+  if (!file || file.size === 0) return;
+
+  const storagePath = `${clientId}/${Date.now()}-${file.name}`;
+  const fileBuffer = await file.arrayBuffer();
+
+  const { error: uploadError } = await supabase.storage
+    .from("client-portal-documents")
+    .upload(storagePath, fileBuffer, { contentType: file.type });
+
+  if (uploadError) {
+    console.error("Could not upload document:", uploadError.message);
+    return;
+  }
+
+  await supabase.from("client_documents").insert({
+    client_id: clientId,
+    uploaded_by: "client",
+    file_name: file.name,
+    storage_path: storagePath,
+    file_size: file.size,
+    description: description || null,
+  });
+
+  revalidatePath("/portal/dashboard");
+}
 export default async function PortalDashboardPage() {
   const cookieStore = await cookies();
   const supabaseAuth = createServerClient(
@@ -40,6 +93,7 @@ export default async function PortalDashboardPage() {
     { data: p11dComputations },
     { data: trialBalances },
     { data: documents },
+    { data: messages },
   ] = await Promise.all([
     supabase.from("clients").select("client_name").eq("id", clientId).single(),
     supabase.from("tax_computations").select("id, tax_year, status").eq("client_id", clientId).eq("status", "Sent"),
@@ -47,7 +101,15 @@ export default async function PortalDashboardPage() {
     supabase.from("p11d_computations").select("id, tax_year, employee_name, status").eq("client_id", clientId).eq("status", "Sent"),
     supabase.from("trial_balances").select("id, period_start, period_end, accounts_type, approval_token, approval_status").eq("client_id", clientId).eq("approval_status", "Sent"),
     supabase.from("client_documents").select("*").eq("client_id", clientId).order("created_at", { ascending: false }),
+    supabase.from("client_messages").select("*").eq("client_id", clientId).order("created_at", { ascending: true }),
   ]);
+
+  const unreadFromStaff = (messages || []).filter((m) => m.sender === "staff" && !m.read_by_client).length;
+  if (unreadFromStaff > 0) {
+    await markMessagesReadByClient(clientId);
+  }
+
+  const sendMessageWithId = sendPortalMessage.bind(null, clientId, client?.client_name || "");
 
   const documentsWithUrls = await Promise.all(
     (documents || []).map(async (doc) => {
@@ -115,6 +177,34 @@ export default async function PortalDashboardPage() {
               <p className="text-sm text-slate-500 text-center py-8">Nothing awaiting your approval right now.</p>
             )}
           </div>
+        </div>
+
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <h2 className="text-lg font-bold text-slate-900">Messages</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Message your accountant directly.</p>
+
+          <div className="mt-4 space-y-3 max-h-96 overflow-y-auto">
+            {(messages || []).map((m: any) => (
+              <div key={m.id} className={`rounded-xl p-3 max-w-[80%] ${m.sender === "client" ? "bg-blue-600 text-white ml-auto" : "bg-slate-100 text-slate-900"}`}>
+                <p className="text-sm whitespace-pre-wrap">{m.message_text}</p>
+                <p className={`text-xs mt-1 ${m.sender === "client" ? "text-blue-100" : "text-slate-400"}`}>
+                  {m.sender === "client" ? "You" : "Your Accountant"} · {new Date(m.created_at).toLocaleDateString("en-GB")} at {new Date(m.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                </p>
+              </div>
+            ))}
+            {(!messages || messages.length === 0) && (
+              <p className="text-sm text-slate-400 text-center py-6">No messages yet.</p>
+            )}
+          </div>
+
+          <form action={sendMessageWithId} className="mt-4 flex gap-2 items-end border-t border-slate-100 pt-4">
+            <textarea name="message_text" rows={2} required placeholder="Type a message..."
+              className="flex-1 rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            <button type="submit"
+              className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">
+              Send
+            </button>
+          </form>
         </div>
 
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
