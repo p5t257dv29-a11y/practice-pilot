@@ -5,7 +5,6 @@ export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request,
   });
-
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -36,12 +35,12 @@ export async function middleware(request: NextRequest) {
   const isPortalUser = user?.user_metadata?.role === "portal";
 
   // Public bypass routes — never require auth
-  const isPublicBypass =
+const isPublicBypass =
     pathname.startsWith("/q/") ||
     pathname.startsWith("/onboard/") ||
     pathname.startsWith("/sign/") ||
-    pathname.startsWith("/p11d/approve/");
-
+    pathname.startsWith("/p11d/approve/") ||
+    pathname.startsWith("/portal/set-password");
   if (isPublicBypass) {
     return supabaseResponse;
   }

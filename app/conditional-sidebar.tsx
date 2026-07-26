@@ -59,9 +59,9 @@ export default function ConditionalSidebar({
 }: {
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
+const pathname = usePathname();
   const isLoginPage = pathname === "/login";
-
+  const isPortalPage = pathname.startsWith("/portal");
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
@@ -81,7 +81,7 @@ export default function ConditionalSidebar({
     return () => clearInterval(interval);
   }, [pathname, isLoginPage]);
 
-  if (isLoginPage) {
+  if (isLoginPage || isPortalPage) {
     return <>{children}</>;
   }
 

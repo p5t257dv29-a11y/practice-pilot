@@ -326,10 +326,10 @@ async function enablePortalAccess(clientId: string, formData: FormData) {
   const email = String(formData.get("email") || "").trim();
   if (!email) return;
 
-  const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
     data: { client_id: clientId, role: "portal" },
+    redirectTo: "https://practice-pilot-six.vercel.app/portal/set-password",
   });
-
   if (authError || !authUser?.user) {
     console.error("Could not invite portal user:", authError?.message);
     return;
@@ -367,10 +367,10 @@ async function resendPortalInvite(clientId: string, email: string) {
     await supabase.auth.admin.deleteUser(portalUser.auth_user_id);
   }
 
-  const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+const { data: authUser, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
     data: { client_id: clientId, role: "portal" },
+    redirectTo: "https://practice-pilot-six.vercel.app/portal/set-password",
   });
-
   if (authError || !authUser?.user) {
     console.error("Could not resend invite:", authError?.message);
     return;
