@@ -23,13 +23,39 @@ const FILTERS: Record<string, { label: string; test: (d: any) => boolean }> = {
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+const STAFF_PERIODS: Record<string, string> = {
+  month: "This Month",
+  quarter: "This Quarter",
+  year: "This Year",
+  all: "All Time",
+};
+
+function isWithinPeriod(dateStr: string | null, period: string, now: Date): boolean {
+  if (period === "all") return true;
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (period === "month") {
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  }
+  if (period === "quarter") {
+    const currentQuarter = Math.floor(now.getMonth() / 3);
+    const dQuarter = Math.floor(d.getMonth() / 3);
+    return d.getFullYear() === now.getFullYear() && dQuarter === currentQuarter;
+  }
+  if (period === "year") {
+    return d.getFullYear() === now.getFullYear();
+  }
+  return true;
+}
+
 export default async function ReportsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string }>;
+  searchParams: Promise<{ filter?: string; client?: string; staffPeriod?: string }>;
 }) {
-  const { filter } = await searchParams;
+  const { filter, client: clientFilterId, staffPeriod } = await searchParams;
   const activeFilter = filter && FILTERS[filter] ? filter : null;
+  const activeStaffPeriod = staffPeriod && STAFF_PERIODS[staffPeriod] ? staffPeriod : "all";
 
   const [
     { data: jobs },
@@ -81,6 +107,7 @@ export default async function ReportsPage({
       job,
       clientId: job.client_id,
       clientName: job.clients?.client_name || "Unknown",
+      jobType: job.job_type || "Other",
       totalHours,
       billableHours,
       chargeOutValue,
@@ -112,6 +139,7 @@ export default async function ReportsPage({
       job: null as any,
       clientId,
       clientName: clientNameMap.get(clientId) || "Unknown",
+      jobType: "General / Not job-linked",
       totalHours,
       billableHours,
       chargeOutValue,
@@ -139,11 +167,17 @@ export default async function ReportsPage({
     count: (jobs || []).filter((j) => j.status === status).length,
   }));
 
-  const displayRows = activeFilter ? allRows.filter(FILTERS[activeFilter].test) : activityRows;
+  // Job Summary display rows — client filter takes priority over status/wip filter,
+  // since they represent two different drill-down paths into the same table.
+  let displayRows = activeFilter ? allRows.filter(FILTERS[activeFilter].test) : activityRows;
+  let displayFilterLabel: string | null = activeFilter ? FILTERS[activeFilter].label : null;
+  if (clientFilterId) {
+    displayRows = allRows.filter((d) => d.clientId === clientFilterId);
+    displayFilterLabel = `Client: ${clientNameMap.get(clientFilterId) || "Unknown"}`;
+  }
 
-  // --- Practice Overview: fee income, profitability, staff utilisation, YoY ---
+  // --- Practice Overview: fee income, profitability, staff utilisation, YoY, service lines ---
 
-  // Fee income — trailing 12 months, keyed by invoice_date
   const now = new Date();
   const monthKeys: { key: string; label: string; year: number; month: number }[] = [];
   for (let i = 11; i >= 0; i--) {
@@ -164,7 +198,6 @@ export default async function ReportsPage({
 
   const maxMonthlyInvoiced = Math.max(1, ...monthlyFeeIncome.map((m) => m.invoicedTotal));
 
-  // Profitability by client — aggregate allRows (job + general) per client
   const clientProfitMap = new Map<string, { clientId: string; clientName: string; invoiced: number; paid: number; writtenOff: number; timeValue: number; hours: number }>();
   allRows.forEach((d) => {
     const existing = clientProfitMap.get(d.clientId) || {
@@ -187,9 +220,10 @@ export default async function ReportsPage({
     .sort((a, b) => b.invoiced - a.invoiced)
     .slice(0, 10);
 
-  // Staff utilisation — group time entries by user_name
+  // Staff utilisation — respects the selected period, filtered by entry date
+  const periodEntries = (entries || []).filter((e) => isWithinPeriod(e.date, activeStaffPeriod, now));
   const staffMap = new Map<string, { name: string; totalHours: number; billableHours: number; chargeOutValue: number }>();
-  (entries || []).forEach((e) => {
+  periodEntries.forEach((e) => {
     const name = e.user_name || "Unassigned";
     const existing = staffMap.get(name) || { name, totalHours: 0, billableHours: 0, chargeOutValue: 0 };
     existing.totalHours += Number(e.hours);
@@ -204,7 +238,6 @@ export default async function ReportsPage({
     .map((s) => ({ ...s, utilisation: s.totalHours > 0 ? (s.billableHours / s.totalHours) * 100 : 0 }))
     .sort((a, b) => b.totalHours - a.totalHours);
 
-  // Year-on-year — fee income by calendar year
   const currentYear = now.getFullYear();
   const previousYear = currentYear - 1;
 
@@ -226,6 +259,20 @@ export default async function ReportsPage({
     : null;
   const currentYearFull = yearTotal(currentYear);
   const previousYearFull = yearTotal(previousYear);
+
+  // Service line breakdown — group all activity rows by job type
+  const serviceLineMap = new Map<string, { jobType: string; invoiced: number; timeValue: number; wip: number; count: number }>();
+  activityRows.forEach((d) => {
+    const existing = serviceLineMap.get(d.jobType) || { jobType: d.jobType, invoiced: 0, timeValue: 0, wip: 0, count: 0 };
+    existing.invoiced += d.invoicedAmount;
+    existing.timeValue += d.chargeOutValue;
+    existing.wip += d.wip;
+    existing.count += 1;
+    serviceLineMap.set(d.jobType, existing);
+  });
+
+  const serviceLines = Array.from(serviceLineMap.values()).sort((a, b) => b.invoiced - a.invoiced);
+  const maxServiceLineInvoiced = Math.max(1, ...serviceLines.map((s) => s.invoiced));
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmt0 = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -284,13 +331,13 @@ export default async function ReportsPage({
         <div className="grid gap-8 lg:grid-cols-3">
 
           <div className="lg:col-span-2">
-            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div id="job-summary" className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-bold text-slate-900">Job Summary</h2>
-                {activeFilter && (
+                {displayFilterLabel && (
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-slate-500 bg-slate-100 rounded-full px-3 py-1">
-                      {FILTERS[activeFilter].label} · {displayRows.length}
+                      {displayFilterLabel} · {displayRows.length}
                     </span>
                     <Link href="/reports" className="text-xs font-semibold text-slate-400 hover:text-slate-600">
                       Clear ✕
@@ -301,8 +348,8 @@ export default async function ReportsPage({
 
               {displayRows.length === 0 ? (
                 <div className="text-center py-8">
-                  <p className="text-slate-500 text-sm">{activeFilter ? "Nothing matches this filter." : "No data yet."}</p>
-                  {!activeFilter && (
+                  <p className="text-slate-500 text-sm">{displayFilterLabel ? "Nothing matches this filter." : "No data yet."}</p>
+                  {!displayFilterLabel && (
                     <>
                       <p className="text-slate-400 text-xs mt-1">Log time against jobs to see WIP data.</p>
                       <Link href="/timesheets" className="text-blue-600 text-sm hover:underline mt-1 block">
@@ -395,7 +442,7 @@ export default async function ReportsPage({
                       className="items-center">
                       <div>
                         <p className="font-bold text-slate-900 text-sm">
-                          {activeFilter ? `Totals (${FILTERS[activeFilter].label})` : "Totals"}
+                          {displayFilterLabel ? `Totals (${displayFilterLabel})` : "Totals"}
                         </p>
                       </div>
                       <div className="text-right">
@@ -511,10 +558,10 @@ export default async function ReportsPage({
               </div>
             </div>
 
-            {/* Profitability by Client */}
+            {/* Profitability by Client — now links into Job Summary via clientFilter */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h3 className="text-base font-bold text-slate-900 mb-1">Profitability by Client</h3>
-              <p className="text-xs text-slate-400 mb-4">Top 10 by invoiced value. Realisation = invoiced ÷ time value.</p>
+              <p className="text-xs text-slate-400 mb-4">Top 10 by invoiced value. Click a client to see their jobs above. Realisation = invoiced ÷ time value.</p>
 
               {clientProfitability.length === 0 ? (
                 <p className="text-sm text-slate-400 text-center py-6">No client activity yet.</p>
@@ -528,8 +575,10 @@ export default async function ReportsPage({
                     <div className="text-right">Realisation</div>
                   </div>
                   {clientProfitability.map((c) => (
-                    <Link key={c.clientId} href={`/clients/${c.clientId}`}
-                      className="block rounded-xl border border-slate-100 p-3 hover:bg-slate-50 transition-colors">
+                    <Link key={c.clientId} href={`/reports?client=${c.clientId}#job-summary`}
+                      className={`block rounded-xl border p-3 transition-colors ${
+                        clientFilterId === c.clientId ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:bg-slate-50"
+                      }`}>
                       <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 2fr) repeat(3, minmax(70px, 1fr))", gap: "0.5rem" }}
                         className="items-center">
                         <span className="text-sm font-medium text-slate-900 truncate">{c.clientName}</span>
@@ -545,13 +594,27 @@ export default async function ReportsPage({
               )}
             </div>
 
-            {/* Staff Utilisation */}
+            {/* Staff Utilisation — now with period selector */}
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <h3 className="text-base font-bold text-slate-900 mb-1">Staff Utilisation</h3>
-              <p className="text-xs text-slate-400 mb-4">Billable hours as a share of all hours logged, all time.</p>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-base font-bold text-slate-900">Staff Utilisation</h3>
+              </div>
+              <p className="text-xs text-slate-400 mb-3">Billable hours as a share of all hours logged.</p>
+
+              <div className="flex gap-1.5 mb-4">
+                {Object.entries(STAFF_PERIODS).map(([key, label]) => (
+                  <Link key={key}
+                    href={key === "all" ? "/reports#staff-utilisation" : `/reports?staffPeriod=${key}#staff-utilisation`}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                      activeStaffPeriod === key ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}>
+                    {label}
+                  </Link>
+                ))}
+              </div>
 
               {staffUtilisation.length === 0 ? (
-                <p className="text-sm text-slate-400 text-center py-6">No time entries logged yet.</p>
+                <p className="text-sm text-slate-400 text-center py-6">No time entries logged in this period.</p>
               ) : (
                 <div className="space-y-3">
                   {staffUtilisation.map((s) => (
@@ -566,6 +629,30 @@ export default async function ReportsPage({
                         <div className={`h-full rounded-full ${s.utilisation >= 70 ? "bg-green-500" : s.utilisation >= 50 ? "bg-amber-500" : "bg-red-500"}`}
                           style={{ width: `${Math.min(s.utilisation, 100)}%` }} />
                       </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Service Line Breakdown — new */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 lg:col-span-2">
+              <h3 className="text-base font-bold text-slate-900 mb-1">Fee Income by Service Line</h3>
+              <p className="text-xs text-slate-400 mb-4">Grouped by job type, across all jobs with activity.</p>
+
+              {serviceLines.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-6">No activity yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {serviceLines.map((s) => (
+                    <div key={s.jobType} className="flex items-center gap-3">
+                      <span className="w-48 flex-shrink-0 text-sm text-slate-700 truncate">{s.jobType}</span>
+                      <div className="flex-1 h-6 bg-slate-100 rounded-full overflow-hidden relative">
+                        <div className="h-full bg-slate-800 rounded-full absolute top-0 left-0"
+                          style={{ width: `${(s.invoiced / maxServiceLineInvoiced) * 100}%` }} />
+                      </div>
+                      <span className="w-24 flex-shrink-0 text-right text-sm font-semibold text-slate-900 tabular-nums">{fmt0(s.invoiced)}</span>
+                      <span className="w-16 flex-shrink-0 text-right text-xs text-slate-400 tabular-nums">{s.count} job{s.count !== 1 ? "s" : ""}</span>
                     </div>
                   ))}
                 </div>
