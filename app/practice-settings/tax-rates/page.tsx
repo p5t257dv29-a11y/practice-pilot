@@ -52,10 +52,19 @@ async function updateTaxRates(taxYear: string, formData: FormData) {
     carContributionCap: num("p11d_carContributionCap"),
   };
 
+  const capital_gains_tax = {
+    annualExemptAmount: num("cgt_annualExemptAmount"),
+    basicRate: num("cgt_basicRate"),
+    higherRate: num("cgt_higherRate"),
+    badrRate: num("cgt_badrRate"),
+    basicRateBandWidth: num("cgt_basicRateBandWidth"),
+  };
+
   await supabase.from("tax_rates").update({
     personal_tax,
     corporation_tax,
     p11d,
+    capital_gains_tax,
     updated_at: new Date().toISOString(),
   }).eq("tax_year", taxYear);
 
@@ -76,6 +85,7 @@ async function addNewTaxYear(formData: FormData) {
     personal_tax: source.personal_tax,
     corporation_tax: source.corporation_tax,
     p11d: source.p11d,
+    capital_gains_tax: source.capital_gains_tax,
   });
 
   revalidatePath("/practice-settings/tax-rates");
@@ -107,7 +117,7 @@ export default async function TaxRatesSettingsPage({
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <h1 className="text-2xl font-bold text-slate-900">Tax Rates & Thresholds</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          The single source of truth for every rate used in Personal Tax, Corporation Tax, and P11D calculations. Update these once a year, after the Budget confirms new figures.
+          The single source of truth for every rate used in Personal Tax, Corporation Tax, P11D, and Capital Gains Tax calculations. Update these once a year, after the Budget confirms new figures.
         </p>
 
         <div className="mt-4 flex flex-wrap gap-2 items-center">
@@ -186,6 +196,17 @@ export default async function TaxRatesSettingsPage({
                 <Field label="Default Official Rate of Interest (%)" name="p11d_defaultOfficialRateOfInterest" defaultValue={current.p11d.defaultOfficialRateOfInterest} />
                 <Field label="Loan De Minimis (£)" name="p11d_loanDeMinimis" defaultValue={current.p11d.loanDeMinimis} step="1" />
                 <Field label="Car Contribution Cap (£)" name="p11d_carContributionCap" defaultValue={current.p11d.carContributionCap} step="1" />
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Capital Gains Tax — {activeYear}</h2>
+              <div className="mt-4 grid gap-4 md:grid-cols-4">
+                <Field label="Annual Exempt Amount (£)" name="cgt_annualExemptAmount" defaultValue={current.capital_gains_tax.annualExemptAmount} step="1" />
+                <Field label="Basic Rate" name="cgt_basicRate" defaultValue={current.capital_gains_tax.basicRate} />
+                <Field label="Higher Rate" name="cgt_higherRate" defaultValue={current.capital_gains_tax.higherRate} />
+                <Field label="BADR Rate" name="cgt_badrRate" defaultValue={current.capital_gains_tax.badrRate} />
+                <Field label="Basic Rate Band Width (£)" name="cgt_basicRateBandWidth" defaultValue={current.capital_gains_tax.basicRateBandWidth} step="1" />
               </div>
             </div>
 

@@ -10,13 +10,24 @@ const supabase = createClient(
 
 // 2026/27 Capital Gains Tax rates (unified since the 30 Oct 2024 Budget —
 // property and other assets now share the same rate structure)
-const CGT_RATES = {
-  annualExemptAmount: 3000,
-  basicRate: 0.18,
-  higherRate: 0.24,
-  badrRate: 0.18, // Business Asset Disposal Relief, £1m lifetime limit (not tracked cumulatively here)
-  basicRateBandWidth: 37700,
+export const CGT_RATES: Record<string, any> = {
+  "2026/27": {
+    annualExemptAmount: 3000,
+    basicRate: 0.18,
+    higherRate: 0.24,
+    badrRate: 0.18, // Business Asset Disposal Relief, £1m lifetime limit (not tracked cumulatively here)
+    basicRateBandWidth: 37700,
+  },
 };
+
+// Fetches live rates from the tax_rates table (editable via Practice Settings →
+// Tax Rates), falling back to the hardcoded defaults above if no row exists
+// for that year yet. This is the single point every CGT calculation should
+// go through, so rate updates take effect without a code change.
+export async function getCgtRates(taxYear: string) {
+  const { data } = await supabase.from("tax_rates").select("capital_gains_tax").eq("tax_year", taxYear).maybeSingle();
+  return data?.capital_gains_tax || CGT_RATES[taxYear] || CGT_RATES["2026/27"];
+}
 
 export function calculateCapitalGain(input: {
   entityType: string;
@@ -30,7 +41,9 @@ export function calculateCapitalGain(input: {
   rolloverReliefClaimed: boolean;
   amountReinvested: number;
   replacementAssetCost: number;
-}) {
+}, liveRates?: any) {
+  const rates = liveRates || CGT_RATES["2026/27"];
+
   const grossGain = Math.max(0,
     input.disposalProceeds - input.acquisitionCost - input.incidentalCosts - input.improvementCosts
   );
@@ -68,7 +81,7 @@ export function calculateCapitalGain(input: {
 
   // Individual: AEA applied first (protecting it from being wasted against a small
   // gain), brought-forward losses applied after, only as far as needed.
-  const aeaApplied = Math.min(gainAfterRollover, CGT_RATES.annualExemptAmount);
+  const aeaApplied = Math.min(gainAfterRollover, rates.annualExemptAmount);
   const gainAfterAEA = Math.max(0, gainAfterRollover - aeaApplied);
   const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterAEA);
   const taxableGain = gainAfterAEA - lossesUsed;
@@ -79,12 +92,12 @@ export function calculateCapitalGain(input: {
   let cgtDue = 0;
 
   if (input.badrEligible) {
-    cgtDue = taxableGain * CGT_RATES.badrRate;
+    cgtDue = taxableGain * rates.badrRate;
   } else {
-    const remainingBasicBand = Math.max(0, CGT_RATES.basicRateBandWidth - input.taxableIncomeForBandStacking);
+    const remainingBasicBand = Math.max(0, rates.basicRateBandWidth - input.taxableIncomeForBandStacking);
     gainAtBasicRate = Math.min(taxableGain, remainingBasicBand);
     gainAtHigherRate = taxableGain - gainAtBasicRate;
-    cgtDue = gainAtBasicRate * CGT_RATES.basicRate + gainAtHigherRate * CGT_RATES.higherRate;
+    cgtDue = gainAtBasicRate * rates.basicRate + gainAtHigherRate * rates.higherRate;
   }
 
   return {
@@ -165,6 +178,7 @@ export default async function CapitalGainsPage({
         }
       }
 
+      const cgtRates = await getCgtRates("2026/27");
       const result = calculateCapitalGain({
         entityType: comp.entity_type,
         disposalProceeds: Number(comp.disposal_proceeds),
@@ -177,7 +191,7 @@ export default async function CapitalGainsPage({
         rolloverReliefClaimed: comp.rollover_relief_claimed,
         amountReinvested: Number(comp.amount_reinvested),
         replacementAssetCost: Number(comp.replacement_asset_cost),
-      });
+      }, cgtRates);
 
       return { comp, result };
     })
