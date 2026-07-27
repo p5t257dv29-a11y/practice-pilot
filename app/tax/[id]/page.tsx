@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { calculateTax, getPaymentSchedule } from "../page";
+import { calculateTax, getPaymentSchedule, getTaxRates } from "../page";
 import SendComputationButton from "./send-computation-button";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +38,9 @@ async function updateComputation(id: string, formData: FormData) {
     foreignTaxPaid: num("foreign_tax_paid"),
     taxYear: existing?.tax_year || "2026/27",
   };
-  const result = calculateTax(input);
+
+  const rates = await getTaxRates(input.taxYear);
+  const result = calculateTax(input, rates);
 
   await supabase.from("tax_computations").update({
     employment_income: input.employmentIncome,
@@ -83,6 +85,8 @@ export default async function TaxComputationDetailPage({
 
   if (error || !comp) notFound();
 
+  const rates = await getTaxRates(comp.tax_year);
+
   const result = calculateTax({
     employmentIncome: Number(comp.employment_income),
     selfEmploymentIncome: Number(comp.self_employment_income),
@@ -102,7 +106,7 @@ export default async function TaxComputationDetailPage({
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
     foreignTaxPaid: Number(comp.foreign_tax_paid),
     taxYear: comp.tax_year,
-  });
+  }, rates);
 
   const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
@@ -114,7 +118,7 @@ export default async function TaxComputationDetailPage({
 
   return (
     <div className="min-h-screen bg-slate-50">
-<div className="bg-white border-b border-slate-200 px-8 py-6">
+      <div className="bg-white border-b border-slate-200 px-8 py-6">
         <div className="flex items-center justify-between">
           <a href="/tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
             ← Back to Tax
@@ -131,6 +135,7 @@ export default async function TaxComputationDetailPage({
           <p className="text-sm text-slate-500 mt-0.5">Tax Year {comp.tax_year}</p>
         </div>
       </div>
+
       <div className="p-8 grid gap-6 lg:grid-cols-3">
 
         {/* Left - breakdown */}

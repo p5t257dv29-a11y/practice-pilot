@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { calculateCorporationTax, applyLossRelief } from "../../corporation-tax/page";
+import { calculateCorporationTax, applyLossRelief, getCtRates } from "../../corporation-tax/page";
 import { calculateCapitalAllowances } from "../../fixed-assets/capital-allowances/page";
 import { calculateS455 } from "../../directors-loan-account/page";
 import PrintButton from "../../print-button";
@@ -69,12 +69,14 @@ export default async function PublicCTPage({
     Number(comp.accounting_profit) + Number(comp.depreciation_addback) + Number(comp.disallowable_expenses) -
     ca.totalCapitalAllowances - Number(comp.other_allowable_deductions);
   const loss = applyLossRelief(taxableProfitBeforeLosses, Number(comp.brought_forward_losses));
+
+  const ctRates = await getCtRates("2026/27");
   const ct = calculateCorporationTax({
     taxableProfit: loss.taxableProfitAfterLosses,
     periodStart: comp.period_start,
     periodEnd: comp.period_end,
     associatedCompanies: comp.associated_companies,
-  });
+  }, ctRates);
 
   const { data: linkedDLAs } = await supabase.from("directors_loan_accounts").select("*").eq("corporation_tax_id", comp.id);
   const dlaResults = (linkedDLAs || []).map((dla) => ({

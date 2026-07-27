@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { calculateCorporationTax, applyLossRelief } from "../page";
+import { calculateCorporationTax, applyLossRelief, getCtRates } from "../page";
 import { calculateCapitalAllowances } from "../../fixed-assets/capital-allowances/page";
 import { calculateS455 } from "../../directors-loan-account/page";
 import SendCTButton from "../../send-ct-button";
@@ -99,12 +99,13 @@ export default async function CorporationTaxDetailPage({
 
   const loss = applyLossRelief(taxableProfitBeforeLosses, Number(comp.brought_forward_losses));
 
+  const ctRates = await getCtRates("2026/27");
   const ct = calculateCorporationTax({
     taxableProfit: loss.taxableProfitAfterLosses,
     periodStart: comp.period_start,
     periodEnd: comp.period_end,
     associatedCompanies: comp.associated_companies,
-  });
+  }, ctRates);
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const updateWithId = updateComputation.bind(null, id);
@@ -256,7 +257,7 @@ export default async function CorporationTaxDetailPage({
               </div>
               {ct.band === "Marginal Relief" && (
                 <>
-                  <div className="flex justify-between"><span className="text-slate-500">Tax at Main Rate (25%)</span><span className="font-medium">{fmt(ct.profit * 0.25)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Tax at Main Rate ({(ctRates.mainRate * 100).toFixed(0)}%)</span><span className="font-medium">{fmt(ct.profit * ctRates.mainRate)}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Less: Marginal Relief</span><span className="font-medium text-red-600">({fmt(ct.marginalRelief)})</span></div>
                 </>
               )}

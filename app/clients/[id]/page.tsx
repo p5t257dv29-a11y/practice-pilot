@@ -81,6 +81,23 @@ async function updateAmlRecord(id: string, formData: FormData) {
   }).eq("id", id);
 
   revalidatePath(`/clients/${id}`);
+}async function updateHmrcAuthorisation(clientId: string, taxType: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  await supabase.from("client_hmrc_authorisations").upsert({
+    client_id: clientId,
+    tax_type: taxType,
+    status: get("status") || "Not Requested",
+    auth_code: get("auth_code") || null,
+    date_requested: get("date_requested") || null,
+    date_code_received: get("date_code_received") || null,
+    date_activated: get("date_activated") || null,
+    notes: get("notes") || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "client_id,tax_type" });
+
+  revalidatePath(`/clients/${clientId}`);
 }
 
 async function addShareholding(clientId: string, formData: FormData) {
@@ -511,6 +528,7 @@ export default async function ClientDetailPage({
     { data: clientDocuments },
     { data: generalDocuments },
     { data: messages },
+    { data: hmrcAuthorisations },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", id).order("is_active", { ascending: false }),
@@ -531,6 +549,7 @@ export default async function ClientDetailPage({
     supabase.from("client_documents").select("*").eq("client_id", id).order("created_at", { ascending: false }),
     supabase.from("client_general_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
   supabase.from("client_messages").select("*").eq("client_id", id).order("created_at", { ascending: true }),
+  supabase.from("client_hmrc_authorisations").select("*").eq("client_id", id),
   ]);
 
   if (error || !client) notFound();
@@ -538,7 +557,14 @@ export default async function ClientDetailPage({
   const updateWithId = updateClientRecord.bind(null, id);
   const updateAmlWithId = updateAmlRecord.bind(null, id);
   const addShareholdingWithId = addShareholding.bind(null, id);
-  const uploadIdDocumentWithId = uploadIdDocument.bind(null, id);
+  const uploadGeneralDocWithId = uploadGeneralDocument.bind(null, id);
+  const updateHmrcAuthWithId = updateHmrcAuthorisation.bind(null, id);
+  const HMRC_TAX_TYPES = ["Corporation Tax", "VAT", "PAYE", "Self Assessment"];
+  const authByType = new Map((hmrcAuthorisations || []).map((a: any) => [a.tax_type, a]));
+  const authsMissing = HMRC_TAX_TYPES.filter((t) => {
+    const a = authByType.get(t);
+    return !a || a.status === "Not Requested";
+  }).length;
   const deleteIdDocumentWithId = deleteIdDocument.bind(null, id);
   const addAssetWithId = addAssetForClient.bind(null, id);
   const clearDisposalWithId = clearDisposalForClient.bind(null, id);
@@ -550,7 +576,6 @@ export default async function ClientDetailPage({
   const enablePortalWithId = enablePortalAccess.bind(null, id);
   const uploadDocWithId = uploadClientDocument.bind(null, id);
   const resendInviteWithId = resendPortalInvite.bind(null, id);
-  const uploadGeneralDocWithId = uploadGeneralDocument.bind(null, id);
   const unreadFromClient = (messages || []).filter((m: any) => m.sender === "client" && !m.read_by_staff).length;
   const sendStaffMessageWithId = sendStaffMessage.bind(null, id);
 
@@ -630,7 +655,8 @@ const tabs = [
     { key: "overview", label: "Overview" },
     { key: "details", label: "Details" },
     { key: "aml", label: "AML" },
-    { key: "documents", label: "Documents" },
+    { key: "hmrc", label: authsMissing > 0 ? `HMRC Auth (${authsMissing})` : "HMRC Auth" },
+  { key: "documents", label: "Documents" },
     { key: "messages", label: unreadFromClient > 0 ? `Messages (${unreadFromClient})` : "Messages" },
     { key: "portal", label: "Portal" },
   { key: "jobs", label: `Jobs (${jobs?.length ?? 0})` },
@@ -1191,7 +1217,7 @@ const tabs = [
                 )}
               </div>
 
-              <form action={uploadIdDocumentWithId} className="mt-4 flex flex-wrap gap-2 items-end border-t border-slate-100 pt-4">
+<form action={uploadDocWithId} className="mt-4 flex flex-wrap gap-2 items-end border-t border-slate-100 pt-4">
                 <div className="w-48">
                   <label className="block text-xs font-medium text-slate-700 mb-1">Document Type</label>
                   <select name="document_type" className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
@@ -1214,6 +1240,86 @@ const tabs = [
                 </button>
               </form>
             </div>
+          </div>
+        )}
+
+{/* HMRC AUTHORISATION TAB */}
+        {tab === "hmrc" && (
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4">
+              <p className="text-xs text-blue-800">
+                Tracks agent authorisation requests for each tax type — not a live link to HMRC. Record the 64-8 or online authorisation reference and dates here so you always know what's outstanding.
+              </p>
+            </div>
+
+            {HMRC_TAX_TYPES.map((taxType) => {
+              const auth = authByType.get(taxType);
+              const status = auth?.status || "Not Requested";
+
+              const statusColor =
+                status === "Activated" ? "bg-green-100 text-green-700"
+                : status === "Code Received" ? "bg-blue-100 text-blue-700"
+                : status === "Requested" ? "bg-yellow-100 text-yellow-700"
+                : status === "Rejected" || status === "Expired" ? "bg-red-100 text-red-700"
+                : "bg-slate-100 text-slate-600";
+
+              return (
+                <div key={taxType} className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg font-bold text-slate-900">{taxType}</h2>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusColor}`}>
+                      {status}
+                    </span>
+                  </div>
+
+                  <form action={updateHmrcAuthWithId.bind(null, taxType)} className="mt-4 grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                      <select name="status" defaultValue={status}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                        <option>Not Requested</option>
+                        <option>Requested</option>
+                        <option>Code Received</option>
+                        <option>Activated</option>
+                        <option>Rejected</option>
+                        <option>Expired</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Authorisation Code / Reference</label>
+                      <input name="auth_code" defaultValue={auth?.auth_code || ""} placeholder="e.g. from 64-8 or online agent request"
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Date Requested</label>
+                      <input name="date_requested" type="date" defaultValue={auth?.date_requested || ""}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Date Code Received</label>
+                      <input name="date_code_received" type="date" defaultValue={auth?.date_code_received || ""}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Date Activated</label>
+                      <input name="date_activated" type="date" defaultValue={auth?.date_activated || ""}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                      <input name="notes" defaultValue={auth?.notes || ""}
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div className="md:col-span-2">
+                      <button type="submit"
+                        className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              );
+            })}
           </div>
         )}
 

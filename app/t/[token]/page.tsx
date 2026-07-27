@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { calculateTax, getPaymentSchedule } from "../../tax/page";
+import { calculateTax, getPaymentSchedule, getTaxRates } from "../../tax/page";
 import PrintButton from "../../print-button";
 
 const supabase = createClient(
@@ -45,7 +45,7 @@ export default async function PublicTaxComputationPage({
 
   if (error || !comp) notFound();
 
-  const firmName = practiceSettings?.firm_name || "Your Accountant";
+const firmName = practiceSettings?.firm_name || "Your Accountant";
 
   const approveWithToken = approveComputation.bind(null, token);
   const queryWithToken = queryComputation.bind(null, token);
@@ -54,8 +54,10 @@ export default async function PublicTaxComputationPage({
   const isQueried = comp.status === "Queried";
   const isResponded = isApproved || isQueried;
 
+  const rates = await getTaxRates(comp.tax_year);
+
   const result = calculateTax({
-    employmentIncome: Number(comp.employment_income),
+  employmentIncome: Number(comp.employment_income),
     selfEmploymentIncome: Number(comp.self_employment_income),
     rentalIncome: Number(comp.rental_income),
     propertyExpenses: Number(comp.property_expenses),
@@ -71,11 +73,11 @@ export default async function PublicTaxComputationPage({
     foreignPropertyExpenses: Number(comp.foreign_property_expenses),
     foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
-    foreignTaxPaid: Number(comp.foreign_tax_paid),
+  foreignTaxPaid: Number(comp.foreign_tax_paid),
     taxYear: comp.tax_year,
-  });
+  }, rates);
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
-  const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const fmtDateTime = (d: string) =>
     `${new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;

@@ -10,13 +10,18 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const CT_RATES = {
-  smallProfitsRate: 0.19,
-  mainRate: 0.25,
-  smallProfitsThreshold: 50000,
-  mainRateThreshold: 250000,
-  marginalReliefFraction: 3 / 200,
-};
+export const CT_RATES: Record<string, any> = {
+  "2026/27": {
+    smallProfitsRate: 0.19,
+    mainRate: 0.25,
+    smallProfitsThreshold: 50000,
+    mainRateThreshold: 250000,
+    marginalReliefFraction: 3 / 200,
+  },
+};export async function getCtRates(taxYear: string) {
+  const { data } = await supabase.from("tax_rates").select("corporation_tax").eq("tax_year", taxYear).maybeSingle();
+  return data?.corporation_tax || CT_RATES[taxYear] || CT_RATES["2026/27"];
+}
 
 export function applyLossRelief(taxableProfitBeforeLosses: number, lossesBroughtForward: number) {
   let lossesUsed = 0;
@@ -41,14 +46,16 @@ export function calculateCorporationTax(input: {
   periodStart: string;
   periodEnd: string;
   associatedCompanies: number;
-}) {
+  taxYear?: string;
+}, liveRates?: any) {
+  const rates = liveRates || CT_RATES[input.taxYear || "2026/27"] || CT_RATES["2026/27"];
   const start = new Date(input.periodStart);
   const end = new Date(input.periodEnd);
   const periodMonths = Math.max(1, Math.round((end.getTime() - start.getTime()) / (30.44 * 24 * 60 * 60 * 1000)));
 
   const divisor = input.associatedCompanies + 1;
-  const smallProfitsThreshold = (CT_RATES.smallProfitsThreshold * (periodMonths / 12)) / divisor;
-  const mainRateThreshold = (CT_RATES.mainRateThreshold * (periodMonths / 12)) / divisor;
+  const smallProfitsThreshold = (rates.smallProfitsThreshold * (periodMonths / 12)) / divisor;
+  const mainRateThreshold = (rates.mainRateThreshold * (periodMonths / 12)) / divisor;
 
   const profit = Math.max(0, input.taxableProfit);
   let corporationTax = 0;
@@ -57,16 +64,16 @@ export function calculateCorporationTax(input: {
   let effectiveRate = 0;
 
   if (profit <= smallProfitsThreshold) {
-    corporationTax = profit * CT_RATES.smallProfitsRate;
+    corporationTax = profit * rates.smallProfitsRate;
     band = "Small Profits Rate";
-    effectiveRate = CT_RATES.smallProfitsRate;
+    effectiveRate = rates.smallProfitsRate;
   } else if (profit >= mainRateThreshold) {
-    corporationTax = profit * CT_RATES.mainRate;
+    corporationTax = profit * rates.mainRate;
     band = "Main Rate";
-    effectiveRate = CT_RATES.mainRate;
+    effectiveRate = rates.mainRate;
   } else {
-    const taxAtMainRate = profit * CT_RATES.mainRate;
-    marginalRelief = (mainRateThreshold - profit) * CT_RATES.marginalReliefFraction;
+    const taxAtMainRate = profit * rates.mainRate;
+    marginalRelief = (mainRateThreshold - profit) * rates.marginalReliefFraction;
     corporationTax = taxAtMainRate - marginalRelief;
     band = "Marginal Relief";
     effectiveRate = profit > 0 ? corporationTax / profit : 0;
@@ -166,15 +173,15 @@ export default async function CorporationTaxPage({
 
       const loss = applyLossRelief(taxableProfitBeforeLosses, Number(comp.brought_forward_losses));
 
+ const ctRates = await getCtRates("2026/27");
       const ct = calculateCorporationTax({
         taxableProfit: loss.taxableProfitAfterLosses,
         periodStart: comp.period_start,
         periodEnd: comp.period_end,
         associatedCompanies: comp.associated_companies,
-      });
+      }, ctRates);
 
-      return { comp, ca, taxableProfitBeforeLosses, loss, ct };
-    })
+      return { comp, ca, taxableProfitBeforeLosses, loss, ct };   })
   );
 
   const openRows = rows.filter((r) => r.comp.status !== "Approved");

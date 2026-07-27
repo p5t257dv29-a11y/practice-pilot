@@ -8,13 +8,29 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-export const P11D_RATES = {
-  class1ANicRate: 0.15,
-  defaultFuelMultiplier: 29200,
-  defaultOfficialRateOfInterest: 3.75,
-  loanDeMinimis: 10000,
-  carContributionCap: 5000,
+export const P11D_RATES_BY_YEAR: Record<string, any> = {
+  "2026/27": {
+    class1ANicRate: 0.15,
+    defaultFuelMultiplier: 29200,
+    defaultOfficialRateOfInterest: 3.75,
+    loanDeMinimis: 10000,
+    carContributionCap: 5000,
+  },
 };
+
+// Kept as a direct export too, defaulting to the current tax year, so existing
+// code referencing P11D_RATES.xyz directly (rather than going through a tax
+// year lookup) continues to work unchanged.
+export const P11D_RATES = P11D_RATES_BY_YEAR["2026/27"];
+
+// Fetches live rates from the tax_rates table (editable via Practice Settings →
+// Tax Rates), falling back to the hardcoded defaults above if no row exists
+// for that year yet. This is the single point every P11D calculation should
+// go through, so rate updates take effect without a code change.
+export async function getP11dRates(taxYear: string) {
+  const { data } = await supabase.from("tax_rates").select("p11d").eq("tax_year", taxYear).maybeSingle();
+  return data?.p11d || P11D_RATES_BY_YEAR[taxYear] || P11D_RATES_BY_YEAR["2026/27"];
+}
 
 export function calculateP11D(input: {
   carListPrice: number;
@@ -29,10 +45,11 @@ export function calculateP11D(input: {
   loanInterestPaid: number;
   officialRateOfInterest: number;
   otherBenefitsAmount: number;
-}) {
+}, liveRates?: any) {
+  const rates = liveRates || P11D_RATES;
   const proration = Math.min(1, Math.max(0, input.carAvailableDays / 365));
 
-  const adjustedListPrice = Math.max(0, input.carListPrice - Math.min(input.carCapitalContribution, P11D_RATES.carContributionCap));
+  const adjustedListPrice = Math.max(0, input.carListPrice - Math.min(input.carCapitalContribution, rates.carContributionCap));
   const carBenefit = input.carListPrice > 0
     ? adjustedListPrice * (input.carBenefitPercentage / 100) * proration
     : 0;
@@ -43,14 +60,14 @@ export function calculateP11D(input: {
 
   const medicalBenefit = Math.max(0, input.medicalPremium - input.medicalEmployeeContribution);
 
-  const loanBenefit = input.loanBalance > P11D_RATES.loanDeMinimis
+  const loanBenefit = input.loanBalance > rates.loanDeMinimis
     ? Math.max(0, input.loanBalance * (input.officialRateOfInterest / 100) - input.loanInterestPaid)
     : 0;
 
   const otherBenefit = input.otherBenefitsAmount;
 
   const totalBenefits = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefit;
-  const class1ANIC = totalBenefits * P11D_RATES.class1ANicRate;
+  const class1ANIC = totalBenefits * rates.class1ANicRate;
 
   return { carBenefit, fuelBenefit, medicalBenefit, loanBenefit, otherBenefit, totalBenefits, class1ANIC };
 }
@@ -109,23 +126,36 @@ export default async function P11DPage({
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
   ]);
 
-  const rows = (computations || []).map((comp) => {
-    const result = calculateP11D({
-      carListPrice: Number(comp.car_list_price),
-      carBenefitPercentage: Number(comp.car_benefit_percentage),
-      carCapitalContribution: Number(comp.car_capital_contribution),
-      carAvailableDays: Number(comp.car_available_days),
-      fuelProvided: comp.fuel_provided,
-      fuelBenefitMultiplier: Number(comp.fuel_benefit_multiplier),
-      medicalPremium: Number(comp.medical_premium),
-      medicalEmployeeContribution: Number(comp.medical_employee_contribution),
-      loanBalance: Number(comp.loan_balance),
-      loanInterestPaid: Number(comp.loan_interest_paid),
-      officialRateOfInterest: Number(comp.official_rate_of_interest),
-      otherBenefitsAmount: Number(comp.other_benefits_amount),
-    });
-    return { comp, result };
-  });
+  // Rates are fetched once per distinct tax year present among the loaded
+  // computations, then reused — avoids one database round trip per row.
+  const ratesCache = new Map<string, any>();
+  const getCachedRates = async (taxYear: string) => {
+    if (!ratesCache.has(taxYear)) {
+      ratesCache.set(taxYear, await getP11dRates(taxYear));
+    }
+    return ratesCache.get(taxYear);
+  };
+
+  const rows = await Promise.all(
+    (computations || []).map(async (comp) => {
+      const rates = await getCachedRates(comp.tax_year);
+      const result = calculateP11D({
+        carListPrice: Number(comp.car_list_price),
+        carBenefitPercentage: Number(comp.car_benefit_percentage),
+        carCapitalContribution: Number(comp.car_capital_contribution),
+        carAvailableDays: Number(comp.car_available_days),
+        fuelProvided: comp.fuel_provided,
+        fuelBenefitMultiplier: Number(comp.fuel_benefit_multiplier),
+        medicalPremium: Number(comp.medical_premium),
+        medicalEmployeeContribution: Number(comp.medical_employee_contribution),
+        loanBalance: Number(comp.loan_balance),
+        loanInterestPaid: Number(comp.loan_interest_paid),
+        officialRateOfInterest: Number(comp.official_rate_of_interest),
+        otherBenefitsAmount: Number(comp.other_benefits_amount),
+      }, rates);
+      return { comp, result };
+    })
+  );
 
   const openRows = rows.filter((r) => r.comp.status !== "Approved");
   const completedRows = rows.filter((r) => r.comp.status === "Approved");

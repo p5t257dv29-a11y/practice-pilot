@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
-import { calculateTax, getPaymentSchedule } from "../../page";
+import { calculateTax, getPaymentSchedule, getTaxRates } from "../../page";
 import PrintButton from "../../../print-button";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,9 @@ export default async function SA100SummaryPage({
     .eq("id", id)
     .single();
 
-  if (error || !comp) notFound();
+if (error || !comp) notFound();
+
+  const rates = await getTaxRates(comp.tax_year);
 
   const result = calculateTax({
     employmentIncome: Number(comp.employment_income),
@@ -42,12 +44,12 @@ export default async function SA100SummaryPage({
     foreignPropertyExpenses: Number(comp.foreign_property_expenses),
     foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
-    foreignTaxPaid: Number(comp.foreign_tax_paid),
+foreignTaxPaid: Number(comp.foreign_tax_paid),
     taxYear: comp.tax_year,
-  });
+  }, rates);
 
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
-
+    
   const client = comp.clients as any;
   const fmt = (n: number) => n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });

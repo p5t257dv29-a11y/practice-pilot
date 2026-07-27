@@ -34,6 +34,15 @@ export const TAX_RATES: Record<string, any> = {
   },
 };
 
+// Fetches live rates from the tax_rates table (editable via Practice Settings →
+// Tax Rates), falling back to the hardcoded defaults above if no row exists
+// for that year yet. This is the single point every Personal Tax calculation
+// should go through, so rate updates take effect without a code change.
+export async function getTaxRates(taxYear: string) {
+  const { data } = await supabase.from("tax_rates").select("personal_tax").eq("tax_year", taxYear).maybeSingle();
+  return data?.personal_tax || TAX_RATES[taxYear] || TAX_RATES["2026/27"];
+}
+
 export function previousTaxYear(taxYear: string) {
   const startYear = parseInt(taxYear.split("/")[0], 10);
   return `${startYear - 1}/${String(startYear).slice(-2)}`;
@@ -60,8 +69,8 @@ type TaxInput = {
   taxYear: string;
 };
 
-function computeCore(input: TaxInput) {
-  const r = TAX_RATES[input.taxYear] || TAX_RATES["2026/27"];
+function computeCore(input: TaxInput, rates?: any) {
+  const r = rates || TAX_RATES[input.taxYear] || TAX_RATES["2026/27"];
   const propertyExpenses = input.propertyExpenses || 0;
   const propertyFinanceCosts = input.propertyFinanceCosts || 0;
   const financeCostsBf = input.financeCostsBf || 0;
@@ -206,8 +215,8 @@ function computeCore(input: TaxInput) {
   };
 }
 
-export function calculateTax(input: TaxInput) {
-  const actual = computeCore(input);
+export function calculateTax(input: TaxInput, rates?: any) {
+  const actual = computeCore(input, rates);
 
   const baseline = computeCore({
     ...input,
@@ -218,7 +227,7 @@ export function calculateTax(input: TaxInput) {
     foreignPropertyExpenses: 0,
     foreignPropertyFinanceCosts: 0,
     foreignFinanceCostsBf: 0,
-  });
+  }, rates);
 
   const ukTaxOnForeignIncome = Math.max(0, actual.totalIncomeTax - baseline.totalIncomeTax);
   const foreignTaxPaid = input.foreignTaxPaid || 0;
@@ -292,7 +301,9 @@ async function createComputation(formData: FormData) {
     foreignTaxPaid: num("foreign_tax_paid"),
     taxYear: tax_year,
   };
-  const result = calculateTax(input);
+
+  const rates = await getTaxRates(tax_year);
+  const result = calculateTax(input, rates);
 
   await supabase.from("tax_computations").insert({
     client_id,
@@ -363,7 +374,18 @@ export default async function PersonalTaxPage({
     foreignFinanceCostsBfDefault = Number(priorComp?.foreign_finance_costs_cf || 0);
   }
 
-  const withResult = (comp: any) => {
+  // Rates are fetched once per distinct tax year present among the loaded
+  // computations, then reused — avoids one database round trip per row.
+  const ratesCache = new Map<string, any>();
+  const getCachedRates = async (taxYear: string) => {
+    if (!ratesCache.has(taxYear)) {
+      ratesCache.set(taxYear, await getTaxRates(taxYear));
+    }
+    return ratesCache.get(taxYear);
+  };
+
+  const withResult = async (comp: any) => {
+    const rates = await getCachedRates(comp.tax_year);
     const result = calculateTax({
       employmentIncome: Number(comp.employment_income),
       selfEmploymentIncome: Number(comp.self_employment_income),
@@ -383,12 +405,12 @@ export default async function PersonalTaxPage({
       foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
       foreignTaxPaid: Number(comp.foreign_tax_paid),
       taxYear: comp.tax_year,
-    });
+    }, rates);
     const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
     return { comp, result, balanceDue };
   };
 
-  const allRows = (computations || []).map(withResult);
+  const allRows = await Promise.all((computations || []).map(withResult));
   const openRows = allRows.filter((r) => r.comp.status !== "Approved");
   const completedRows = allRows.filter((r) => r.comp.status === "Approved");
 
@@ -402,7 +424,7 @@ export default async function PersonalTaxPage({
     return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
   };
 
-  const renderRow = ({ comp, result, balanceDue }: ReturnType<typeof withResult>) => {
+  const renderRow = ({ comp, result, balanceDue }: Awaited<ReturnType<typeof withResult>>) => {
     const carryForwardNote = [
       result.unusedFinanceCostsCf > 0 ? `£${result.unusedFinanceCostsCf.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} UK finance costs c/f` : null,
       result.unusedForeignFinanceCostsCf > 0 ? `£${result.unusedForeignFinanceCostsCf.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} foreign finance costs c/f` : null,

@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { calculateP11D, P11D_RATES } from "../page";
+import { calculateP11D, getP11dRates, P11D_RATES } from "../page";
 import SendP11DButton from "../send-p11d-button";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +54,8 @@ export default async function P11DDetailPage({
 
   if (error || !comp) notFound();
 
+  const rates = await getP11dRates(comp.tax_year);
+
   const result = calculateP11D({
     carListPrice: Number(comp.car_list_price),
     carBenefitPercentage: Number(comp.car_benefit_percentage),
@@ -67,7 +69,7 @@ export default async function P11DDetailPage({
     loanInterestPaid: Number(comp.loan_interest_paid),
     officialRateOfInterest: Number(comp.official_rate_of_interest),
     otherBenefitsAmount: Number(comp.other_benefits_amount),
-  });
+  }, rates);
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const updateWithId = updateComputation.bind(null, id);
@@ -127,7 +129,7 @@ export default async function P11DDetailPage({
               {Number(comp.loan_balance) > 0 && (
                 <div className="flex justify-between">
                   <span className="text-slate-500">
-                    Beneficial Loan {Number(comp.loan_balance) <= P11D_RATES.loanDeMinimis && "(under £10,000 de minimis — no benefit)"}
+                    Beneficial Loan {Number(comp.loan_balance) <= rates.loanDeMinimis && `(under £${rates.loanDeMinimis.toLocaleString("en-GB")} de minimis — no benefit)`}
                   </span>
                   <span className="font-medium">{fmt(result.loanBenefit)}</span>
                 </div>
@@ -143,7 +145,7 @@ export default async function P11DDetailPage({
                 <span>{fmt(result.totalBenefits)}</span>
               </div>
               <div className="flex justify-between text-slate-500 pt-1">
-                <span>Employer's Class 1A NIC ({(P11D_RATES.class1ANicRate * 100).toFixed(0)}%)</span>
+                <span>Employer's Class 1A NIC ({(rates.class1ANicRate * 100).toFixed(0)}%)</span>
                 <span>{fmt(result.class1ANIC)}</span>
               </div>
             </div>
