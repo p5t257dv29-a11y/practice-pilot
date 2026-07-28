@@ -208,10 +208,8 @@ export async function calculatePayRun(input: {
   return { paye, ni, loans, pension, totalDeductions, netPay };
 }
 
-// A UK tax year runs 6 April to 5 April. Given "2026/27", returns the date
-// range used to sum up an employee's pay runs for that year.
 export function taxYearDateRange(taxYear: string) {
-const startYear = parseInt(taxYear.split("/")[0], 10);
+  const startYear = parseInt(taxYear.split("/")[0], 10);
   return {
     start: `${startYear}-04-06`,
     end: `${startYear + 1}-04-05`,
@@ -248,9 +246,25 @@ async function addEmployee(clientId: string, formData: FormData) {
 
   revalidatePath("/payroll");
 }
+
 async function deleteEmployee(id: string) {
   "use server";
   await supabase.from("payroll_employees").delete().eq("id", id);
+  revalidatePath("/payroll");
+}
+
+async function markAsLeaver(employeeId: string, formData: FormData) {
+  "use server";
+  const leavingDate = String(formData.get("leaving_date") || "").trim();
+  if (!leavingDate) return;
+
+  await supabase.from("payroll_employees").update({ leaving_date: leavingDate, is_active: false }).eq("id", employeeId);
+  revalidatePath("/payroll");
+}
+
+async function reactivateEmployee(employeeId: string) {
+  "use server";
+  await supabase.from("payroll_employees").update({ leaving_date: null, is_active: true }).eq("id", employeeId);
   revalidatePath("/payroll");
 }
 
@@ -357,11 +371,6 @@ async function unlinkEmployee(employeeId: string) {
   revalidatePath("/payroll");
 }
 
-// Sums all of this employee's pay runs for the given tax year, and pushes
-// the total gross pay and tax paid into (or creates) their Personal Tax
-// computation for that year — same pattern as the Director Remuneration
-// sync used for Corporation Tax. Re-syncing after new pay runs are added
-// only applies the difference, so it won't double-count.
 async function syncEmployeeToPersonalTax(employeeId: string, taxYear: string) {
   "use server";
 
@@ -424,35 +433,179 @@ async function syncEmployeeToPersonalTax(employeeId: string, taxYear: string) {
 export default async function PayrollPage({
   searchParams,
 }: {
-  searchParams: Promise<{ browseClient?: string; runFor?: string; editRun?: string; linkEmployee?: string }>;
+  searchParams: Promise<{ browseClient?: string; clientSearch?: string; runFor?: string; editRun?: string; linkEmployee?: string }>;
 }) {
-  const { browseClient: browseClientId, runFor: runForEmployeeId, editRun: editRunId, linkEmployee: linkEmployeeId } = await searchParams;
+  const {
+    browseClient: browseClientId,
+    clientSearch,
+    runFor: runForEmployeeId,
+    editRun: editRunId,
+    linkEmployee: linkEmployeeId,
+  } = await searchParams;
 
   const [{ data: allClients }, { data: employees }, { data: runs }] = await Promise.all([
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
     browseClientId
-      ? supabase.from("payroll_employees").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", browseClientId).eq("is_active", true).order("name", { ascending: true })
+      ? supabase.from("payroll_employees").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", browseClientId).order("is_active", { ascending: false }).order("name", { ascending: true })
       : Promise.resolve({ data: [] }),
     browseClientId
       ? supabase.from("payroll_runs").select("*, payroll_employees(name)").eq("client_id", browseClientId).order("payment_date", { ascending: false })
       : Promise.resolve({ data: [] }),
   ]);
 
-  const individualClients = (allClients || []).filter((c: any) => true); // linked employees are usually individuals; keep list simple for now
+  // Client search — matches by name, doesn't require an exact/unique match.
+  // If there's exactly one result the section below still shows a single
+  // clickable card, keeping the flow consistent either way.
+  const searchMatches = clientSearch
+    ? (allClients || []).filter((c) => c.client_name.toLowerCase().includes(clientSearch.toLowerCase()))
+    : [];
+
+  const selectedClient = browseClientId ? (allClients || []).find((c) => c.id === browseClientId) : null;
 
   const addEmployeeWithId = addEmployee.bind(null, browseClientId || "");
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  const runningForEmployee = (employees || []).find((e) => e.id === runForEmployeeId);
+  const activeEmployees = (employees || []).filter((e: any) => e.is_active);
+  const formerEmployees = (employees || []).filter((e: any) => !e.is_active);
+
+  const runningForEmployee = activeEmployees.find((e: any) => e.id === runForEmployeeId);
   const createPayRunWithIds = runningForEmployee
     ? createPayRun.bind(null, runningForEmployee.id, browseClientId || "")
     : null;
 
   const taxYearForSync = "2026/27";
 
+  const EmployeeCard = ({ emp, showRunPay }: { emp: any; showRunPay: boolean }) => {
+    const isLinking = linkEmployeeId === emp.id;
+    const linkedClient = emp.linked_client;
+    const isSynced = linkedClient && Number(emp.synced_gross) > 0 && emp.synced_at;
+
+    return (
+      <div className={`rounded-xl border p-4 ${emp.is_active ? "border-slate-100" : "border-slate-100 opacity-60"}`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-semibold text-slate-900">{emp.name}</p>
+              {!emp.is_active && (
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
+                  Left {emp.leaving_date ? new Date(emp.leaving_date).toLocaleDateString("en-GB") : ""}
+                </span>
+              )}
+              {linkedClient && (
+                <a href={`/clients/${linkedClient.id}`}
+                  className="rounded-full bg-green-100 text-green-700 px-2 py-0.5 text-xs font-semibold hover:bg-green-200 transition-colors">
+                  → {linkedClient.client_name}
+                </a>
+              )}
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {emp.tax_code} · NI Category {emp.ni_category} · {emp.pay_frequency}
+              {emp.student_loan_plan && ` · ${emp.student_loan_plan}`}
+              {emp.postgrad_loan && " · Postgrad Loan"}
+              {emp.pension_opted_out && " · Pension opted out"}
+            </p>
+            {linkedClient && (
+              <p className={`text-xs mt-1 ${isSynced ? "text-green-600" : "text-amber-600"}`}>
+                {isSynced ? `✓ Synced to Personal Tax (${fmt(Number(emp.synced_gross))} gross)` : "Not yet synced to Personal Tax"}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+            {showRunPay && (
+              <a href={`/payroll?browseClient=${browseClientId}&runFor=${emp.id}`}
+                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
+                {runForEmployeeId === emp.id ? "Close" : "Run Pay →"}
+              </a>
+            )}
+            <a href={`/payroll/p60/${emp.id}`}
+              className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap">
+              P60 →
+            </a>
+            {emp.leaving_date ? (
+              <>
+                <a href={`/payroll/p45/${emp.id}`}
+                  className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap">
+                  P45 →
+                </a>
+                <form action={reactivateEmployee.bind(null, emp.id)}>
+                  <button className="rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 transition-colors whitespace-nowrap">
+                    Reactivate
+                  </button>
+                </form>
+              </>
+            ) : (
+              <details className="inline-block relative">
+                <summary className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap list-none inline">
+                  Mark as Leaver
+                </summary>
+                <form action={markAsLeaver.bind(null, emp.id)} className="absolute right-0 mt-2 bg-white border border-slate-200 rounded-xl p-3 shadow-lg z-10 flex gap-2 items-end">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Leaving Date</label>
+                    <input name="leaving_date" type="date" required className="rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <button type="submit" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
+                    Save
+                  </button>
+                </form>
+              </details>
+            )}
+            {linkedClient ? (
+              <>
+                <form action={syncEmployeeToPersonalTax.bind(null, emp.id, taxYearForSync)}>
+                  <button className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors whitespace-nowrap">
+                    Sync to Personal Tax →
+                  </button>
+                </form>
+                <form action={unlinkEmployee.bind(null, emp.id)}>
+                  <button className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
+                    Unlink
+                  </button>
+                </form>
+              </>
+            ) : (
+              <a href={isLinking ? `/payroll?browseClient=${browseClientId}` : `/payroll?browseClient=${browseClientId}&linkEmployee=${emp.id}`}
+                className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors whitespace-nowrap">
+                {isLinking ? "Close" : "Link to Client"}
+              </a>
+            )}
+            <form action={deleteEmployee.bind(null, emp.id)}>
+              <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
+                Delete
+              </button>
+            </form>
+          </div>
+        </div>
+
+        {isLinking && !linkedClient && (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <form action={linkEmployeeToClient.bind(null, emp.id)} className="flex gap-2 items-end">
+              <div className="flex-1 max-w-sm">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Link to their Personal Tax client record</label>
+                <select name="linked_client_id" required
+                  className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">Select a client</option>
+                  {(allClients || []).map((c: any) => (
+                    <option key={c.id} value={c.id}>{c.client_name}</option>
+                  ))}
+                </select>
+              </div>
+              <button type="submit"
+                className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Link
+              </button>
+            </form>
+            <p className="text-xs text-slate-400 mt-2">
+              Once linked, "Sync to Personal Tax" will add this employee's total gross pay and tax deducted for {taxYearForSync} into their Personal Tax computation.
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
-<div className="bg-white border-b border-slate-200 px-8 py-6">
+      <div className="bg-white border-b border-slate-200 px-8 py-6">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Payroll</h1>
@@ -466,6 +619,7 @@ export default async function PayrollPage({
           </a>
         </div>
       </div>
+
       <div className="p-8 space-y-6">
 
         <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
@@ -477,123 +631,121 @@ export default async function PayrollPage({
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
           <form method="get" className="mt-4 flex gap-2">
-            <select name="browseClient" defaultValue={browseClientId || ""}
-              className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-              <option value="">Select a client</option>
+            <input
+              list="client-options"
+              name="clientSearch"
+              defaultValue={clientSearch || selectedClient?.client_name || ""}
+              placeholder="Start typing a client name..."
+              className="flex-1 max-w-md rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+            />
+            <datalist id="client-options">
               {(allClients || []).map((c) => (
-                <option key={c.id} value={c.id}>{c.client_name}</option>
+                <option key={c.id} value={c.client_name} />
               ))}
-            </select>
+            </datalist>
             <button type="submit"
               className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors">
-              Show
+              Search
             </button>
           </form>
+
+          {clientSearch && !browseClientId && (
+            <div className="mt-4 space-y-2">
+              {searchMatches.length === 0 && (
+                <p className="text-sm text-slate-500">No clients found matching "{clientSearch}".</p>
+              )}
+              {searchMatches.map((c) => (
+                <a key={c.id} href={`/payroll?browseClient=${c.id}`}
+                  className="block rounded-xl border border-slate-100 p-3 text-sm font-medium text-slate-900 hover:bg-slate-50 transition-colors">
+                  {c.client_name}
+                </a>
+              ))}
+            </div>
+          )}
+
+          {selectedClient && (
+            <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
+              <span className="text-sm font-medium text-slate-700">Showing: {selectedClient.client_name}</span>
+              <a href="/payroll" className="text-xs font-semibold text-blue-600 hover:underline">Change client</a>
+            </div>
+          )}
         </div>
 
-        {browseClientId && (
+        {browseClientId && selectedClient && (
           <>
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <h2 className="text-lg font-bold text-slate-900">Employees ({(employees || []).length})</h2>
-              <div className="mt-4 space-y-2">
-                {(employees || []).map((emp: any) => {
-                  const isLinking = linkEmployeeId === emp.id;
-                  const linkedClient = emp.linked_client;
-                  const isSynced = linkedClient && Number(emp.synced_gross) > 0 && emp.synced_at;
-
-                  return (
-                  <div key={emp.id} className="rounded-xl border border-slate-100 p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-semibold text-slate-900">{emp.name}</p>
-                          {linkedClient && (
-                            <a href={`/clients/${linkedClient.id}`}
-                              className="rounded-full bg-green-100 text-green-700 px-2 py-0.5 text-xs font-semibold hover:bg-green-200 transition-colors">
-                              → {linkedClient.client_name}
-                            </a>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {emp.tax_code} · NI Category {emp.ni_category} · {emp.pay_frequency}
-                          {emp.student_loan_plan && ` · ${emp.student_loan_plan}`}
-                          {emp.postgrad_loan && " · Postgrad Loan"}
-                          {emp.pension_opted_out && " · Pension opted out"}
-                        </p>
-                        {linkedClient && (
-                          <p className={`text-xs mt-1 ${isSynced ? "text-green-600" : "text-amber-600"}`}>
-                            {isSynced ? `✓ Synced to Personal Tax (${fmt(Number(emp.synced_gross))} gross)` : "Not yet synced to Personal Tax"}
-                          </p>
-                        )}
-                      </div>
-<div className="flex items-center gap-2 flex-shrink-0">
-                        <a href={`/payroll?browseClient=${browseClientId}&runFor=${emp.id}`}
-                          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
-                          {runForEmployeeId === emp.id ? "Close" : "Run Pay →"}
-                        </a>
-                        <a href={`/payroll/p60/${emp.id}`}
-                          className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap">
-                          P60 →
-                        </a>
-                        {linkedClient ? (
-                          <>
-                            <form action={syncEmployeeToPersonalTax.bind(null, emp.id, taxYearForSync)}>
-                              <button className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors whitespace-nowrap">
-                                Sync to Personal Tax →
-                              </button>
-                            </form>
-                            <form action={unlinkEmployee.bind(null, emp.id)}>
-                              <button className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
-                                Unlink
-                              </button>
-                            </form>
-                          </>
-                        ) : (
-                          <a href={isLinking ? `/payroll?browseClient=${browseClientId}` : `/payroll?browseClient=${browseClientId}&linkEmployee=${emp.id}`}
-                            className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors whitespace-nowrap">
-                            {isLinking ? "Close" : "Link to Client"}
-                          </a>
-                        )}
-                        <form action={deleteEmployee.bind(null, emp.id)}>
-                          <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                            Delete
-                          </button>
-                        </form>
-                      </div>
-                    </div>
-
-                    {isLinking && !linkedClient && (
-                      <div className="mt-4 border-t border-slate-100 pt-4">
-                        <form action={linkEmployeeToClient.bind(null, emp.id)} className="flex gap-2 items-end">
-                          <div className="flex-1 max-w-sm">
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Link to their Personal Tax client record</label>
-                            <select name="linked_client_id" required
-                              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
-                              <option value="">Select a client</option>
-                              {(allClients || []).map((c: any) => (
-                                <option key={c.id} value={c.id}>{c.client_name}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <button type="submit"
-                            className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                            Link
-                          </button>
-                        </form>
-                        <p className="text-xs text-slate-400 mt-2">
-                          Once linked, "Sync to Personal Tax" will add this employee's total gross pay and tax deducted for {taxYearForSync} into their Personal Tax computation.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  );
-                })}
-                {(!employees || employees.length === 0) && (
-                  <p className="text-sm text-slate-500 text-center py-6">No employees on payroll for this client yet.</p>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">New Pay Run</h2>
+                {!runForEmployeeId && activeEmployees.length > 0 && (
+                  <span className="text-xs text-slate-400">Pick an active employee below to begin</span>
                 )}
               </div>
 
-<details className="mt-4">
+              {!runForEmployeeId ? (
+                <div className="mt-4 space-y-2">
+                  {activeEmployees.map((emp: any) => (
+                    <a key={emp.id} href={`/payroll?browseClient=${browseClientId}&runFor=${emp.id}`}
+                      className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                      <div>
+                        <p className="font-semibold text-slate-900">{emp.name}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{emp.tax_code} · NI Category {emp.ni_category} · {emp.pay_frequency}</p>
+                      </div>
+                      <span className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">Run Pay →</span>
+                    </a>
+                  ))}
+                  {activeEmployees.length === 0 && (
+                    <p className="text-sm text-slate-500 text-center py-6">No active employees to run pay for. Add one below.</p>
+                  )}
+                </div>
+              ) : runningForEmployee && createPayRunWithIds ? (
+                <div className="mt-4">
+                  <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 mb-4">
+                    <span className="text-sm font-medium text-slate-700">
+                      {runningForEmployee.name} · {runningForEmployee.tax_code} · NI Category {runningForEmployee.ni_category} · {runningForEmployee.pay_frequency}
+                    </span>
+                    <a href={`/payroll?browseClient=${browseClientId}`} className="text-xs font-semibold text-blue-600 hover:underline">Choose a different employee</a>
+                  </div>
+                  <form action={createPayRunWithIds} className="grid gap-4 md:grid-cols-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
+                      <input name="pay_period_start" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
+                      <input name="pay_period_end" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Payment Date *</label>
+                      <input name="payment_date" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Gross Pay (£) *</label>
+                      <input name="gross_pay" type="number" step="0.01" min="0" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div className="md:col-span-4">
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
+                      <input name="notes" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                    <div className="md:col-span-4">
+                      <button type="submit" className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                        Calculate & Save
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Employees ({activeEmployees.length})</h2>
+              <div className="mt-4 space-y-2">
+                {activeEmployees.map((emp: any) => <EmployeeCard key={emp.id} emp={emp} showRunPay={false} />)}
+                {activeEmployees.length === 0 && (
+                  <p className="text-sm text-slate-500 text-center py-6">No active employees on payroll for this client.</p>
+                )}
+              </div>
+
+              <details className="mt-4">
                 <summary className="text-sm font-semibold text-blue-600 cursor-pointer hover:underline">+ Add Employee (New Starter)</summary>
                 <form action={addEmployeeWithId} className="mt-4 space-y-4 rounded-xl border border-slate-100 p-4">
 
@@ -715,39 +867,13 @@ export default async function PayrollPage({
               </details>
             </div>
 
-            {runningForEmployee && createPayRunWithIds && (
+            {formerEmployees.length > 0 && (
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-                <h2 className="text-lg font-bold text-slate-900">Run Pay — {runningForEmployee.name}</h2>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  {runningForEmployee.tax_code} · NI Category {runningForEmployee.ni_category} · {runningForEmployee.pay_frequency}
-                </p>
-                <form action={createPayRunWithIds} className="mt-4 grid gap-4 md:grid-cols-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-                    <input name="pay_period_start" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-                    <input name="pay_period_end" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Payment Date *</label>
-                    <input name="payment_date" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Gross Pay (£) *</label>
-                    <input name="gross_pay" type="number" step="0.01" min="0" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div className="md:col-span-4">
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                    <input name="notes" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div className="md:col-span-4">
-                    <button type="submit" className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                      Calculate & Save
-                    </button>
-                  </div>
-                </form>
+                <h2 className="text-lg font-bold text-slate-900">Former Employees ({formerEmployees.length})</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Kept for reference and end-of-year documents — not available to run pay for.</p>
+                <div className="mt-4 space-y-2">
+                  {formerEmployees.map((emp: any) => <EmployeeCard key={emp.id} emp={emp} showRunPay={false} />)}
+                </div>
               </div>
             )}
 
