@@ -210,8 +210,8 @@ export async function calculatePayRun(input: {
 
 // A UK tax year runs 6 April to 5 April. Given "2026/27", returns the date
 // range used to sum up an employee's pay runs for that year.
-function taxYearDateRange(taxYear: string) {
-  const startYear = parseInt(taxYear.split("/")[0], 10);
+export function taxYearDateRange(taxYear: string) {
+const startYear = parseInt(taxYear.split("/")[0], 10);
   return {
     start: `${startYear}-04-06`,
     end: `${startYear + 1}-04-05`,
@@ -229,18 +229,25 @@ async function addEmployee(clientId: string, formData: FormData) {
   await supabase.from("payroll_employees").insert({
     client_id: clientId,
     name,
+    address: get("address") || null,
+    date_of_birth: get("date_of_birth") || null,
+    gender: get("gender") || null,
     ni_number: get("ni_number") || null,
+    start_date: get("start_date") || null,
     tax_code: get("tax_code") || "1257L",
     ni_category: get("ni_category") || "A",
     pay_frequency: get("pay_frequency") || "Monthly",
     student_loan_plan: get("student_loan_plan") || null,
     postgrad_loan: formData.get("postgrad_loan") === "on",
     pension_opted_out: formData.get("pension_opted_out") === "on",
+    starter_declaration: get("starter_declaration") || null,
+    previous_employer_name: get("previous_employer_name") || null,
+    previous_pay_to_date: parseFloat(get("previous_pay_to_date")) || 0,
+    previous_tax_to_date: parseFloat(get("previous_tax_to_date")) || 0,
   });
 
   revalidatePath("/payroll");
 }
-
 async function deleteEmployee(id: string) {
   "use server";
   await supabase.from("payroll_employees").delete().eq("id", id);
@@ -519,10 +526,14 @@ export default async function PayrollPage({
                           </p>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
+<div className="flex items-center gap-2 flex-shrink-0">
                         <a href={`/payroll?browseClient=${browseClientId}&runFor=${emp.id}`}
                           className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
                           {runForEmployeeId === emp.id ? "Close" : "Run Pay →"}
+                        </a>
+                        <a href={`/payroll/p60/${emp.id}`}
+                          className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap">
+                          P60 →
                         </a>
                         {linkedClient ? (
                           <>
@@ -582,62 +593,124 @@ export default async function PayrollPage({
                 )}
               </div>
 
-              <details className="mt-4">
-                <summary className="text-sm font-semibold text-blue-600 cursor-pointer hover:underline">+ Add Employee</summary>
-                <form action={addEmployeeWithId} className="mt-4 grid gap-4 md:grid-cols-3 rounded-xl border border-slate-100 p-4">
+<details className="mt-4">
+                <summary className="text-sm font-semibold text-blue-600 cursor-pointer hover:underline">+ Add Employee (New Starter)</summary>
+                <form action={addEmployeeWithId} className="mt-4 space-y-4 rounded-xl border border-slate-100 p-4">
+
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Name *</label>
-                    <input name="name" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Personal Details</p>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Full Name *</label>
+                        <input name="name" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Date of Birth</label>
+                        <input name="date_of_birth" type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Gender</label>
+                        <select name="gender" defaultValue="" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                          <option value="">Not specified</option>
+                          <option value="M">Male</option>
+                          <option value="F">Female</option>
+                        </select>
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Address</label>
+                        <input name="address" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">NI Number</label>
+                        <input name="ni_number" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">NI Number</label>
-                    <input name="ni_number" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+
+                  <div className="border-t border-slate-100 pt-4">
+                    <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Employment Details</p>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Start Date</label>
+                        <input name="start_date" type="date" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Tax Code</label>
+                        <input name="tax_code" defaultValue="1257L" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">NI Category</label>
+                        <select name="ni_category" defaultValue="A" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                          <option value="A">A — Standard</option>
+                          <option value="C">C — Over State Pension Age</option>
+                          <option value="H">H — Apprentice under 25</option>
+                          <option value="M">M — Under 21</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Pay Frequency</label>
+                        <select name="pay_frequency" defaultValue="Monthly" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                          <option>Monthly</option>
+                          <option>Weekly</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Student Loan Plan</label>
+                        <select name="student_loan_plan" defaultValue="" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                          <option value="">None</option>
+                          <option>Plan 1</option>
+                          <option>Plan 2</option>
+                          <option>Plan 4</option>
+                          <option>Plan 5</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-end gap-4 mt-4">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input name="postgrad_loan" type="checkbox" className="w-4 h-4 rounded" />
+                        <span className="text-sm font-medium text-slate-700">Postgraduate loan</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input name="pension_opted_out" type="checkbox" className="w-4 h-4 rounded" />
+                        <span className="text-sm font-medium text-slate-700">Opted out of pension</span>
+                      </label>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Tax Code</label>
-                    <input name="tax_code" defaultValue="1257L" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+
+                  <div className="border-t border-slate-100 pt-4">
+                    <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-1">New Starter Declaration</p>
+                    <p className="text-xs text-slate-400 mb-2">
+                      From the employee's P45, or the HMRC starter checklist if they don't have one. Determines whether previous pay/tax carries forward this tax year.
+                    </p>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Statement</label>
+                        <select name="starter_declaration" defaultValue="" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                          <option value="">Select if applicable</option>
+                          <option value="A">A — First job since 6 April</option>
+                          <option value="B">B — Only job, but had another earlier this tax year</option>
+                          <option value="C">C — Has another job or pension</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Previous Employer (from P45)</label>
+                        <input name="previous_employer_name" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div />
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Previous Pay to Date (£)</label>
+                        <input name="previous_pay_to_date" type="number" step="0.01" min="0" defaultValue="0" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Previous Tax to Date (£)</label>
+                        <input name="previous_tax_to_date" type="number" step="0.01" min="0" defaultValue="0" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">NI Category</label>
-                    <select name="ni_category" defaultValue="A" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                      <option value="A">A — Standard</option>
-                      <option value="C">C — Over State Pension Age</option>
-                      <option value="H">H — Apprentice under 25</option>
-                      <option value="M">M — Under 21</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Pay Frequency</label>
-                    <select name="pay_frequency" defaultValue="Monthly" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                      <option>Monthly</option>
-                      <option>Weekly</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Student Loan Plan</label>
-                    <select name="student_loan_plan" defaultValue="" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                      <option value="">None</option>
-                      <option>Plan 1</option>
-                      <option>Plan 2</option>
-                      <option>Plan 4</option>
-                      <option>Plan 5</option>
-                    </select>
-                  </div>
-                  <div className="flex items-end gap-4 md:col-span-3">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input name="postgrad_loan" type="checkbox" className="w-4 h-4 rounded" />
-                      <span className="text-sm font-medium text-slate-700">Postgraduate loan</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input name="pension_opted_out" type="checkbox" className="w-4 h-4 rounded" />
-                      <span className="text-sm font-medium text-slate-700">Opted out of pension</span>
-                    </label>
-                  </div>
-                  <div className="md:col-span-3">
-                    <button type="submit" className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                      Add Employee
-                    </button>
-                  </div>
+
+                  <button type="submit" className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                    Add Employee
+                  </button>
                 </form>
               </details>
             </div>
