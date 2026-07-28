@@ -43,6 +43,7 @@ const navSections = [
       { href: "/tax", label: "Personal Tax", icon: "🧮" },
       { href: "/partnership-tax", label: "Partnership Tax", icon: "🤝" },
       { href: "/p11d", label: "P11D", icon: "🚗" },
+      { href: "/payroll", label: "Payroll", icon: "💷" },
     ],
   },
   {
