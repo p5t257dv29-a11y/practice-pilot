@@ -70,15 +70,28 @@ async function markP32Paid(clientId: string, taxMonth: string, formData: FormDat
   revalidatePath("/payroll/p32");
 }
 
+function getDefaultTaxYear() {
+  const today = new Date();
+  const startYear = (today.getMonth() < 3 || (today.getMonth() === 3 && today.getDate() < 6))
+    ? today.getFullYear() - 1
+    : today.getFullYear();
+  return `${startYear}/${String(startYear + 1).slice(-2)}`;
+}
+
+function getTaxYearOptions(centerYear: string) {
+  const startYear = parseInt(centerYear.split("/")[0], 10);
+  return [startYear - 1, startYear, startYear + 1].map((y) => `${y}/${String(y + 1).slice(-2)}`);
+}
+
 export default async function P32Page({
   searchParams,
 }: {
-  searchParams: Promise<{ browseClient?: string; fromMonth?: string; toMonth?: string }>;
+  searchParams: Promise<{ browseClient?: string; fromMonth?: string; toMonth?: string; taxYear?: string }>;
 }) {
-  const { browseClient: browseClientId, fromMonth, toMonth } = await searchParams;
-  const taxYear = "2026/27";
+  const { browseClient: browseClientId, fromMonth, toMonth, taxYear: taxYearParam } = await searchParams;
+  const taxYear = taxYearParam || getDefaultTaxYear();
+  const taxYearOptions = getTaxYearOptions(getDefaultTaxYear());
   const taxMonths = getTaxMonths(taxYear);
-
   const [{ data: clients }, { data: settings }, { data: runs }, { data: p32Records }] = await Promise.all([
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
     browseClientId
@@ -237,6 +250,17 @@ export default async function P32Page({
                   Save
                 </button>
               </form>
+            </div>
+
+<div className="flex gap-2">
+              {taxYearOptions.map((y) => (
+                <a key={y} href={`/payroll/p32?browseClient=${browseClientId}&taxYear=${y}`}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    taxYear === y ? "bg-slate-900 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  }`}>
+                  {y}
+                </a>
+              ))}
             </div>
 
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">

@@ -15,13 +15,30 @@ async function deletePayRunLine(id: string) {
   revalidatePath("/payroll/runs");
 }
 
+import { taxYearDateRange } from "../page";
+
+function getDefaultTaxYear() {
+  const today = new Date();
+  const startYear = (today.getMonth() < 3 || (today.getMonth() === 3 && today.getDate() < 6))
+    ? today.getFullYear() - 1
+    : today.getFullYear();
+  return `${startYear}/${String(startYear + 1).slice(-2)}`;
+}
+
+function getTaxYearOptions(centerYear: string) {
+  const startYear = parseInt(centerYear.split("/")[0], 10);
+  return [startYear - 1, startYear, startYear + 1].map((y) => `${y}/${String(y + 1).slice(-2)}`);
+}
+
 export default async function PayRunsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ browseClient?: string }>;
+  searchParams: Promise<{ browseClient?: string; editRun?: string; taxYear?: string }>;
 }) {
-  const { browseClient: browseClientId } = await searchParams;
-
+  const { browseClient: browseClientId, editRun: editRunId, taxYear: taxYearParam } = await searchParams;
+  const taxYear = taxYearParam || getDefaultTaxYear();
+  const taxYearOptions = getTaxYearOptions(getDefaultTaxYear());
+  const { start: taxYearStart, end: taxYearEnd } = taxYearDateRange(taxYear);
   if (!browseClientId) {
     return (
       <div className="min-h-screen bg-slate-50 p-8">
@@ -33,17 +50,19 @@ export default async function PayRunsPage({
     );
   }
 
-  const [{ data: client }, { data: batches }] = await Promise.all([
+const [{ data: client }, { data: batches }] = await Promise.all([
     supabase.from("clients").select("id, client_name").eq("id", browseClientId).single(),
-    supabase.from("payroll_batches").select("*").eq("client_id", browseClientId).order("payment_date", { ascending: false }),
+    supabase.from("payroll_batches").select("*").eq("client_id", browseClientId)
+      .gte("payment_date", taxYearStart).lte("payment_date", taxYearEnd)
+      .order("payment_date", { ascending: false }),
   ]);
 
   const { data: allRuns } = await supabase
     .from("payroll_runs")
     .select("*, payroll_employees(name, email)")
     .eq("client_id", browseClientId)
+    .gte("payment_date", taxYearStart).lte("payment_date", taxYearEnd)
     .order("payment_date", { ascending: false });
-
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const runsByBatch = new Map<string, any[]>();
@@ -176,7 +195,7 @@ export default async function PayRunsPage({
             <a href={`/payroll?browseClient=${browseClientId}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
               ← Back to Payroll
             </a>
-            <h1 className="text-2xl font-bold text-slate-900 mt-4">Pay Runs</h1>
+<h1 className="text-2xl font-bold text-slate-900 mt-4">Pay Runs</h1>
             <p className="text-sm text-slate-500 mt-0.5">{client?.client_name}</p>
           </div>
           <a href={`/payroll/run?browseClient=${browseClientId}`}
@@ -184,8 +203,17 @@ export default async function PayRunsPage({
             + New Pay Run
           </a>
         </div>
+        <div className="mt-4 flex gap-2">
+          {taxYearOptions.map((y) => (
+            <a key={y} href={`/payroll/runs?browseClient=${browseClientId}&taxYear=${y}`}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                taxYear === y ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}>
+              {y}
+            </a>
+          ))}
+        </div>
       </div>
-
       <div className="p-8 space-y-6">
         {draftBatches.length > 0 && (
           <div>

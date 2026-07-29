@@ -68,7 +68,11 @@ const pathname = usePathname();
   const isLoginPage = pathname === "/login";
   const isPortalPage = pathname.startsWith("/portal");
   const [unreadCount, setUnreadCount] = useState(0);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
+  const toggleSection = (label: string) => {
+    setCollapsedSections((prev) => ({ ...prev, [label]: !prev[label] }));
+  };
   useEffect(() => {
     if (isLoginPage) return;
 
@@ -112,11 +116,18 @@ const pathname = usePathname();
 
         {/* Navigation */}
         <nav className="flex-1 p-4 space-y-6">
-          {navSections.map((section) => (
+{navSections.map((section) => {
+            const isCollapsed = collapsedSections[section.label];
+            return (
             <div key={section.label}>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider px-3 mb-2">
-                {section.label}
-              </p>
+              <button
+                onClick={() => toggleSection(section.label)}
+                className="w-full flex items-center justify-between px-3 mb-2 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-slate-300 transition-colors"
+              >
+                <span>{section.label}</span>
+                <span className={`transition-transform ${isCollapsed ? "-rotate-90" : ""}`}>▾</span>
+              </button>
+              {!isCollapsed && (
               <div className="space-y-1">
                 {section.items.map((item) => (
                   <Link
@@ -136,12 +147,13 @@ const pathname = usePathname();
                       </span>
                     )}
                   </Link>
-                ))}
+))}
               </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </nav>
-
         {/* Bottom */}
         <div className="p-4 border-t border-slate-700/50">
           <div className="flex items-center gap-3 px-3 py-2">
