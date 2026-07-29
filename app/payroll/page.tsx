@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { getTaxRates } from "../tax/page";
+import { getP11dRates } from "../p11d/page";
 
 export const dynamic = "force-dynamic";
 
@@ -161,12 +162,40 @@ export function calculateStudentLoan(input: {
   }
 
   return { studentLoan, postgradLoan };
+}export async function getStatutoryPayRates(taxYear: string) {
+  const { data } = await supabase.from("tax_rates").select("statutory_pay").eq("tax_year", taxYear).maybeSingle();
+  return data?.statutory_pay || { smpWeeklyRate: 187.18, smpEarningsPercentage: 0.90, smpHigherRateWeeks: 6 };
+}
+
+// Calculates SMP due for a specific pay period, given how many SMP weeks
+// have already been paid before this period starts. Splits correctly across
+// the 6-week higher-rate boundary if a period straddles it (e.g. week 5-9
+// pays 2 weeks at 90% AWE, then 3 weeks at the statutory rate).
+export function calculateSMPForPeriod(input: {
+  averageWeeklyEarnings: number;
+  weeksAlreadyPaid: number;
+  weeksInThisPeriod: number;
+}, rates: any) {
+  const higherRateWeekly = input.averageWeeklyEarnings * rates.smpEarningsPercentage;
+  const lowerRateWeekly = Math.min(rates.smpWeeklyRate, higherRateWeekly);
+
+  const weeksStart = input.weeksAlreadyPaid;
+  const weeksEnd = input.weeksAlreadyPaid + input.weeksInThisPeriod;
+
+  const higherRateWeeksInPeriod = Math.max(0, Math.min(weeksEnd, rates.smpHigherRateWeeks) - Math.min(weeksStart, rates.smpHigherRateWeeks));
+  const lowerRateWeeksInPeriod = Math.max(0, weeksEnd - Math.max(weeksStart, rates.smpHigherRateWeeks));
+
+  const smpDue = higherRateWeeksInPeriod * higherRateWeekly + lowerRateWeeksInPeriod * lowerRateWeekly;
+
+  return { smpDue, higherRateWeeksInPeriod, lowerRateWeeksInPeriod };
 }
 
 export function calculatePension(input: {
   grossPay: number;
   optedOut: boolean;
   payFrequency: "Weekly" | "Monthly";
+  employeeRateOverride?: number | null;
+  employerRateOverride?: number | null;
 }, rates: any) {
   if (input.optedOut) return { employeePension: 0, employerPension: 0 };
 
@@ -176,20 +205,27 @@ export function calculatePension(input: {
 
   const qualifyingEarnings = Math.max(0, Math.min(input.grossPay, upperPeriod) - lowerPeriod);
 
-  return {
-    employeePension: qualifyingEarnings * rates.pension.minEmployeeRate,
-    employerPension: qualifyingEarnings * rates.pension.minEmployerRate,
-  };
-}
+  // A per-employee rate overrides the statutory minimum when set (e.g. a
+  // scheme paying above the 5%/3% minimum). Never allowed below the
+  // statutory minimum, since that would be non-compliant.
+  const employeeRate = Math.max(input.employeeRateOverride ?? rates.pension.minEmployeeRate, rates.pension.minEmployeeRate);
+  const employerRate = Math.max(input.employerRateOverride ?? rates.pension.minEmployerRate, rates.pension.minEmployerRate);
 
-export async function calculatePayRun(input: {
+  return {
+    employeePension: qualifyingEarnings * employeeRate,
+    employerPension: qualifyingEarnings * employerRate,
+  };
+} export async function calculatePayRun(input: {
   grossPay: number;
+  payrolledBenefits?: number;
   taxCode: string;
   niCategory: string;
   payFrequency: "Weekly" | "Monthly";
   studentLoanPlan: string | null;
   hasPostgrad: boolean;
   pensionOptedOut: boolean;
+  employeePensionRate?: number | null;
+  employerPensionRate?: number | null;
   taxYear: string;
 }) {
   const [personalTaxRates, payrollRates] = await Promise.all([
@@ -197,15 +233,31 @@ export async function calculatePayRun(input: {
     getPayrollRates(input.taxYear),
   ]);
 
-  const paye = calculatePAYE({ grossPay: input.grossPay, taxCode: input.taxCode, payFrequency: input.payFrequency }, personalTaxRates);
+  const benefits = input.payrolledBenefits || 0;
+
+  // Payrolled benefits are taxable but NOT subject to standard Class 1 NI —
+  // they're added to taxable pay for PAYE purposes only, while Class 1A NIC
+  // (employer-only) is calculated separately on the benefit value itself,
+  // same treatment as the existing P11D process.
+  const payeGrossPay = input.grossPay + benefits;
+  const paye = calculatePAYE({ grossPay: payeGrossPay, taxCode: input.taxCode, payFrequency: input.payFrequency }, personalTaxRates);
   const ni = calculateNI({ grossPay: input.grossPay, niCategory: input.niCategory, payFrequency: input.payFrequency }, payrollRates);
-  const loans = calculateStudentLoan({ grossPay: input.grossPay, plan: input.studentLoanPlan, hasPostgrad: input.hasPostgrad, payFrequency: input.payFrequency }, payrollRates);
-  const pension = calculatePension({ grossPay: input.grossPay, optedOut: input.pensionOptedOut, payFrequency: input.payFrequency }, payrollRates);
+  const loans = calculateStudentLoan({ grossPay: payeGrossPay, plan: input.studentLoanPlan, hasPostgrad: input.hasPostgrad, payFrequency: input.payFrequency }, payrollRates);
+  const pension = calculatePension({
+    grossPay: input.grossPay,
+    optedOut: input.pensionOptedOut,
+    payFrequency: input.payFrequency,
+    employeeRateOverride: input.employeePensionRate,
+    employerRateOverride: input.employerPensionRate,
+  }, payrollRates);
+
+  const p11dRates = await getP11dRates(input.taxYear);
+  const benefitsClass1ANIC = benefits * p11dRates.class1ANicRate;
 
   const totalDeductions = paye.tax + ni.employeeNI + loans.studentLoan + loans.postgradLoan + pension.employeePension;
   const netPay = input.grossPay - totalDeductions;
 
-  return { paye, ni, loans, pension, totalDeductions, netPay };
+  return { paye, ni, loans, pension, totalDeductions, netPay, benefitsClass1ANIC };
 }
 
 export function taxYearDateRange(taxYear: string) {
@@ -230,20 +282,38 @@ export async function createPayRun(employeeId: string, clientId: string, batchId
   const sickPay = num("sick_pay");
   const expenses = num("expenses");
   const otherDeductions = num("other_deductions");
-
-  const grossPay = basicPay + bonus + overtime + holidayPay + sickPay;
-
+const smpWeeksThisPeriod = num("smp_weeks_this_period");
+  const payrolledBenefits = num("payrolled_benefits");
   const { data: employee } = await supabase.from("payroll_employees").select("*").eq("id", employeeId).single();
   if (!employee) return;
 
-  const result = await calculatePayRun({
+  let smpDue = 0;
+  if (smpWeeksThisPeriod > 0 && employee.average_weekly_earnings) {
+    const statutoryRates = await getStatutoryPayRates("2026/27");
+    const result = calculateSMPForPeriod({
+      averageWeeklyEarnings: Number(employee.average_weekly_earnings),
+      weeksAlreadyPaid: employee.smp_weeks_paid || 0,
+      weeksInThisPeriod: smpWeeksThisPeriod,
+    }, statutoryRates);
+    smpDue = result.smpDue;
+
+    await supabase.from("payroll_employees").update({
+      smp_weeks_paid: (employee.smp_weeks_paid || 0) + smpWeeksThisPeriod,
+    }).eq("id", employeeId);
+  }
+
+  const grossPay = basicPay + bonus + overtime + holidayPay + sickPay + smpDue;
+const result = await calculatePayRun({
     grossPay,
+    payrolledBenefits,
     taxCode: employee.tax_code,
-    niCategory: employee.ni_category,
+  niCategory: employee.ni_category,
     payFrequency: employee.pay_frequency,
     studentLoanPlan: employee.student_loan_plan,
     hasPostgrad: employee.postgrad_loan,
     pensionOptedOut: employee.pension_opted_out,
+    employeePensionRate: employee.employee_pension_rate,
+    employerPensionRate: employee.employer_pension_rate,
     taxYear: "2026/27",
   });
 
@@ -262,7 +332,9 @@ export async function createPayRun(employeeId: string, clientId: string, batchId
     overtime,
     holiday_pay: holidayPay,
     sick_pay: sickPay,
-    expenses,
+expenses,
+    payrolled_benefits: payrolledBenefits,
+    benefits_class1a_nic: result.benefitsClass1ANIC,
     other_deductions: otherDeductions,
     other_deductions_description: get("other_deductions_description") || null,
     tax_code_used: employee.tax_code,
@@ -382,6 +454,8 @@ async function addEmployee(clientId: string, formData: FormData) {
 async function updateEmployee(employeeId: string, formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
+  const employeeRateInput = get("employee_pension_rate");
+  const employerRateInput = get("employer_pension_rate");
 
   await supabase.from("payroll_employees").update({
     name: get("name"),
@@ -393,11 +467,15 @@ async function updateEmployee(employeeId: string, formData: FormData) {
     student_loan_plan: get("student_loan_plan") || null,
     postgrad_loan: formData.get("postgrad_loan") === "on",
     pension_opted_out: formData.get("pension_opted_out") === "on",
+pension_scheme_name: get("pension_scheme_name") || null,
+    employee_pension_rate: employeeRateInput ? parseFloat(employeeRateInput) / 100 : null,
+    employer_pension_rate: employerRateInput ? parseFloat(employerRateInput) / 100 : null,
+average_weekly_earnings: get("average_weekly_earnings") ? parseFloat(get("average_weekly_earnings")) : null,
+    smp_start_date: get("smp_start_date") || null,
+    annual_payrolled_benefits: get("annual_payrolled_benefits") ? parseFloat(get("annual_payrolled_benefits")) : null,
   }).eq("id", employeeId);
-
-  revalidatePath("/payroll");
+    revalidatePath("/payroll");
 }
-
 async function deleteEmployee(id: string) {
   "use server";
   await supabase.from("payroll_employees").delete().eq("id", id);
@@ -672,6 +750,30 @@ export default async function PayrollPage({
                   <option>Plan 5</option>
                 </select>
               </div>
+<div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Pension Scheme Name</label>
+                <input name="pension_scheme_name" defaultValue={emp.pension_scheme_name || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Employee Rate (%, blank = statutory 5%)</label>
+                <input name="employee_pension_rate" type="number" step="0.01" min="5" defaultValue={emp.employee_pension_rate != null ? emp.employee_pension_rate * 100 : ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" placeholder="5" />
+              </div>
+<div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Employer Rate (%, blank = statutory 3%)</label>
+                <input name="employer_pension_rate" type="number" step="0.01" min="3" defaultValue={emp.employer_pension_rate != null ? emp.employer_pension_rate * 100 : ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" placeholder="3" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Average Weekly Earnings (£, for SMP)</label>
+                <input name="average_weekly_earnings" type="number" step="0.01" min="0" defaultValue={emp.average_weekly_earnings || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" placeholder="Only needed if on maternity leave" />
+              </div>
+<div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">SMP Start Date</label>
+                <input name="smp_start_date" type="date" defaultValue={emp.smp_start_date || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Annual Payrolled Benefits (£, from 2027)</label>
+                <input name="annual_payrolled_benefits" type="number" step="0.01" min="0" defaultValue={emp.annual_payrolled_benefits || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" placeholder="Total taxable benefit value for the year" />
+              </div>
               <div className="flex items-end gap-4 md:col-span-2">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input name="postgrad_loan" type="checkbox" defaultChecked={emp.postgrad_loan} className="w-4 h-4 rounded" />
@@ -744,6 +846,13 @@ export default async function PayrollPage({
 <a href="/payroll/summary"
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               Reports →
+            </a><a href="/payroll/summary"
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              Reports →
+            </a>
+            <a href="/payroll/pension-report"
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              Pensions →
             </a>
             <a href="/payroll/p32"
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">

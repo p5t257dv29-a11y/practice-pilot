@@ -99,7 +99,36 @@ export default async function PayRunsPage({
             className="inline-block mt-3 text-xs font-semibold text-blue-600 hover:underline">
             Review & Correct this pay run →
           </a>
-        ) : null}
+        ) : null}{!isDraft && runs.filter((r: any) => r.payroll_employees?.email).length > 0 && (
+          <details className="mt-3">
+            <summary className="text-xs font-semibold text-blue-600 cursor-pointer hover:underline">
+              Email All Payslips ({runs.filter((r: any) => r.payroll_employees?.email).length})
+            </summary>
+            <div className="mt-3 rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-2">
+              <p className="text-xs text-slate-500">
+                Click each button in turn — every email opens in your mail app ready to send, one at a time.
+              </p>
+              {runs.filter((r: any) => r.payroll_employees?.email).map((run: any) => (
+                <div key={run.id} className="flex items-center justify-between bg-white rounded-lg border border-slate-100 px-3 py-2">
+                  <span className="text-sm text-slate-700">{run.payroll_employees.name}</span>
+                  <EmailPayslipButton
+                    email={run.payroll_employees.email}
+                    employeeName={run.payroll_employees.name}
+                    token={run.token}
+                    paymentDate={run.payment_date}
+                    periodStart={run.pay_period_start}
+                    periodEnd={run.pay_period_end}
+                  />
+                </div>
+              ))}
+              {runs.some((r: any) => !r.payroll_employees?.email) && (
+                <p className="text-xs text-amber-600 mt-2">
+                  {runs.filter((r: any) => !r.payroll_employees?.email).length} employee(s) have no email on file and are excluded — add one via their Edit button on the main Payroll page.
+                </p>
+              )}
+            </div>
+          </details>
+        )}
         <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
           {runs.map((run: any) => (
             <div key={run.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3">

@@ -286,15 +286,26 @@ const { data: batchRuns } = activeBatchId
                           <input name="holiday_pay" type="number" step="0.01" min="0" defaultValue="0"
                             className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                         </div>
-                        <div>
+<div>
                           <label className="block text-sm font-medium text-slate-700 mb-1">Sick Pay (£)</label>
                           <input name="sick_pay" type="number" step="0.01" min="0" defaultValue="0"
                             className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                         </div>
+<div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">SMP Weeks This Period</label>
+                          <input name="smp_weeks_this_period" type="number" step="0.5" min="0" defaultValue="0"
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                            placeholder="0 unless on maternity leave" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Payrolled Benefits This Period (£)</label>
+                          <input name="payrolled_benefits" type="number" step="0.01" min="0" defaultValue={nextEmployee.annual_payrolled_benefits ? (Number(nextEmployee.annual_payrolled_benefits) / (nextEmployee.pay_frequency === "Weekly" ? 52 : 12)).toFixed(2) : "0"}
+                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                            placeholder="From 2027: taxed here instead of P11D" />
+                        </div>
                       </div>
-                      <p className="text-xs text-slate-400 mt-2">These are all combined and taxed together — this is what PAYE, NI, and pension are calculated on.</p>
+                      <p className="text-xs text-slate-400 mt-2">These are all combined and taxed together — this is what PAYE, NI, and pension are calculated on. SMP is calculated automatically from the employee's Average Weekly Earnings and weeks already paid.</p>
                     </div>
-
                     <div className="border-t border-slate-100 pt-4">
                       <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Non-Taxable Items</p>
                       <div className="grid gap-4 md:grid-cols-2">
