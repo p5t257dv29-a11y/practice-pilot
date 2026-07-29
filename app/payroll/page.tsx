@@ -496,6 +496,25 @@ async function reactivateEmployee(employeeId: string) {
   await supabase.from("payroll_employees").update({ leaving_date: null, is_active: true }).eq("id", employeeId);
   revalidatePath("/payroll");
 }
+async function searchAndRedirect(formData: FormData) {
+  "use server";
+  const query = String(formData.get("clientSearch") || "").trim().toLowerCase();
+  if (!query) return;
+
+  const { data: clients } = await supabase.from("clients").select("id, client_name");
+  const exactMatch = (clients || []).find((c) => c.client_name.toLowerCase() === query);
+  const substringMatches = (clients || []).filter((c) => c.client_name.toLowerCase().includes(query));
+
+  const { redirect } = await import("next/navigation");
+
+  if (exactMatch) {
+    redirect(`/payroll?browseClient=${exactMatch.id}`);
+  } else if (substringMatches.length === 1) {
+    redirect(`/payroll?browseClient=${substringMatches[0].id}`);
+  } else {
+    redirect(`/payroll?clientSearch=${encodeURIComponent(query)}`);
+  }
+}
 
 async function linkEmployeeToClient(employeeId: string, formData: FormData) {
   "use server";
@@ -830,7 +849,7 @@ export default async function PayrollPage({
               Employee records for payroll. Pay runs are built and viewed separately.
             </p>
           </div>
-          <div className="flex gap-3">
+<div className="flex gap-3">
             {browseClientId && (
               <>
                 <a href={`/payroll/run?browseClient=${browseClientId}`}
@@ -841,23 +860,20 @@ export default async function PayrollPage({
                   className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
                   View Pay Runs →
                 </a>
+                <a href={`/payroll/summary?browseClient=${browseClientId}`}
+                  className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                  Reports →
+                </a>
+                <a href={`/payroll/pension-report?browseClient=${browseClientId}`}
+                  className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                  Pensions →
+                </a>
+                <a href={`/payroll/p32?browseClient=${browseClientId}`}
+                  className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                  P32 →
+                </a>
               </>
             )}
-<a href="/payroll/summary"
-              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              Reports →
-            </a><a href="/payroll/summary"
-              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              Reports →
-            </a>
-            <a href="/payroll/pension-report"
-              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              Pensions →
-            </a>
-            <a href="/payroll/p32"
-              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              P32 →
-            </a>
           </div>
         </div>
       </div>
@@ -872,7 +888,7 @@ export default async function PayrollPage({
 
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
           <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
-          <form method="get" className="mt-4 flex gap-2">
+<form action={searchAndRedirect} className="mt-4 flex gap-2">
             <input
               list="client-options"
               name="clientSearch"

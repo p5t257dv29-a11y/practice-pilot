@@ -161,17 +161,16 @@ export default async function P32Page({
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <a href="/payroll" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+<a href={browseClientId ? `/payroll?browseClient=${browseClientId}` : "/payroll"} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
           ← Back to Payroll
         </a>
         <h1 className="text-2xl font-bold text-slate-900 mt-4">P32 — Employer Payment Record</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          Monthly total of PAYE tax, National Insurance, student loan deductions, and SMP recovery due to/from HMRC, {taxYear}.
+          {browseClientId ? `Tax year ${taxYear}` : `Monthly total of PAYE tax, National Insurance, student loan deductions, and SMP recovery due to/from HMRC, ${taxYear}.`}
         </p>
       </div>
 
       <div className="p-8 space-y-6">
-
         <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
           <p className="text-xs text-yellow-800">
             <strong>Working summary, not a submission.</strong> This totals figures already calculated in Payroll — it doesn't submit anything to HMRC. Confirm Employment Allowance eligibility and your Small Employers' Relief status (103% vs 92% SMP recovery) against current GOV.UK rules before relying on the figures shown here.

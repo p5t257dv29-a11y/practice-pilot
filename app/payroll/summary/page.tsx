@@ -102,18 +102,19 @@ export default async function PayrollSummaryPage({
 
   return (
     <div className="min-h-screen bg-slate-50 print:bg-white">
-      <div className="bg-white border-b border-slate-200 px-8 py-6 print:hidden">
+<div className="bg-white border-b border-slate-200 px-8 py-6 print:hidden">
         <div className="flex items-center justify-between">
           <div>
-            <a href="/payroll" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">← Back to Payroll</a>
+            <a href={browseClientId ? `/payroll?browseClient=${browseClientId}` : "/payroll"} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">← Back to Payroll</a>
             <h1 className="text-2xl font-bold text-slate-900 mt-4">Payroll Summary Report</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Per-employee totals across a chosen date range.</p>
+            <p className="text-sm text-slate-500 mt-0.5">{selectedClient ? selectedClient.client_name : "Per-employee totals across a chosen date range."}</p>
           </div>
           {browseClientId && <PrintButton />}
         </div>
       </div>
 
       <div className="p-8 space-y-6">
+        {!browseClientId && (
         <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 print:hidden">
           <h2 className="text-lg font-bold text-slate-900">Find Client</h2>
           <form method="get" className="mt-4 flex gap-2">
@@ -142,11 +143,12 @@ export default async function PayrollSummaryPage({
                 </a>
               ))}
             </div>
-          )}
+)}
         </div>
+        )}
 
         {browseClientId && selectedClient && (
-          <>
+<>
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 print:hidden">
               <div className="flex items-center justify-between mb-4">
                 <span className="text-sm font-medium text-slate-700">Showing: {selectedClient.client_name}</span>
