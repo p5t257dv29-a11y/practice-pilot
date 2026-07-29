@@ -216,7 +216,138 @@ export function taxYearDateRange(taxYear: string) {
   };
 }
 
-// ============ SERVER ACTIONS ============
+// ============ SERVER ACTIONS — PAY RUNS ============
+
+export async function createPayRun(employeeId: string, clientId: string, batchId: string | null, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const num = (key: string) => parseFloat(get(key)) || 0;
+
+  const basicPay = num("basic_pay");
+  const bonus = num("bonus");
+  const overtime = num("overtime");
+  const holidayPay = num("holiday_pay");
+  const sickPay = num("sick_pay");
+  const expenses = num("expenses");
+  const otherDeductions = num("other_deductions");
+
+  const grossPay = basicPay + bonus + overtime + holidayPay + sickPay;
+
+  const { data: employee } = await supabase.from("payroll_employees").select("*").eq("id", employeeId).single();
+  if (!employee) return;
+
+  const result = await calculatePayRun({
+    grossPay,
+    taxCode: employee.tax_code,
+    niCategory: employee.ni_category,
+    payFrequency: employee.pay_frequency,
+    studentLoanPlan: employee.student_loan_plan,
+    hasPostgrad: employee.postgrad_loan,
+    pensionOptedOut: employee.pension_opted_out,
+    taxYear: "2026/27",
+  });
+
+  const netPay = result.netPay + expenses - otherDeductions;
+
+  await supabase.from("payroll_runs").insert({
+    employee_id: employeeId,
+    client_id: clientId,
+    batch_id: batchId,
+    pay_period_start: get("pay_period_start"),
+    pay_period_end: get("pay_period_end"),
+    payment_date: get("payment_date"),
+    gross_pay: grossPay,
+    basic_pay: basicPay,
+    bonus,
+    overtime,
+    holiday_pay: holidayPay,
+    sick_pay: sickPay,
+    expenses,
+    other_deductions: otherDeductions,
+    other_deductions_description: get("other_deductions_description") || null,
+    tax_code_used: employee.tax_code,
+    ni_category_used: employee.ni_category,
+    tax_deducted: result.paye.tax,
+    employee_ni: result.ni.employeeNI,
+    employer_ni: result.ni.employerNI,
+    student_loan_deducted: result.loans.studentLoan,
+    postgrad_loan_deducted: result.loans.postgradLoan,
+    employee_pension: result.pension.employeePension,
+    employer_pension: result.pension.employerPension,
+    net_pay: netPay,
+    notes: get("notes"),
+  });
+
+  revalidatePath("/payroll");
+  revalidatePath("/payroll/run");
+  revalidatePath("/payroll/runs");
+}
+
+export async function updatePayRun(runId: string, employeeId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const num = (key: string) => parseFloat(get(key)) || 0;
+
+  const basicPay = num("basic_pay");
+  const bonus = num("bonus");
+  const overtime = num("overtime");
+  const holidayPay = num("holiday_pay");
+  const sickPay = num("sick_pay");
+  const expenses = num("expenses");
+  const otherDeductions = num("other_deductions");
+  const grossPay = basicPay + bonus + overtime + holidayPay + sickPay;
+
+  const { data: employee } = await supabase.from("payroll_employees").select("*").eq("id", employeeId).single();
+  if (!employee) return;
+
+  const result = await calculatePayRun({
+    grossPay,
+    taxCode: employee.tax_code,
+    niCategory: employee.ni_category,
+    payFrequency: employee.pay_frequency,
+    studentLoanPlan: employee.student_loan_plan,
+    hasPostgrad: employee.postgrad_loan,
+    pensionOptedOut: employee.pension_opted_out,
+    taxYear: "2026/27",
+  });
+
+  const netPay = result.netPay + expenses - otherDeductions;
+
+  await supabase.from("payroll_runs").update({
+    gross_pay: grossPay,
+    basic_pay: basicPay,
+    bonus,
+    overtime,
+    holiday_pay: holidayPay,
+    sick_pay: sickPay,
+    expenses,
+    other_deductions: otherDeductions,
+    other_deductions_description: get("other_deductions_description") || null,
+    tax_deducted: result.paye.tax,
+    employee_ni: result.ni.employeeNI,
+    employer_ni: result.ni.employerNI,
+    student_loan_deducted: result.loans.studentLoan,
+    postgrad_loan_deducted: result.loans.postgradLoan,
+    employee_pension: result.pension.employeePension,
+    employer_pension: result.pension.employerPension,
+    net_pay: netPay,
+    notes: get("notes"),
+  }).eq("id", runId);
+
+  revalidatePath("/payroll");
+  revalidatePath("/payroll/run");
+  revalidatePath("/payroll/runs");
+}
+
+export async function deletePayRun(id: string) {
+  "use server";
+  await supabase.from("payroll_runs").delete().eq("id", id);
+  revalidatePath("/payroll");
+  revalidatePath("/payroll/run");
+  revalidatePath("/payroll/runs");
+}
+
+// ============ SERVER ACTIONS — EMPLOYEES ============
 
 async function addEmployee(clientId: string, formData: FormData) {
   "use server";
@@ -227,6 +358,7 @@ async function addEmployee(clientId: string, formData: FormData) {
   await supabase.from("payroll_employees").insert({
     client_id: clientId,
     name,
+    email: get("email") || null,
     address: get("address") || null,
     date_of_birth: get("date_of_birth") || null,
     gender: get("gender") || null,
@@ -243,6 +375,25 @@ async function addEmployee(clientId: string, formData: FormData) {
     previous_pay_to_date: parseFloat(get("previous_pay_to_date")) || 0,
     previous_tax_to_date: parseFloat(get("previous_tax_to_date")) || 0,
   });
+
+  revalidatePath("/payroll");
+}
+
+async function updateEmployee(employeeId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  await supabase.from("payroll_employees").update({
+    name: get("name"),
+    email: get("email") || null,
+    ni_number: get("ni_number") || null,
+    tax_code: get("tax_code") || "1257L",
+    ni_category: get("ni_category") || "A",
+    pay_frequency: get("pay_frequency") || "Monthly",
+    student_loan_plan: get("student_loan_plan") || null,
+    postgrad_loan: formData.get("postgrad_loan") === "on",
+    pension_opted_out: formData.get("pension_opted_out") === "on",
+  }).eq("id", employeeId);
 
   revalidatePath("/payroll");
 }
@@ -265,94 +416,6 @@ async function markAsLeaver(employeeId: string, formData: FormData) {
 async function reactivateEmployee(employeeId: string) {
   "use server";
   await supabase.from("payroll_employees").update({ leaving_date: null, is_active: true }).eq("id", employeeId);
-  revalidatePath("/payroll");
-}
-
-async function createPayRun(employeeId: string, clientId: string, formData: FormData) {
-  "use server";
-  const get = (key: string) => String(formData.get(key) || "").trim();
-  const grossPay = parseFloat(get("gross_pay")) || 0;
-
-  const { data: employee } = await supabase.from("payroll_employees").select("*").eq("id", employeeId).single();
-  if (!employee) return;
-
-  const result = await calculatePayRun({
-    grossPay,
-    taxCode: employee.tax_code,
-    niCategory: employee.ni_category,
-    payFrequency: employee.pay_frequency,
-    studentLoanPlan: employee.student_loan_plan,
-    hasPostgrad: employee.postgrad_loan,
-    pensionOptedOut: employee.pension_opted_out,
-    taxYear: "2026/27",
-  });
-
-  await supabase.from("payroll_runs").insert({
-    employee_id: employeeId,
-    client_id: clientId,
-    pay_period_start: get("pay_period_start"),
-    pay_period_end: get("pay_period_end"),
-    payment_date: get("payment_date"),
-    gross_pay: grossPay,
-    tax_code_used: employee.tax_code,
-    ni_category_used: employee.ni_category,
-    tax_deducted: result.paye.tax,
-    employee_ni: result.ni.employeeNI,
-    employer_ni: result.ni.employerNI,
-    student_loan_deducted: result.loans.studentLoan,
-    postgrad_loan_deducted: result.loans.postgradLoan,
-    employee_pension: result.pension.employeePension,
-    employer_pension: result.pension.employerPension,
-    net_pay: result.netPay,
-    notes: get("notes"),
-  });
-
-  revalidatePath("/payroll");
-}
-
-async function deletePayRun(id: string) {
-  "use server";
-  await supabase.from("payroll_runs").delete().eq("id", id);
-  revalidatePath("/payroll");
-}
-
-async function updatePayRun(runId: string, employeeId: string, formData: FormData) {
-  "use server";
-  const get = (key: string) => String(formData.get(key) || "").trim();
-  const grossPay = parseFloat(get("gross_pay")) || 0;
-
-  const { data: employee } = await supabase.from("payroll_employees").select("*").eq("id", employeeId).single();
-  if (!employee) return;
-
-  const result = await calculatePayRun({
-    grossPay,
-    taxCode: employee.tax_code,
-    niCategory: employee.ni_category,
-    payFrequency: employee.pay_frequency,
-    studentLoanPlan: employee.student_loan_plan,
-    hasPostgrad: employee.postgrad_loan,
-    pensionOptedOut: employee.pension_opted_out,
-    taxYear: "2026/27",
-  });
-
-  await supabase.from("payroll_runs").update({
-    pay_period_start: get("pay_period_start"),
-    pay_period_end: get("pay_period_end"),
-    payment_date: get("payment_date"),
-    gross_pay: grossPay,
-    tax_code_used: employee.tax_code,
-    ni_category_used: employee.ni_category,
-    tax_deducted: result.paye.tax,
-    employee_ni: result.ni.employeeNI,
-    employer_ni: result.ni.employerNI,
-    student_loan_deducted: result.loans.studentLoan,
-    postgrad_loan_deducted: result.loans.postgradLoan,
-    employee_pension: result.pension.employeePension,
-    employer_pension: result.pension.employerPension,
-    net_pay: result.netPay,
-    notes: get("notes"),
-  }).eq("id", runId);
-
   revalidatePath("/payroll");
 }
 
@@ -433,29 +496,22 @@ async function syncEmployeeToPersonalTax(employeeId: string, taxYear: string) {
 export default async function PayrollPage({
   searchParams,
 }: {
-  searchParams: Promise<{ browseClient?: string; clientSearch?: string; runFor?: string; editRun?: string; linkEmployee?: string }>;
+  searchParams: Promise<{ browseClient?: string; clientSearch?: string; linkEmployee?: string; editEmployee?: string }>;
 }) {
   const {
     browseClient: browseClientId,
     clientSearch,
-    runFor: runForEmployeeId,
-    editRun: editRunId,
     linkEmployee: linkEmployeeId,
+    editEmployee: editEmployeeId,
   } = await searchParams;
 
-  const [{ data: allClients }, { data: employees }, { data: runs }] = await Promise.all([
+  const [{ data: allClients }, { data: employees }] = await Promise.all([
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
     browseClientId
       ? supabase.from("payroll_employees").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", browseClientId).order("is_active", { ascending: false }).order("name", { ascending: true })
       : Promise.resolve({ data: [] }),
-    browseClientId
-      ? supabase.from("payroll_runs").select("*, payroll_employees(name)").eq("client_id", browseClientId).order("payment_date", { ascending: false })
-      : Promise.resolve({ data: [] }),
   ]);
 
-  // Client search — matches by name, doesn't require an exact/unique match.
-  // If there's exactly one result the section below still shows a single
-  // clickable card, keeping the flow consistent either way.
   const searchMatches = clientSearch
     ? (allClients || []).filter((c) => c.client_name.toLowerCase().includes(clientSearch.toLowerCase()))
     : [];
@@ -468,15 +524,11 @@ export default async function PayrollPage({
   const activeEmployees = (employees || []).filter((e: any) => e.is_active);
   const formerEmployees = (employees || []).filter((e: any) => !e.is_active);
 
-  const runningForEmployee = activeEmployees.find((e: any) => e.id === runForEmployeeId);
-  const createPayRunWithIds = runningForEmployee
-    ? createPayRun.bind(null, runningForEmployee.id, browseClientId || "")
-    : null;
-
   const taxYearForSync = "2026/27";
 
-  const EmployeeCard = ({ emp, showRunPay }: { emp: any; showRunPay: boolean }) => {
+  const EmployeeCard = ({ emp }: { emp: any }) => {
     const isLinking = linkEmployeeId === emp.id;
+    const isEditing = editEmployeeId === emp.id;
     const linkedClient = emp.linked_client;
     const isSynced = linkedClient && Number(emp.synced_gross) > 0 && emp.synced_at;
 
@@ -500,6 +552,7 @@ export default async function PayrollPage({
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
               {emp.tax_code} · NI Category {emp.ni_category} · {emp.pay_frequency}
+              {emp.email && ` · ${emp.email}`}
               {emp.student_loan_plan && ` · ${emp.student_loan_plan}`}
               {emp.postgrad_loan && " · Postgrad Loan"}
               {emp.pension_opted_out && " · Pension opted out"}
@@ -511,12 +564,10 @@ export default async function PayrollPage({
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
-            {showRunPay && (
-              <a href={`/payroll?browseClient=${browseClientId}&runFor=${emp.id}`}
-                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
-                {runForEmployeeId === emp.id ? "Close" : "Run Pay →"}
-              </a>
-            )}
+            <a href={isEditing ? `/payroll?browseClient=${browseClientId}` : `/payroll?browseClient=${browseClientId}&editEmployee=${emp.id}`}
+              className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap">
+              {isEditing ? "Close" : "Edit"}
+            </a>
             <a href={`/payroll/p60/${emp.id}`}
               className="rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap">
               P60 →
@@ -576,6 +627,70 @@ export default async function PayrollPage({
           </div>
         </div>
 
+        {isEditing && (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <form action={updateEmployee.bind(null, emp.id)} className="grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Name *</label>
+                <input name="name" required defaultValue={emp.name} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                <input name="email" type="email" defaultValue={emp.email || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">NI Number</label>
+                <input name="ni_number" defaultValue={emp.ni_number || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Tax Code</label>
+                <input name="tax_code" defaultValue={emp.tax_code} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">NI Category</label>
+                <select name="ni_category" defaultValue={emp.ni_category} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="A">A — Standard</option>
+                  <option value="C">C — Over State Pension Age</option>
+                  <option value="H">H — Apprentice under 25</option>
+                  <option value="M">M — Under 21</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Pay Frequency</label>
+                <select name="pay_frequency" defaultValue={emp.pay_frequency} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option>Monthly</option>
+                  <option>Weekly</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Student Loan Plan</label>
+                <select name="student_loan_plan" defaultValue={emp.student_loan_plan || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="">None</option>
+                  <option>Plan 1</option>
+                  <option>Plan 2</option>
+                  <option>Plan 4</option>
+                  <option>Plan 5</option>
+                </select>
+              </div>
+              <div className="flex items-end gap-4 md:col-span-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input name="postgrad_loan" type="checkbox" defaultChecked={emp.postgrad_loan} className="w-4 h-4 rounded" />
+                  <span className="text-sm font-medium text-slate-700">Postgraduate loan</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input name="pension_opted_out" type="checkbox" defaultChecked={emp.pension_opted_out} className="w-4 h-4 rounded" />
+                  <span className="text-sm font-medium text-slate-700">Opted out of pension</span>
+                </label>
+              </div>
+              <div className="md:col-span-3">
+                <button type="submit" className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
         {isLinking && !linkedClient && (
           <div className="mt-4 border-t border-slate-100 pt-4">
             <form action={linkEmployeeToClient.bind(null, emp.id)} className="flex gap-2 items-end">
@@ -610,13 +725,27 @@ export default async function PayrollPage({
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Payroll</h1>
             <p className="text-sm text-slate-500 mt-0.5">
-              Calculates PAYE, National Insurance, student/postgraduate loan deductions, and pension auto-enrolment for each pay run.
+              Employee records for payroll. Pay runs are built and viewed separately.
             </p>
           </div>
-          <a href="/payroll/p32"
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-            P32 Employer Payment Record →
-          </a>
+          <div className="flex gap-3">
+            {browseClientId && (
+              <>
+                <a href={`/payroll/run?browseClient=${browseClientId}`}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                  + New Pay Run
+                </a>
+                <a href={`/payroll/runs?browseClient=${browseClientId}`}
+                  className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                  View Pay Runs →
+                </a>
+              </>
+            )}
+            <a href="/payroll/p32"
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              P32 →
+            </a>
+          </div>
         </div>
       </div>
 
@@ -624,7 +753,7 @@ export default async function PayrollPage({
 
         <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
           <p className="text-xs text-yellow-800">
-            <strong>Working calculator, not an RTI filing tool.</strong> This computes each pay period independently (Week 1 / Month 1 basis) rather than tracking a full cumulative year-to-date position. Submitting payroll to HMRC (Full Payment Submission) still requires HMRC-recognised software such as Basic PAYE Tools — use the figures calculated here as your working papers, and verify NI category treatment, student loan plans, and pension rates against current GOV.UK guidance before relying on them for a real payslip.
+            <strong>Working calculator, not an RTI filing tool.</strong> This computes each pay period independently (Week 1 / Month 1 basis) rather than tracking a full cumulative year-to-date position. Submitting payroll to HMRC (Full Payment Submission) still requires HMRC-recognised software such as Basic PAYE Tools.
           </p>
         </div>
 
@@ -674,72 +803,9 @@ export default async function PayrollPage({
         {browseClientId && selectedClient && (
           <>
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-slate-900">New Pay Run</h2>
-                {!runForEmployeeId && activeEmployees.length > 0 && (
-                  <span className="text-xs text-slate-400">Pick an active employee below to begin</span>
-                )}
-              </div>
-
-              {!runForEmployeeId ? (
-                <div className="mt-4 space-y-2">
-                  {activeEmployees.map((emp: any) => (
-                    <a key={emp.id} href={`/payroll?browseClient=${browseClientId}&runFor=${emp.id}`}
-                      className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
-                      <div>
-                        <p className="font-semibold text-slate-900">{emp.name}</p>
-                        <p className="text-xs text-slate-500 mt-0.5">{emp.tax_code} · NI Category {emp.ni_category} · {emp.pay_frequency}</p>
-                      </div>
-                      <span className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">Run Pay →</span>
-                    </a>
-                  ))}
-                  {activeEmployees.length === 0 && (
-                    <p className="text-sm text-slate-500 text-center py-6">No active employees to run pay for. Add one below.</p>
-                  )}
-                </div>
-              ) : runningForEmployee && createPayRunWithIds ? (
-                <div className="mt-4">
-                  <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 mb-4">
-                    <span className="text-sm font-medium text-slate-700">
-                      {runningForEmployee.name} · {runningForEmployee.tax_code} · NI Category {runningForEmployee.ni_category} · {runningForEmployee.pay_frequency}
-                    </span>
-                    <a href={`/payroll?browseClient=${browseClientId}`} className="text-xs font-semibold text-blue-600 hover:underline">Choose a different employee</a>
-                  </div>
-                  <form action={createPayRunWithIds} className="grid gap-4 md:grid-cols-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-                      <input name="pay_period_start" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-                      <input name="pay_period_end" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Payment Date *</label>
-                      <input name="payment_date" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Gross Pay (£) *</label>
-                      <input name="gross_pay" type="number" step="0.01" min="0" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div className="md:col-span-4">
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                      <input name="notes" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div className="md:col-span-4">
-                      <button type="submit" className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                        Calculate & Save
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Employees ({activeEmployees.length})</h2>
               <div className="mt-4 space-y-2">
-                {activeEmployees.map((emp: any) => <EmployeeCard key={emp.id} emp={emp} showRunPay={false} />)}
+                {activeEmployees.map((emp: any) => <EmployeeCard key={emp.id} emp={emp} />)}
                 {activeEmployees.length === 0 && (
                   <p className="text-sm text-slate-500 text-center py-6">No active employees on payroll for this client.</p>
                 )}
@@ -755,6 +821,10 @@ export default async function PayrollPage({
                       <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Full Name *</label>
                         <input name="name" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                        <input name="email" type="email" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">Date of Birth</label>
@@ -832,7 +902,7 @@ export default async function PayrollPage({
                   <div className="border-t border-slate-100 pt-4">
                     <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-1">New Starter Declaration</p>
                     <p className="text-xs text-slate-400 mb-2">
-                      From the employee's P45, or the HMRC starter checklist if they don't have one. Determines whether previous pay/tax carries forward this tax year.
+                      From the employee's P45, or the HMRC starter checklist if they don't have one.
                     </p>
                     <div className="grid gap-4 md:grid-cols-3">
                       <div>
@@ -870,111 +940,12 @@ export default async function PayrollPage({
             {formerEmployees.length > 0 && (
               <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <h2 className="text-lg font-bold text-slate-900">Former Employees ({formerEmployees.length})</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Kept for reference and end-of-year documents — not available to run pay for.</p>
+                <p className="text-xs text-slate-400 mt-0.5">Kept for reference and end-of-year documents.</p>
                 <div className="mt-4 space-y-2">
-                  {formerEmployees.map((emp: any) => <EmployeeCard key={emp.id} emp={emp} showRunPay={false} />)}
+                  {formerEmployees.map((emp: any) => <EmployeeCard key={emp.id} emp={emp} />)}
                 </div>
               </div>
             )}
-
-            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <h2 className="text-lg font-bold text-slate-900">Pay Run History</h2>
-              <div className="mt-4 space-y-2">
-                {(runs || []).map((run: any) => {
-                  const isEditing = editRunId === run.id;
-                  return (
-                  <div key={run.id} className="rounded-xl border border-slate-100 p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-semibold text-slate-900">
-                          {run.payroll_employees?.name} — {new Date(run.payment_date).toLocaleDateString("en-GB")}
-                        </p>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {new Date(run.pay_period_start).toLocaleDateString("en-GB")} to {new Date(run.pay_period_end).toLocaleDateString("en-GB")}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <div className="text-right">
-                          <p className="font-bold text-slate-900">{fmt(Number(run.net_pay))}</p>
-                          <p className="text-xs text-slate-400">net pay (gross {fmt(Number(run.gross_pay))})</p>
-                        </div>
-                        <a href={isEditing ? `/payroll?browseClient=${browseClientId}` : `/payroll?browseClient=${browseClientId}&editRun=${run.id}`}
-                          className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors">
-                          {isEditing ? "Close" : "Edit"}
-                        </a>
-                        <form action={deletePayRun.bind(null, run.id)}>
-                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                            Delete
-                          </button>
-                        </form>
-                      </div>
-                    </div>
-                    <div className="mt-3 grid grid-cols-3 md:grid-cols-6 gap-2 text-xs border-t border-slate-100 pt-3">
-                      <div><p className="text-slate-400">Tax</p><p className="font-semibold text-slate-700">{fmt(Number(run.tax_deducted))}</p></div>
-                      <div><p className="text-slate-400">Employee NI</p><p className="font-semibold text-slate-700">{fmt(Number(run.employee_ni))}</p></div>
-                      <div><p className="text-slate-400">Employer NI</p><p className="font-semibold text-slate-700">{fmt(Number(run.employer_ni))}</p></div>
-                      {Number(run.student_loan_deducted) > 0 && (
-                        <div><p className="text-slate-400">Student Loan</p><p className="font-semibold text-slate-700">{fmt(Number(run.student_loan_deducted))}</p></div>
-                      )}
-                      {Number(run.employee_pension) > 0 && (
-                        <div><p className="text-slate-400">Employee Pension</p><p className="font-semibold text-slate-700">{fmt(Number(run.employee_pension))}</p></div>
-                      )}
-                      {Number(run.employer_pension) > 0 && (
-                        <div><p className="text-slate-400">Employer Pension</p><p className="font-semibold text-slate-700">{fmt(Number(run.employer_pension))}</p></div>
-                      )}
-                    </div>
-
-                    {isEditing && (
-                      <div className="mt-4 border-t border-slate-100 pt-4">
-                        <form action={updatePayRun.bind(null, run.id, run.employee_id)} className="grid gap-4 md:grid-cols-4">
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Period Start</label>
-                            <input name="pay_period_start" type="date" required defaultValue={run.pay_period_start}
-                              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Period End</label>
-                            <input name="pay_period_end" type="date" required defaultValue={run.pay_period_end}
-                              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Payment Date</label>
-                            <input name="payment_date" type="date" required defaultValue={run.payment_date}
-                              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Gross Pay (£)</label>
-                            <input name="gross_pay" type="number" step="0.01" min="0" required defaultValue={run.gross_pay}
-                              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                          </div>
-                          <div className="md:col-span-4">
-                            <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
-                            <input name="notes" defaultValue={run.notes || ""}
-                              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                          </div>
-                          <div className="md:col-span-4">
-                            <button type="submit"
-                              className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                              Save & Recalculate
-                            </button>
-                          </div>
-                        </form>
-                      </div>
-                    )}
-                  </div>
-                  );
-                })}
-                {(!runs || runs.length === 0) && (
-                  <p className="text-sm text-slate-500 text-center py-6">No pay runs recorded yet.</p>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4">
-              <p className="text-xs text-blue-800">
-                <strong>How the Personal Tax sync works:</strong> link an employee to their own Personal Tax client record, then click "Sync to Personal Tax" any time after running their pay. It totals every pay run for {taxYearForSync} and pushes the gross pay into Employment Income and the tax deducted into Tax Paid at Source on their Personal Tax computation for that year — creating one if it doesn't exist yet. Re-syncing after adding more pay runs only applies the difference, so it won't double-count or overwrite other income entered separately on their return.
-              </p>
-            </div>
           </>
         )}
       </div>
