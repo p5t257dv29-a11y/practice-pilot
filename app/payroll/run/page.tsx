@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { createPayRun, deletePayRun, updatePayRun } from "../page";
+import { createPayRun, deletePayRun, updatePayRun, calculatePayrolledBenefitPerPeriod } from "../page";
 export const dynamic = "force-dynamic";
 
 const supabase = createClient(
@@ -297,11 +297,22 @@ const { data: batchRuns } = activeBatchId
                             className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                             placeholder="0 unless on maternity leave" />
                         </div>
-                        <div>
+<div>
                           <label className="block text-sm font-medium text-slate-700 mb-1">Payrolled Benefits This Period (£)</label>
-                          <input name="payrolled_benefits" type="number" step="0.01" min="0" defaultValue={nextEmployee.annual_payrolled_benefits ? (Number(nextEmployee.annual_payrolled_benefits) / (nextEmployee.pay_frequency === "Weekly" ? 52 : 12)).toFixed(2) : "0"}
+                          <input name="payrolled_benefits" type="number" step="0.01" min="0" defaultValue={calculatePayrolledBenefitPerPeriod({
+                              annualBenefit: Number(nextEmployee.annual_payrolled_benefits) || 0,
+                              benefitStartDate: nextEmployee.payrolled_benefits_start_date,
+                              paymentDate: batch.payment_date,
+                              payFrequency: nextEmployee.pay_frequency,
+                              taxYear: "2026/27",
+                            }).toFixed(2)}
                             className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                             placeholder="From 2027: taxed here instead of P11D" />
+                          {nextEmployee.payrolled_benefits_start_date && (
+                            <p className="text-xs text-slate-400 mt-1">
+                              Prorated from {new Date(nextEmployee.payrolled_benefits_start_date).toLocaleDateString("en-GB")} across remaining periods in the tax year.
+                            </p>
+                          )}
                         </div>
                       </div>
                       <p className="text-xs text-slate-400 mt-2">These are all combined and taxed together — this is what PAYE, NI, and pension are calculated on. SMP is calculated automatically from the employee's Average Weekly Earnings and weeks already paid.</p>

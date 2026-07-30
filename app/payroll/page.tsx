@@ -266,6 +266,33 @@ export function taxYearDateRange(taxYear: string) {
     start: `${startYear}-04-06`,
     end: `${startYear + 1}-04-05`,
   };
+}// Calculates the per-period payrolled benefit amount, only from the date
+// the benefit actually started. Divides the annual cash-equivalent value
+// across however many pay periods remain in the tax year from that start
+// date — the same fixed figure applies to every period from then on, rather
+// than recalculating a shrinking divisor each time. Returns 0 for any
+// period before the benefit started, or if no start date is set.
+export function calculatePayrolledBenefitPerPeriod(input: {
+  annualBenefit: number;
+  benefitStartDate: string | null;
+  paymentDate: string;
+  payFrequency: "Weekly" | "Monthly";
+  taxYear: string;
+}) {
+  if (!input.benefitStartDate || !input.annualBenefit) return 0;
+
+  const start = new Date(input.benefitStartDate);
+  const payment = new Date(input.paymentDate);
+  if (payment < start) return 0;
+
+  const { end } = taxYearDateRange(input.taxYear);
+  const yearEnd = new Date(end);
+  const periodsPerYear = input.payFrequency === "Weekly" ? 52 : 12;
+  const daysPerPeriod = 365 / periodsPerYear;
+  const daysRemaining = Math.max(1, Math.ceil((yearEnd.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1);
+  const periodsRemaining = Math.max(1, Math.round(daysRemaining / daysPerPeriod));
+
+  return input.annualBenefit / periodsRemaining;
 }
 
 // ============ SERVER ACTIONS — PAY RUNS ============
@@ -472,7 +499,8 @@ pension_scheme_name: get("pension_scheme_name") || null,
     employer_pension_rate: employerRateInput ? parseFloat(employerRateInput) / 100 : null,
 average_weekly_earnings: get("average_weekly_earnings") ? parseFloat(get("average_weekly_earnings")) : null,
     smp_start_date: get("smp_start_date") || null,
-    annual_payrolled_benefits: get("annual_payrolled_benefits") ? parseFloat(get("annual_payrolled_benefits")) : null,
+annual_payrolled_benefits: get("annual_payrolled_benefits") ? parseFloat(get("annual_payrolled_benefits")) : null,
+    payrolled_benefits_start_date: get("payrolled_benefits_start_date") || null,
   }).eq("id", employeeId);
     revalidatePath("/payroll");
 }
@@ -918,9 +946,13 @@ export default async function PayrollPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">SMP Start Date</label>
                 <input name="smp_start_date" type="date" defaultValue={emp.smp_start_date || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
               </div>
-              <div>
+<div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Annual Payrolled Benefits (£, from 2027)</label>
                 <input name="annual_payrolled_benefits" type="number" step="0.01" min="0" defaultValue={emp.annual_payrolled_benefits || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" placeholder="Total taxable benefit value for the year" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Benefit Start Date</label>
+                <input name="payrolled_benefits_start_date" type="date" defaultValue={emp.payrolled_benefits_start_date || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" placeholder="e.g. when a company car was provided" />
               </div>
               <div className="flex items-end gap-4 md:col-span-2">
                 <label className="flex items-center gap-2 cursor-pointer">
