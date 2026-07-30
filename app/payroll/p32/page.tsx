@@ -10,6 +10,19 @@ const supabase = createClient(
 
 const EMPLOYMENT_ALLOWANCE_CAP = 10500;
 
+function getDefaultTaxYear() {
+  const today = new Date();
+  const startYear = (today.getMonth() < 3 || (today.getMonth() === 3 && today.getDate() < 6))
+    ? today.getFullYear() - 1
+    : today.getFullYear();
+  return `${startYear}/${String(startYear + 1).slice(-2)}`;
+}
+
+function getTaxYearOptions(centerYear: string) {
+  const startYear = parseInt(centerYear.split("/")[0], 10);
+  return [startYear - 1, startYear, startYear + 1].map((y) => `${y}/${String(y + 1).slice(-2)}`);
+}
+
 function getTaxMonths(taxYear: string) {
   const startYear = parseInt(taxYear.split("/")[0], 10);
   const months = [];
@@ -53,11 +66,18 @@ async function updateSmpRecovery(clientId: string, formData: FormData) {
   revalidatePath("/payroll/p32");
 }
 
-async function markP32Paid(clientId: string, taxMonth: string, formData: FormData) {
+// Handles both the P32 payment record (money actually paid to HMRC) and the
+// EPS-related figures for that month (CIS suffered, no-payment declaration,
+// and whether the EPS itself has been submitted via real filing software).
+async function updateP32Month(clientId: string, taxMonth: string, formData: FormData) {
   "use server";
   const paid = formData.get("paid") === "on";
   const paidDate = String(formData.get("paid_date") || "").trim();
   const notes = String(formData.get("notes") || "").trim();
+  const cisSuffered = parseFloat(String(formData.get("cis_suffered") || "0")) || 0;
+  const epsSubmitted = formData.get("eps_submitted") === "on";
+  const epsSubmittedDate = String(formData.get("eps_submitted_date") || "").trim();
+  const noPaymentForPeriod = formData.get("no_payment_for_period") === "on";
 
   await supabase.from("p32_records").upsert({
     client_id: clientId,
@@ -65,22 +85,26 @@ async function markP32Paid(clientId: string, taxMonth: string, formData: FormDat
     paid,
     paid_date: paidDate || null,
     notes: notes || null,
+    cis_suffered: cisSuffered,
+    eps_submitted: epsSubmitted,
+    eps_submitted_date: epsSubmittedDate || null,
+    no_payment_for_period: noPaymentForPeriod,
   }, { onConflict: "client_id,tax_month" });
 
   revalidatePath("/payroll/p32");
 }
 
-function getDefaultTaxYear() {
-  const today = new Date();
-  const startYear = (today.getMonth() < 3 || (today.getMonth() === 3 && today.getDate() < 6))
-    ? today.getFullYear() - 1
-    : today.getFullYear();
-  return `${startYear}/${String(startYear + 1).slice(-2)}`;
-}
+async function markFpsSubmitted(batchId: string, formData: FormData) {
+  "use server";
+  const submitted = formData.get("fps_submitted") === "on";
+  const submittedDate = String(formData.get("fps_submitted_date") || "").trim();
 
-function getTaxYearOptions(centerYear: string) {
-  const startYear = parseInt(centerYear.split("/")[0], 10);
-  return [startYear - 1, startYear, startYear + 1].map((y) => `${y}/${String(y + 1).slice(-2)}`);
+  await supabase.from("payroll_batches").update({
+    fps_submitted: submitted,
+    fps_submitted_date: submittedDate || null,
+  }).eq("id", batchId);
+
+  revalidatePath("/payroll/p32");
 }
 
 export default async function P32Page({
@@ -92,7 +116,8 @@ export default async function P32Page({
   const taxYear = taxYearParam || getDefaultTaxYear();
   const taxYearOptions = getTaxYearOptions(getDefaultTaxYear());
   const taxMonths = getTaxMonths(taxYear);
-  const [{ data: clients }, { data: settings }, { data: runs }, { data: p32Records }] = await Promise.all([
+
+  const [{ data: clients }, { data: settings }, { data: runs }, { data: p32Records }, { data: batches }] = await Promise.all([
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
     browseClientId
       ? supabase.from("payroll_client_settings").select("*").eq("client_id", browseClientId).maybeSingle()
@@ -102,6 +127,9 @@ export default async function P32Page({
       : Promise.resolve({ data: [] }),
     browseClientId
       ? supabase.from("p32_records").select("*").eq("client_id", browseClientId)
+      : Promise.resolve({ data: [] }),
+    browseClientId
+      ? supabase.from("payroll_batches").select("*").eq("client_id", browseClientId).eq("status", "finalized").order("payment_date", { ascending: true })
       : Promise.resolve({ data: [] }),
   ]);
 
@@ -119,6 +147,10 @@ export default async function P32Page({
       const d = new Date(r.payment_date);
       return d >= month.start && d <= month.end;
     });
+    const monthBatches = (batches || []).filter((b: any) => {
+      const d = new Date(b.payment_date);
+      return d >= month.start && d <= month.end;
+    });
 
     const totalTax = monthRuns.reduce((sum: number, r: any) => sum + Number(r.tax_deducted), 0);
     const totalEmployeeNI = monthRuns.reduce((sum: number, r: any) => sum + Number(r.employee_ni), 0);
@@ -131,8 +163,10 @@ export default async function P32Page({
     allowanceRemaining -= allowanceUsedThisMonth;
     const netEmployerNI = grossEmployerNI - allowanceUsedThisMonth;
 
-    const totalDue = totalTax + totalEmployeeNI + netEmployerNI + totalStudentLoan - smpRecovered;
     const record = p32ByMonth.get(month.key);
+    const cisSuffered = Number(record?.cis_suffered || 0);
+
+    const totalDue = totalTax + totalEmployeeNI + netEmployerNI + totalStudentLoan - smpRecovered - cisSuffered;
 
     return {
       ...month,
@@ -145,8 +179,10 @@ export default async function P32Page({
       totalStudentLoan,
       totalSMP,
       smpRecovered,
+      cisSuffered,
       totalDue,
       record,
+      batches: monthBatches,
     };
   });
 
@@ -154,7 +190,6 @@ export default async function P32Page({
   const yearTotalPaid = monthlyData.filter((m) => m.record?.paid).reduce((sum, m) => sum + m.totalDue, 0);
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  // Combined range view — select any from/to month to see one merged P32
   const fromIdx = fromMonth ? parseInt(fromMonth, 10) : null;
   const toIdx = toMonth ? parseInt(toMonth, 10) : null;
   const rangeSelected = fromIdx && toIdx && fromIdx <= toIdx;
@@ -168,25 +203,27 @@ export default async function P32Page({
     studentLoan: acc.studentLoan + m.totalStudentLoan,
     smpPaid: acc.smpPaid + m.totalSMP,
     smpRecovered: acc.smpRecovered + m.smpRecovered,
+    cisSuffered: acc.cisSuffered + m.cisSuffered,
     due: acc.due + m.totalDue,
-  }), { tax: 0, employeeNI: 0, grossEmployerNI: 0, allowanceUsed: 0, netEmployerNI: 0, studentLoan: 0, smpPaid: 0, smpRecovered: 0, due: 0 });
+  }), { tax: 0, employeeNI: 0, grossEmployerNI: 0, allowanceUsed: 0, netEmployerNI: 0, studentLoan: 0, smpPaid: 0, smpRecovered: 0, cisSuffered: 0, due: 0 });
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-<a href={browseClientId ? `/payroll?browseClient=${browseClientId}` : "/payroll"} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+        <a href={browseClientId ? `/payroll?browseClient=${browseClientId}` : "/payroll"} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
           ← Back to Payroll
         </a>
-        <h1 className="text-2xl font-bold text-slate-900 mt-4">P32 — Employer Payment Record</h1>
+        <h1 className="text-2xl font-bold text-slate-900 mt-4">P32 & EPS — Employer Payment Record</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          {browseClientId ? `Tax year ${taxYear}` : `Monthly total of PAYE tax, National Insurance, student loan deductions, and SMP recovery due to/from HMRC, ${taxYear}.`}
+          {browseClientId ? `Tax year ${taxYear}` : `Monthly total of PAYE tax, National Insurance, student loan deductions, CIS suffered, and SMP recovery due to/from HMRC.`}
         </p>
       </div>
 
       <div className="p-8 space-y-6">
+
         <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
           <p className="text-xs text-yellow-800">
-            <strong>Working summary, not a submission.</strong> This totals figures already calculated in Payroll — it doesn't submit anything to HMRC. Confirm Employment Allowance eligibility and your Small Employers' Relief status (103% vs 92% SMP recovery) against current GOV.UK rules before relying on the figures shown here.
+            <strong>Working summary and submission tracker, not a filing tool.</strong> This calculates the figures your FPS and EPS should contain, and lets you record when each was actually submitted via your HMRC-recognised filing software — it doesn't submit anything itself. Confirm Employment Allowance eligibility, Small Employers' Relief status, and CIS suffered figures against your own records before relying on this.
           </p>
         </div>
 
@@ -209,6 +246,17 @@ export default async function P32Page({
 
         {browseClientId && (
           <>
+            <div className="flex gap-2">
+              {taxYearOptions.map((y) => (
+                <a key={y} href={`/payroll/p32?browseClient=${browseClientId}&taxYear=${y}`}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    taxYear === y ? "bg-slate-900 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-100"
+                  }`}>
+                  {y}
+                </a>
+              ))}
+            </div>
+
             <div className="grid gap-4 md:grid-cols-3">
               <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-100">
                 <p className="text-xs text-slate-500 uppercase tracking-wide">Total Due, {taxYear}</p>
@@ -252,21 +300,11 @@ export default async function P32Page({
               </form>
             </div>
 
-<div className="flex gap-2">
-              {taxYearOptions.map((y) => (
-                <a key={y} href={`/payroll/p32?browseClient=${browseClientId}&taxYear=${y}`}
-                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    taxYear === y ? "bg-slate-900 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-100"
-                  }`}>
-                  {y}
-                </a>
-              ))}
-            </div>
-
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Generate P32 for a Month or Range</h2>
               <form method="get" className="mt-4 flex gap-3 items-end">
                 <input type="hidden" name="browseClient" value={browseClientId} />
+                <input type="hidden" name="taxYear" value={taxYear} />
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">From Month</label>
                   <select name="fromMonth" defaultValue={fromMonth || ""}
@@ -310,6 +348,9 @@ export default async function P32Page({
                         <div className="flex justify-between text-green-400"><span>Less: SMP Recovered ({(smpRecoveryRate * 100).toFixed(0)}%)</span><span className="font-mono">−{fmt(rangeTotals.smpRecovered)}</span></div>
                       </>
                     )}
+                    {rangeTotals.cisSuffered > 0 && (
+                      <div className="flex justify-between text-green-400"><span>Less: CIS Deductions Suffered</span><span className="font-mono">−{fmt(rangeTotals.cisSuffered)}</span></div>
+                    )}
                     <div className="border-t border-slate-700 pt-2 flex justify-between font-bold text-base">
                       <span>P32 Liability Due to HMRC</span>
                       <span className="font-mono">{fmt(rangeTotals.due)}</span>
@@ -332,6 +373,7 @@ export default async function P32Page({
                     <div className="text-right">
                       <p className="text-xl font-bold text-slate-900">{fmt(m.totalDue)}</p>
                       {m.record?.paid && <p className="text-xs text-green-600 font-semibold">✓ Paid{m.record.paid_date ? ` ${new Date(m.record.paid_date).toLocaleDateString("en-GB")}` : ""}</p>}
+                      {m.record?.eps_submitted && <p className="text-xs text-blue-600 font-semibold">✓ EPS submitted{m.record.eps_submitted_date ? ` ${new Date(m.record.eps_submitted_date).toLocaleDateString("en-GB")}` : ""}</p>}
                     </div>
                   </div>
 
@@ -356,27 +398,76 @@ export default async function P32Page({
                         <div><p className="text-slate-400">SMP Recovered</p><p className="font-semibold text-green-600">−{fmt(m.smpRecovered)}</p></div>
                       </>
                     )}
+                    {m.cisSuffered > 0 && (
+                      <div><p className="text-slate-400">CIS Suffered</p><p className="font-semibold text-green-600">−{fmt(m.cisSuffered)}</p></div>
+                    )}
                     <div><p className="text-slate-400">Total Due</p><p className="font-bold text-slate-900">{fmt(m.totalDue)}</p></div>
                   </div>
 
+                  {m.batches.length > 0 && (
+                    <div className="mt-3 border-t border-slate-100 pt-3 space-y-2">
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">FPS — Full Payment Submission</p>
+                      {m.batches.map((b: any) => (
+                        <div key={b.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+                          <span className="text-xs text-slate-600">
+                            Pay run {new Date(b.period_start).toLocaleDateString("en-GB")}–{new Date(b.period_end).toLocaleDateString("en-GB")}, paid {new Date(b.payment_date).toLocaleDateString("en-GB")}
+                          </span>
+                          {b.fps_submitted ? (
+                            <span className="text-xs text-green-600 font-semibold">✓ FPS submitted{b.fps_submitted_date ? ` ${new Date(b.fps_submitted_date).toLocaleDateString("en-GB")}` : ""}</span>
+                          ) : (
+                            <form action={markFpsSubmitted.bind(null, b.id)} className="flex items-center gap-2">
+                              <input type="checkbox" name="fps_submitted" className="w-3.5 h-3.5 rounded" />
+                              <input type="date" name="fps_submitted_date" className="rounded-lg border border-slate-200 p-1 text-xs" />
+                              <button type="submit" className="rounded-lg bg-slate-900 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                                Save
+                              </button>
+                            </form>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <details className="mt-3">
                     <summary className="text-xs font-semibold text-blue-600 cursor-pointer hover:underline">
-                      {m.record?.paid ? "Update payment record" : "Mark as paid"}
+                      P32 payment & EPS details
                     </summary>
-                    <form action={markP32Paid.bind(null, browseClientId, m.key)} className="mt-3 flex flex-wrap gap-3 items-end">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" name="paid" defaultChecked={m.record?.paid || false} className="w-4 h-4 rounded" />
-                        <span className="text-xs font-medium text-slate-700">Paid</span>
-                      </label>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 mb-1">Date Paid</label>
-                        <input name="paid_date" type="date" defaultValue={m.record?.paid_date || ""}
-                          className="rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    <form action={updateP32Month.bind(null, browseClientId, m.key)} className="mt-3 space-y-3">
+                      <div className="flex flex-wrap gap-3 items-end">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" name="paid" defaultChecked={m.record?.paid || false} className="w-4 h-4 rounded" />
+                          <span className="text-xs font-medium text-slate-700">P32 Paid</span>
+                        </label>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 mb-1">Date Paid</label>
+                          <input name="paid_date" type="date" defaultValue={m.record?.paid_date || ""}
+                            className="rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 mb-1">CIS Suffered This Month (£)</label>
+                          <input name="cis_suffered" type="number" step="0.01" min="0" defaultValue={m.record?.cis_suffered || 0}
+                            className="rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-[160px]">
+                      <div className="flex flex-wrap gap-3 items-end border-t border-slate-100 pt-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" name="no_payment_for_period" defaultChecked={m.record?.no_payment_for_period || false} className="w-4 h-4 rounded" />
+                          <span className="text-xs font-medium text-slate-700">No payment this period (EPS declaration)</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" name="eps_submitted" defaultChecked={m.record?.eps_submitted || false} className="w-4 h-4 rounded" />
+                          <span className="text-xs font-medium text-slate-700">EPS Submitted</span>
+                        </label>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 mb-1">EPS Submitted Date</label>
+                          <input name="eps_submitted_date" type="date" defaultValue={m.record?.eps_submitted_date || ""}
+                            className="rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                        </div>
+                      </div>
+                      <div>
                         <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
                         <input name="notes" defaultValue={m.record?.notes || ""}
-                          className="w-full rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                          className="w-full max-w-md rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
                       </div>
                       <button type="submit" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
                         Save
