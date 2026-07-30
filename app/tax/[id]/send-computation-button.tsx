@@ -103,12 +103,7 @@ export default function SendComputationButton({
           <p className="text-xs text-green-600 mb-2">
             Client can also access it directly via this link:
           </p>
-          <a
-            href={computationUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-600 hover:underline break-all"
-          >
+          <a href={computationUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline break-all">
             {computationUrl}
           </a>
         </div>
@@ -117,14 +112,11 @@ export default function SendComputationButton({
       {computationToken && status === "idle" && (
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
           <p className="text-xs text-slate-500 mb-1">Previously sent — client link:</p>
-          <a
-            href={`/t/${computationToken}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-600 hover:underline break-all"
-          >
-            {typeof window !== "undefined" ? `${window.location.origin}/t/${computationToken}` : `/t/${computationToken}`}
-          </a>
+          {computationUrl && (
+            <a href={computationUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline break-all">
+              {computationUrl}
+            </a>
+          )}
         </div>
       )}
     </div>

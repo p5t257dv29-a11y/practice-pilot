@@ -36,11 +36,14 @@ export async function middleware(request: NextRequest) {
 
   // Public bypass routes — never require auth
 const isPublicBypass =
-    pathname.startsWith("/q/") ||
-    pathname.startsWith("/onboard/") ||
-    pathname.startsWith("/sign/") ||
-    pathname.startsWith("/p11d/approve/") ||
-    pathname.startsWith("/portal/set-password");
+  pathname.startsWith("/q/") ||
+  pathname.startsWith("/onboard/") ||
+  pathname.startsWith("/sign/") ||
+  pathname.startsWith("/p11d/approve/") ||
+  pathname.startsWith("/payslip/") ||
+  pathname.startsWith("/tax/approve/") ||
+  pathname.startsWith("/a/") ||
+  pathname.startsWith("/portal/set-password");
   if (isPublicBypass) {
     return supabaseResponse;
   }
