@@ -234,13 +234,27 @@ const uploadDocWithId = uploadClientPortalDocument.bind(null, clientId);
                 </div>
               </div>
             ))}
-            {documentsWithUrls.length === 0 && (
+{documentsWithUrls.length === 0 && (
               <p className="text-sm text-slate-400 text-center py-6">No documents shared yet.</p>
             )}
           </div>
+
+          <form action={uploadDocWithId} className="mt-4 flex flex-wrap gap-2 items-end border-t border-slate-100 pt-4">
+            <div className="flex-1 min-w-[160px]">
+              <label className="block text-xs font-medium text-slate-700 mb-1">Description (optional)</label>
+              <input name="description" className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            </div>
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-xs font-medium text-slate-700 mb-1">Upload File</label>
+              <input name="document" type="file" required className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+            </div>
+            <button type="submit" className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">
+              Upload
+            </button>
+          </form>
         </div>
 
-      </div>
+</div>
     </div>
   );
 }
