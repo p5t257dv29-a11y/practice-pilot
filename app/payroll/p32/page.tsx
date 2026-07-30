@@ -8,6 +8,65 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+async function prepareFpsSubmission(batchId: string, clientId: string, taxYear: string) {
+  "use server";
+  const { buildFpsPayload } = await import("../page");
+  const payload = await buildFpsPayload(batchId);
+  if (!payload) return;
+
+  await supabase.from("payroll_submissions").insert({
+    client_id: clientId,
+    submission_type: "FPS",
+    batch_id: batchId,
+    tax_year: taxYear,
+    payload,
+    status: "prepared",
+  });
+
+  revalidatePath("/payroll/p32");
+}
+
+async function prepareEpsSubmission(clientId: string, taxMonth: string, taxYear: string) {
+  "use server";
+  const { buildEpsPayload } = await import("../page");
+  const payload = await buildEpsPayload(clientId, taxMonth, taxYear);
+
+  await supabase.from("payroll_submissions").insert({
+    client_id: clientId,
+    submission_type: "EPS",
+    tax_month: taxMonth,
+    tax_year: taxYear,
+    payload,
+    status: "prepared",
+  });
+
+  revalidatePath("/payroll/p32");
+}
+
+async function submitToHmrcStub(submissionId: string) {
+  "use server";
+  const stubResponse = {
+    connected: false,
+    message: "Not yet connected to HMRC. This submission has been prepared and is ready to send once real API credentials are configured.",
+  };
+
+  await supabase.from("payroll_submissions").update({ hmrc_response: stubResponse }).eq("id", submissionId);
+  revalidatePath("/payroll/p32");
+}
+
+async function updatePayeReferences(clientId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+
+  await supabase.from("payroll_client_settings").upsert({
+    client_id: clientId,
+    paye_reference: get("paye_reference") || null,
+    accounts_office_reference: get("accounts_office_reference") || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "client_id" });
+
+  revalidatePath("/payroll/p32");
+}
 const EMPLOYMENT_ALLOWANCE_CAP = 10500;
 
 function getDefaultTaxYear() {
@@ -117,8 +176,8 @@ export default async function P32Page({
   const taxYearOptions = getTaxYearOptions(getDefaultTaxYear());
   const taxMonths = getTaxMonths(taxYear);
 
-  const [{ data: clients }, { data: settings }, { data: runs }, { data: p32Records }, { data: batches }] = await Promise.all([
-    supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
+const [{ data: clients }, { data: settings }, { data: runs }, { data: p32Records }, { data: batches }, { data: submissions }] = await Promise.all([
+supabase.from("clients").select("id, client_name, paye_reference, accounts_office_reference").order("client_name", { ascending: true }),
     browseClientId
       ? supabase.from("payroll_client_settings").select("*").eq("client_id", browseClientId).maybeSingle()
       : Promise.resolve({ data: null }),
@@ -131,8 +190,13 @@ export default async function P32Page({
     browseClientId
       ? supabase.from("payroll_batches").select("*").eq("client_id", browseClientId).eq("status", "finalized").order("payment_date", { ascending: true })
       : Promise.resolve({ data: [] }),
-  ]);
+    browseClientId
+      ? supabase.from("payroll_submissions").select("*").eq("client_id", browseClientId).eq("tax_year", taxYearParam || "2026/27")
+      : Promise.resolve({ data: [] }),
+  ]);const selectedClientRecord = browseClientId ? (clients || []).find((c: any) => c.id === browseClientId) : null;
 
+  const submissionsByBatch = new Map((submissions || []).filter((s: any) => s.batch_id).map((s: any) => [s.batch_id, s]));
+  const submissionsByMonth = new Map((submissions || []).filter((s: any) => s.tax_month && s.submission_type === "EPS").map((s: any) => [s.tax_month, s]));
   const employmentAllowanceClaimed = settings?.employment_allowance_claimed || false;
   const smpRecoveryRate = settings?.smp_recovery_rate ?? 1.03;
   const toggleAllowanceWithId = toggleEmploymentAllowance.bind(null, browseClientId || "");
@@ -284,7 +348,7 @@ export default async function P32Page({
                 </button>
               </form>
 
-              <form action={updateSmpWithId} className="flex items-center gap-4 border-t border-slate-100 pt-4">
+<form action={updateSmpWithId} className="flex items-center gap-4 border-t border-slate-100 pt-4">
                 <span className="text-sm font-medium text-slate-700">SMP recovery rate:</span>
                 <label className="flex items-center gap-1.5 text-sm cursor-pointer">
                   <input type="radio" name="smp_recovery_rate" value="1.03" defaultChecked={smpRecoveryRate === 1.03} className="w-4 h-4" />
@@ -298,8 +362,21 @@ export default async function P32Page({
                   Save
                 </button>
               </form>
-            </div>
 
+<div className="flex flex-wrap items-center gap-6 border-t border-slate-100 pt-4">
+                <div>
+                  <p className="text-xs text-slate-400 uppercase tracking-wide">PAYE Reference</p>
+                  <p className="text-sm font-medium text-slate-900 mt-0.5">{selectedClientRecord?.paye_reference || "Not set"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 uppercase tracking-wide">Accounts Office Reference</p>
+                  <p className="text-sm font-medium text-slate-900 mt-0.5">{selectedClientRecord?.accounts_office_reference || "Not set"}</p>
+                </div>
+                <a href={`/clients/${browseClientId}`} className="text-xs font-semibold text-blue-600 hover:underline">
+                  Edit on client record →
+                </a>
+              </div>
+            </div>
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Generate P32 for a Month or Range</h2>
               <form method="get" className="mt-4 flex gap-3 items-end">
@@ -404,30 +481,56 @@ export default async function P32Page({
                     <div><p className="text-slate-400">Total Due</p><p className="font-bold text-slate-900">{fmt(m.totalDue)}</p></div>
                   </div>
 
-                  {m.batches.length > 0 && (
+{m.batches.length > 0 && (
                     <div className="mt-3 border-t border-slate-100 pt-3 space-y-2">
                       <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">FPS — Full Payment Submission</p>
-                      {m.batches.map((b: any) => (
-                        <div key={b.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
-                          <span className="text-xs text-slate-600">
-                            Pay run {new Date(b.period_start).toLocaleDateString("en-GB")}–{new Date(b.period_end).toLocaleDateString("en-GB")}, paid {new Date(b.payment_date).toLocaleDateString("en-GB")}
-                          </span>
-                          {b.fps_submitted ? (
-                            <span className="text-xs text-green-600 font-semibold">✓ FPS submitted{b.fps_submitted_date ? ` ${new Date(b.fps_submitted_date).toLocaleDateString("en-GB")}` : ""}</span>
+                      {m.batches.map((b: any) => {
+                        const fpsSubmission = submissionsByBatch.get(b.id);
+                        return (
+                        <div key={b.id} className="rounded-lg bg-slate-50 px-3 py-2 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-slate-600">
+                              Pay run {new Date(b.period_start).toLocaleDateString("en-GB")}–{new Date(b.period_end).toLocaleDateString("en-GB")}, paid {new Date(b.payment_date).toLocaleDateString("en-GB")}
+                            </span>
+                            {b.fps_submitted ? (
+                              <span className="text-xs text-green-600 font-semibold">✓ FPS submitted{b.fps_submitted_date ? ` ${new Date(b.fps_submitted_date).toLocaleDateString("en-GB")}` : ""}</span>
+                            ) : (
+                              <form action={markFpsSubmitted.bind(null, b.id)} className="flex items-center gap-2">
+                                <input type="checkbox" name="fps_submitted" className="w-3.5 h-3.5 rounded" />
+                                <input type="date" name="fps_submitted_date" className="rounded-lg border border-slate-200 p-1 text-xs" />
+                                <button type="submit" className="rounded-lg bg-slate-900 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+                                  Save
+                                </button>
+                              </form>
+                            )}
+                          </div>
+                          {fpsSubmission ? (
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-blue-700">Payload prepared {new Date(fpsSubmission.prepared_at).toLocaleDateString("en-GB")}</span>
+                              <div className="flex items-center gap-2">
+                                <details className="inline-block">
+                                  <summary className="text-xs font-semibold text-blue-600 cursor-pointer hover:underline">View payload</summary>
+                                  <pre className="mt-2 max-w-xl overflow-x-auto rounded-lg bg-slate-900 text-slate-100 p-3 text-[10px]">{JSON.stringify(fpsSubmission.payload, null, 2)}</pre>
+                                </details>
+                                <form action={submitToHmrcStub.bind(null, fpsSubmission.id)}>
+                                  <button className="rounded-lg bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-300 transition-colors">
+                                    Submit to HMRC
+                                  </button>
+                                </form>
+                              </div>
+                            </div>
                           ) : (
-                            <form action={markFpsSubmitted.bind(null, b.id)} className="flex items-center gap-2">
-                              <input type="checkbox" name="fps_submitted" className="w-3.5 h-3.5 rounded" />
-                              <input type="date" name="fps_submitted_date" className="rounded-lg border border-slate-200 p-1 text-xs" />
-                              <button type="submit" className="rounded-lg bg-slate-900 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
-                                Save
+                            <form action={prepareFpsSubmission.bind(null, b.id, browseClientId, taxYear)}>
+                              <button className="rounded-lg bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors">
+                                Prepare FPS Payload
                               </button>
                             </form>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
-
                   <details className="mt-3">
                     <summary className="text-xs font-semibold text-blue-600 cursor-pointer hover:underline">
                       P32 payment & EPS details
@@ -454,7 +557,7 @@ export default async function P32Page({
                           <input type="checkbox" name="no_payment_for_period" defaultChecked={m.record?.no_payment_for_period || false} className="w-4 h-4 rounded" />
                           <span className="text-xs font-medium text-slate-700">No payment this period (EPS declaration)</span>
                         </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
+<label className="flex items-center gap-2 cursor-pointer">
                           <input type="checkbox" name="eps_submitted" defaultChecked={m.record?.eps_submitted || false} className="w-4 h-4 rounded" />
                           <span className="text-xs font-medium text-slate-700">EPS Submitted</span>
                         </label>
@@ -464,15 +567,38 @@ export default async function P32Page({
                             className="rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
                         </div>
                       </div>
+
+                      {(() => {
+                        const epsSubmission = submissionsByMonth.get(m.key);
+                        return epsSubmission ? (
+                          <div className="flex items-center gap-2 border-t border-slate-100 pt-3">
+                            <span className="text-xs text-blue-700">EPS payload prepared {new Date(epsSubmission.prepared_at).toLocaleDateString("en-GB")}</span>
+                            <details className="inline-block">
+                              <summary className="text-xs font-semibold text-blue-600 cursor-pointer hover:underline">View payload</summary>
+                              <pre className="mt-2 max-w-xl overflow-x-auto rounded-lg bg-slate-900 text-slate-100 p-3 text-[10px]">{JSON.stringify(epsSubmission.payload, null, 2)}</pre>
+                            </details>
+                            <button type="button" formAction={submitToHmrcStub.bind(null, epsSubmission.id)} className="rounded-lg bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-300 transition-colors">
+                              Submit to HMRC
+                            </button>
+                          </div>
+                        ) : null;
+                      })()}
                       <div>
                         <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
                         <input name="notes" defaultValue={m.record?.notes || ""}
                           className="w-full max-w-md rounded-lg border border-slate-200 p-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400" />
                       </div>
-                      <button type="submit" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
+<button type="submit" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors">
                         Save
                       </button>
                     </form>
+                    {!submissionsByMonth.get(m.key) && (
+                      <form action={prepareEpsSubmission.bind(null, browseClientId, m.key, taxYear)} className="mt-2">
+                        <button className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-100 transition-colors">
+                          Prepare EPS Payload
+                        </button>
+                      </form>
+                    )}
                   </details>
                 </div>
               ))}

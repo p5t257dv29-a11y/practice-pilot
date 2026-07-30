@@ -586,7 +586,136 @@ async function syncEmployeeToPersonalTax(employeeId: string, taxYear: string) {
   revalidatePath("/payroll");
   revalidatePath(`/clients/${employee.linked_client_id}`);
   revalidatePath("/tax");
+}// ============ FPS / EPS PREPARATION (HMRC RTI groundwork) ============
+//
+// These build the data an FPS or EPS submission would contain, in a
+// structured format ready to hand to HMRC's RTI API once this practice has
+// gone through HMRC's software recognition process and holds real
+// credentials. Nothing here calls HMRC — see submitToHmrc below, which is a
+// deliberate stub with the real network call left as a single, clearly
+// marked point to fill in later.
+
+export async function buildFpsPayload(batchId: string) {
+  const { data: batch } = await supabase.from("payroll_batches").select("*, clients(client_name, paye_reference, accounts_office_reference)").eq("id", batchId).single();
+  if (!batch) return null;
+
+  const { data: runs } = await supabase.from("payroll_runs").select("*, payroll_employees(*)").eq("batch_id", batchId);
+
+  return {
+    submissionType: "FPS",
+    employer: {
+      payeReference: (batch.clients as any)?.paye_reference || null,
+      accountsOfficeReference: (batch.clients as any)?.accounts_office_reference || null,
+      name: (batch.clients as any)?.client_name || null,
+    },
+period: {
+      periodStart: batch.period_start,
+      periodEnd: batch.period_end,
+      paymentDate: batch.payment_date,
+    },
+    employees: (runs || []).map((r: any) => ({
+      niNumber: r.payroll_employees?.ni_number || null,
+      name: r.payroll_employees?.name || null,
+      dateOfBirth: r.payroll_employees?.date_of_birth || null,
+      gender: r.payroll_employees?.gender || null,
+      taxCode: r.tax_code_used,
+      niCategory: r.ni_category_used,
+      payFrequency: r.payroll_employees?.pay_frequency || null,
+      grossPay: Number(r.gross_pay),
+      taxDeducted: Number(r.tax_deducted),
+      employeeNI: Number(r.employee_ni),
+      employerNI: Number(r.employer_ni),
+      studentLoanDeducted: Number(r.student_loan_deducted || 0),
+      postgradLoanDeducted: Number(r.postgrad_loan_deducted || 0),
+      studentLoanPlan: r.payroll_employees?.student_loan_plan || null,
+      employeePension: Number(r.employee_pension),
+      employerPension: Number(r.employer_pension),
+      smp: Number(r.smp || 0),
+      payrolledBenefits: Number(r.payrolled_benefits || 0),
+      netPay: Number(r.net_pay),
+      starterDeclaration: r.payroll_employees?.starter_declaration || null,
+      leavingDate: r.payroll_employees?.leaving_date || null,
+    })),
+  };
 }
+
+export async function buildEpsPayload(clientId: string, taxMonth: string, taxYear: string) {
+  const { data: client } = await supabase.from("clients").select("client_name, paye_reference, accounts_office_reference").eq("id", clientId).single();
+  const { data: settings } = await supabase.from("payroll_client_settings").select("*").eq("client_id", clientId).maybeSingle();
+  const { data: record } = await supabase.from("p32_records").select("*").eq("client_id", clientId).eq("tax_month", taxMonth).maybeSingle();
+
+  return {
+    submissionType: "EPS",
+    employer: {
+      payeReference: client?.paye_reference || null,
+      accountsOfficeReference: client?.accounts_office_reference || null,
+      name: client?.client_name || null,
+    },
+    taxYear,
+    taxMonth,
+    employmentAllowanceClaimed: settings?.employment_allowance_claimed || false,
+    smpRecoveryRate: settings?.smp_recovery_rate ?? 1.03,
+cisSuffered: Number(record?.cis_suffered || 0),
+    noPaymentForPeriod: record?.no_payment_for_period || false,
+  };
+}
+
+async function prepareFpsSubmission(batchId: string, clientId: string, taxYear: string) {
+  "use server";
+  const payload = await buildFpsPayload(batchId);
+  if (!payload) return;
+
+  await supabase.from("payroll_submissions").insert({
+    client_id: clientId,
+    submission_type: "FPS",
+    batch_id: batchId,
+    tax_year: taxYear,
+    payload,
+    status: "prepared",
+  });
+
+  revalidatePath("/payroll/p32");
+}
+
+async function prepareEpsSubmission(clientId: string, taxMonth: string, taxYear: string) {
+  "use server";
+  const payload = await buildEpsPayload(clientId, taxMonth, taxYear);
+
+  await supabase.from("payroll_submissions").insert({
+    client_id: clientId,
+    submission_type: "EPS",
+    tax_month: taxMonth,
+    tax_year: taxYear,
+    payload,
+    status: "prepared",
+  });
+
+  revalidatePath("/payroll/p32");
+}
+
+// STUB — the single point to update once this practice holds real HMRC RTI
+// API credentials. Currently does not contact HMRC at all; it exists so the
+// rest of the app (buttons, status tracking, the submissions log) is wired
+// up and ready, with only this function's body needing to change.
+async function submitToHmrc(submissionId: string) {
+  "use server";
+
+  // TODO once HMRC-recognised: replace this block with the real API call,
+  // e.g. POST the stored payload to HMRC's RTI submission endpoint using
+  // this practice's Government Gateway credentials, then store the genuine
+  // response below instead of this placeholder.
+  const stubResponse = {
+    connected: false,
+    message: "Not yet connected to HMRC. This submission has been prepared and is ready to send once real API credentials are configured.",
+  };
+
+  await supabase.from("payroll_submissions").update({
+    hmrc_response: stubResponse,
+  }).eq("id", submissionId);
+
+  revalidatePath("/payroll/p32");
+}
+
 
 // ============ PAGE ============
 
