@@ -110,7 +110,7 @@ export default async function PortalDashboardPage() {
   }
 
   const sendMessageWithId = sendPortalMessage.bind(null, clientId, client?.client_name || "");
-
+const uploadDocWithId = uploadClientPortalDocument.bind(null, clientId);
   const documentsWithUrls = await Promise.all(
     (documents || []).map(async (doc) => {
       const { data: signed } = await supabase.storage
