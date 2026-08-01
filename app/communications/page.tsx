@@ -50,7 +50,12 @@ export default async function CommunicationsPage({
       .select("id, quote_number, status, accepted_at, declined_at, created_at, clients(client_name)")
       .not("status", "is", null)
       .neq("status", "Draft"),
-  ]);
+  ]);const { data: unreadMessages } = await supabase
+    .from("client_messages")
+    .select("id, client_id, message_text, created_at, clients(client_name)")
+    .eq("sender", "client")
+    .eq("read_by_staff", false)
+    .order("created_at", { ascending: false });
 
   const getDaysSince = (dateStr: string | null): number | null => {
     if (!dateStr) return null;
@@ -126,13 +131,16 @@ export default async function CommunicationsPage({
   const approvedCount = entries.filter((e) => e.status === "Approved" || e.status === "Accepted").length;
   const queriedCount = entries.filter((e) => e.status === "Queried" || e.status === "Declined").length;
   const needsChasing = entries.filter((e) => e.status === "Sent" && e.daysSinceSent !== null && e.daysSinceSent >= 7);
-
+const unreadMessageCount = (unreadMessages || []).length;
   const newCount = filtered.filter((e) => e.respondedDate && lastViewedAt && e.respondedDate > lastViewedAt).length;
 
   // Mark everything as seen for next time — after computing newCount above,
   // so this visit still shows what's new, but the next one won't
-  await supabase.from("app_settings").update({ communications_last_viewed_at: new Date().toISOString() }).eq("id", 1);
+await supabase.from("app_settings").update({ communications_last_viewed_at: new Date().toISOString() }).eq("id", 1);
 
+  if (unreadMessages && unreadMessages.length > 0) {
+    await supabase.from("client_messages").update({ read_by_staff: true }).in("id", unreadMessages.map((m) => m.id));
+  }
   const fmtDateTime = (iso: string) =>
     `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })} at ${new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 
@@ -232,7 +240,23 @@ export default async function CommunicationsPage({
               </div>
             </div>
           )}
-
+{unreadMessageCount > 0 && (
+              <div className="rounded-2xl bg-blue-50 border border-blue-200 p-4">
+                <p className="text-sm font-bold text-blue-700">
+                  💬 {unreadMessageCount} unread message{unreadMessageCount !== 1 ? "s" : ""} from clients
+                </p>
+                <div className="mt-2 space-y-2">
+                  {(unreadMessages || []).map((m: any) => (
+                    <a key={m.id} href={`/clients/${m.client_id}?tab=messages`}
+                      className="block rounded-xl bg-white border border-blue-100 p-3 hover:bg-blue-50 transition-colors">
+                      <p className="text-sm font-semibold text-slate-900">{m.clients?.client_name || "Unknown client"}</p>
+                      <p className="text-xs text-slate-500 mt-0.5 truncate">{m.message_text}</p>
+                      <p className="text-xs text-slate-400 mt-1">{fmtDateTime(m.created_at)}</p>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">All Communications ({filtered.length})</h2>
             <div className="mt-4 space-y-2">
