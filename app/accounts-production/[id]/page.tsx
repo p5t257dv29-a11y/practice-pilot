@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import { ALL_CATEGORIES, PL_CATEGORIES, BS_CATEGORIES, FIXED_ASSET_CLASSES, FIXED_ASSET_MOVEMENT, DISPOSAL_CATEGORY, getCustomPLCategories } from "../page";
 import { calculateNBV } from "../../fixed-assets/page";
-
+import CategoryAutocomplete from "./category-autocomplete";
 export const dynamic = "force-dynamic";
 
 const supabase = createClient(
@@ -16,7 +16,7 @@ async function saveMappings(trialBalanceId: string, clientId: string, formData: 
 
   const { data: lines } = await supabase
     .from("trial_balance_lines")
-    .select("id, nominal_code")
+    .select("id, nominal_code, description")
     .eq("trial_balance_id", trialBalanceId);
 
   const validCategories = new Set([...PL_CATEGORIES, ...BS_CATEGORIES]);
@@ -28,20 +28,32 @@ async function saveMappings(trialBalanceId: string, clientId: string, formData: 
       console.error(`Skipped invalid category "${category}" for line ${line.id} — no exact match in category list.`);
       continue;
     }
-await supabase.from("trial_balance_lines").update({ category }).eq("id", line.id);
+
+    await supabase.from("trial_balance_lines").update({ category }).eq("id", line.id);
 
     if (line.nominal_code) {
       await supabase.from("nominal_code_mappings").upsert(
         { client_id: clientId, nominal_code: line.nominal_code, category },
         { onConflict: "client_id,nominal_code" }
       );
+
+      const addToMaster = formData.get(`add_to_master_${line.id}`) === "1";
+      if (addToMaster) {
+        const { error: coaError } = await supabase.from("chart_of_accounts").upsert(
+          { nominal_code: line.nominal_code, account_name: line.description, category },
+          { onConflict: "nominal_code" }
+        );
+        if (coaError) {
+          console.error(`Could not add nominal code ${line.nominal_code} to Chart of Accounts:`, coaError.message);
+        }
+      }
     }
   }
 
   revalidatePath(`/accounts-production/${trialBalanceId}`);
   revalidatePath("/accounts-production");
+  revalidatePath("/chart-of-accounts");
 }
-
 async function updateLine(trialBalanceId: string, clientId: string, lineId: string, formData: FormData) {
   "use server";
 
@@ -113,13 +125,15 @@ export default async function TrialBalanceDetailPage({
 
   if (error || !tb) notFound();
 
-  const [{ data: lines }, { data: journals }, { data: assets }, customPL] = await Promise.all([
+const [{ data: lines }, { data: journals }, { data: assets }, customPL, { data: masterAccounts }] = await Promise.all([
     supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", id).order("nominal_code", { ascending: true }),
     supabase.from("journals").select("*").eq("trial_balance_id", id),
     supabase.from("fixed_assets").select("*").eq("client_id", tb.client_id),
     getCustomPLCategories(supabase),
+    supabase.from("chart_of_accounts").select("nominal_code"),
   ]);
 
+  const knownCodes = new Set((masterAccounts || []).map((a) => a.nominal_code));
   const allPLCategories = [...PL_CATEGORIES, ...customPL.names];
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -389,22 +403,33 @@ export default async function TrialBalanceDetailPage({
               Assign each nominal code to a category. This is remembered for this client, so future uploads with the same codes will map automatically.
             </p>
             <form action={saveMappingsWithIds} className="mt-4 space-y-2">
-              {unmappedLines.map((line) => (
-                <div key={line.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-slate-900">
-                      {line.nominal_code && <span className="text-slate-400 font-mono mr-2">{line.nominal_code}</span>}
-                      {line.description}
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      Dr {fmt(Number(line.debit))} · Cr {fmt(Number(line.credit))}
-                    </p>
+{unmappedLines.map((line) => {
+                const isNewCode = line.nominal_code && !knownCodes.has(line.nominal_code);
+                return (
+                  <div key={line.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-slate-900">
+                        {line.nominal_code && <span className="text-slate-400 font-mono mr-2">{line.nominal_code}</span>}
+                        {line.description}
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        Dr {fmt(Number(line.debit))} · Cr {fmt(Number(line.credit))}
+                      </p>
+                      {isNewCode && (
+                        <label className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+                          <input type="checkbox" name={`add_to_master_${line.id}`} value="1" defaultChecked
+                            className="w-3.5 h-3.5 rounded" />
+                          Also add code {line.nominal_code} to the practice-wide Chart of Accounts
+                        </label>
+                      )}
+                    </div>
+                    <CategoryAutocomplete
+                      name={`category_${line.id}`}
+                      options={[...allPLCategories, ...BS_CATEGORIES]}
+                    />
                   </div>
-<input list="tb-category-options" name={`category_${line.id}`} autoComplete="off"
-                    placeholder="Type or select category..."
-                    className="w-72 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
-                </div>
-              ))}
+                );
+              })}
               <button type="submit"
                 className="mt-3 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
                 Save Mappings
@@ -467,10 +492,6 @@ export default async function TrialBalanceDetailPage({
                               Cancel
                             </a>
                           </form>
-                          <datalist id="tb-category-options">
-              {allPLCategories.map((c) => <option key={c} value={c} />)}
-              {BS_CATEGORIES.map((c) => <option key={c} value={c} />)}
-            </datalist>
                         </td>
                       </tr>
                     );
