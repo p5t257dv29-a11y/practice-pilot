@@ -12,12 +12,12 @@ export async function GET(request: NextRequest) {
   const storedState = request.cookies.get("xero_oauth_state")?.value;
 
   if (!code) {
-    return NextResponse.redirect(new URL("/practice-settings?xero_error=missing_code", request.url));
+    return NextResponse.redirect(new URL("/integrations?xero_error=missing_code", request.url));
   }
 
   if (!state || state !== storedState) {
     console.error("Xero OAuth state mismatch — possible CSRF attempt or expired session.");
-    return NextResponse.redirect(new URL("/practice-settings?xero_error=state_mismatch", request.url));
+    return NextResponse.redirect(new URL("/integrations?xero_error=state_mismatch", request.url));
   }
 
   const basicAuth = Buffer.from(
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   if (!tokenRes.ok) {
     const errText = await tokenRes.text();
     console.error("Xero token exchange failed:", errText);
-    return NextResponse.redirect(new URL("/practice-settings?xero_error=token_exchange_failed", request.url));
+    return NextResponse.redirect(new URL("/integrations?xero_error=token_exchange_failed", request.url));
   }
 
   const tokenData = await tokenRes.json();
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
 
   if (!connectionsRes.ok) {
     console.error("Could not fetch Xero connections:", await connectionsRes.text());
-    return NextResponse.redirect(new URL("/practice-settings?xero_error=connections_failed", request.url));
+    return NextResponse.redirect(new URL("/integrations?xero_error=connections_failed", request.url));
   }
 
   const connections = await connectionsRes.json();
@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
 
   if (!tenant) {
     console.error("No Xero organisation returned from connections endpoint.");
-    return NextResponse.redirect(new URL("/practice-settings?xero_error=no_tenant", request.url));
+    return NextResponse.redirect(new URL("/integrations?xero_error=no_tenant", request.url));
   }
 
   const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
@@ -79,10 +79,10 @@ export async function GET(request: NextRequest) {
 
   if (dbError) {
     console.error("Could not save Xero connection:", dbError.message);
-    return NextResponse.redirect(new URL("/practice-settings?xero_error=save_failed", request.url));
+    return NextResponse.redirect(new URL("/integrations?xero_error=save_failed", request.url));
   }
 
-  const response = NextResponse.redirect(new URL("/practice-settings?xero_connected=1", request.url));
+  const response = NextResponse.redirect(new URL("/integrations?xero_connected=1", request.url));
   response.cookies.delete("xero_oauth_state");
   return response;
 }
