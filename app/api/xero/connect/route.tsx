@@ -4,15 +4,14 @@ import crypto from "crypto";
 export async function GET(request: NextRequest) {
   const state = crypto.randomBytes(16).toString("hex");
 
-  const scopes = [
+const scopes = [
     "openid",
     "profile",
     "email",
-    "accounting.transactions",
+    "accounting.invoices",
     "accounting.contacts",
     "offline_access",
   ].join(" ");
-
   const authUrl = new URL("https://login.xero.com/identity/connect/authorize");
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("client_id", process.env.XERO_CLIENT_ID!);
