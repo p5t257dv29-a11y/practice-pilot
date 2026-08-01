@@ -192,6 +192,33 @@ function parseCSVLine(line: string): string[] {
   return result;
 }
 
+function parseAmount(raw: string | undefined | null): number {
+  if (!raw) return 0;
+  const cleaned = raw.replace(/[£,\s]/g, "").trim();
+  if (!cleaned) return 0;
+  const negative = cleaned.startsWith("(") && cleaned.endsWith(")");
+  const num = parseFloat(negative ? cleaned.slice(1, -1) : cleaned);
+  if (isNaN(num)) return 0;
+  return negative ? -num : num;
+}
+
+async function parseFileToRows(file: File): Promise<string[][]> {
+  const name = file.name.toLowerCase();
+
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    const XLSX = await import("xlsx");
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, defval: "" });
+    return rows.map((row) => row.map((cell) => String(cell ?? "").trim()));
+  }
+
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  return lines.map(parseCSVLine);
+}
+
 async function uploadTrialBalance(formData: FormData) {
   "use server";
 
@@ -205,15 +232,46 @@ async function uploadTrialBalance(formData: FormData) {
     return;
   }
 
-  const text = await file.text();
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return;
+  const rawRows = await parseFileToRows(file);
+  const rows2d = rawRows.filter((r) => r.some((cell) => cell && cell.trim().length > 0));
+  if (rows2d.length < 1) return;
 
-  const headers = parseCSVLine(lines[0]).map((h) => h.toLowerCase());
-  const codeIdx = headers.findIndex((h) => h.includes("code"));
-  const descIdx = headers.findIndex((h) => h.includes("description") || h.includes("name"));
-  const debitIdx = headers.findIndex((h) => h.includes("debit"));
-  const creditIdx = headers.findIndex((h) => h.includes("credit"));
+  // Look through the first 10 rows for a genuine header row — one containing
+  // both a "code" column and a "debit"/"credit"/"balance" column. Xero and
+  // similar exports often have title/date rows above the real headers.
+  let headerRowIndex = -1;
+  let codeIdx = -1, descIdx = -1, debitIdx = -1, creditIdx = -1, balanceIdx = -1;
+
+  for (let i = 0; i < Math.min(10, rows2d.length); i++) {
+    const candidate = rows2d[i].map((h) => h.toLowerCase());
+    const hasCode = candidate.some((h) => h.includes("code"));
+    const hasAmount = candidate.some((h) => h.includes("debit") || h.includes("credit") || h.includes("balance"));
+    if (hasCode && hasAmount) {
+      headerRowIndex = i;
+      codeIdx = candidate.findIndex((h) => h.includes("code"));
+      descIdx = candidate.findIndex((h) => h.includes("description") || h.includes("name") || h === "account");
+      debitIdx = candidate.findIndex((h) => h.includes("debit"));
+      creditIdx = candidate.findIndex((h) => h.includes("credit"));
+      balanceIdx = candidate.findIndex((h) => h.includes("balance") && !h.includes("debit") && !h.includes("credit"));
+      break;
+    }
+  }
+
+  let dataRows: string[][];
+
+  if (headerRowIndex >= 0) {
+    dataRows = rows2d.slice(headerRowIndex + 1);
+  } else {
+    // No recognizable header — fall back to known headerless export shapes.
+    // IRIS-format Xero export: [signed balance, code, description, period code, description]
+    dataRows = rows2d;
+    const sampleWidth = rows2d[0]?.length || 0;
+    if (sampleWidth >= 3) {
+      balanceIdx = 0;
+      codeIdx = 1;
+      descIdx = 2;
+    }
+  }
 
   const { data: tb, error: tbError } = await supabase
     .from("trial_balances")
@@ -241,14 +299,27 @@ async function uploadTrialBalance(formData: FormData) {
   const masterLookup = new Map((masterAccounts || []).map((m) => [m.nominal_code, m.category]));
 
   const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCSVLine(lines[i]);
-    const nominal_code = codeIdx >= 0 ? cols[codeIdx] : null;
+  for (const cols of dataRows) {
+    const nominal_code = codeIdx >= 0 ? (cols[codeIdx] || null) : null;
     const description = descIdx >= 0 ? cols[descIdx] : cols[0] || "Unnamed line";
-    const debit = debitIdx >= 0 ? parseFloat(cols[debitIdx].replace(/[£,]/g, "")) || 0 : 0;
-    const credit = creditIdx >= 0 ? parseFloat(cols[creditIdx].replace(/[£,]/g, "")) || 0 : 0;
 
     if (!description) continue;
+    if (description.trim().toLowerCase() === "total") continue;
+
+    let debit = 0;
+    let credit = 0;
+
+    if (balanceIdx >= 0) {
+      const value = parseAmount(cols[balanceIdx]);
+      if (value < 0) {
+        credit = Math.abs(value);
+      } else {
+        debit = value;
+      }
+    } else {
+      debit = debitIdx >= 0 ? parseAmount(cols[debitIdx]) : 0;
+      credit = creditIdx >= 0 ? parseAmount(cols[creditIdx]) : 0;
+    }
 
     const category = nominal_code
       ? clientLookup.get(nominal_code) || masterLookup.get(nominal_code) || null
@@ -459,7 +530,7 @@ export default async function AccountsProductionPage({
               <div className="mt-4 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
                 <h2 className="text-lg font-bold text-slate-900">Upload Trial Balance</h2>
                 <p className="text-sm text-slate-500 mt-0.5">
-                  CSV with columns for Nominal Code, Description, Debit, and Credit (column order and naming are flexible — headers are matched automatically).
+                  CSV or Excel file with a Nominal Code column and either Debit/Credit or a single Balance column (column order and naming are flexible — headers are matched automatically, and common exports like Xero's IRIS-format trial balance are also supported).
                 </p>
 
                 <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-100 px-4 py-3">
@@ -483,8 +554,8 @@ export default async function AccountsProductionPage({
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
                   <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance CSV *</label>
-                    <input name="csv_file" type="file" accept=".csv" required
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance File *</label>
+                    <input name="csv_file" type="file" accept=".csv,.xlsx,.xls" required
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
                   </div>
                   <div className="md:col-span-2">
@@ -524,8 +595,8 @@ export default async function AccountsProductionPage({
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance CSV *</label>
-                  <input name="csv_file" type="file" accept=".csv" required
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Trial Balance File *</label>
+                  <input name="csv_file" type="file" accept=".csv,.xlsx,.xls" required
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
                 </div>
                 <div className="md:col-span-2">
