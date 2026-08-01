@@ -16,6 +16,7 @@ const navSections = [
       { href: "/deadlines", label: "Deadlines", icon: "📅" },
       { href: "/reports", label: "Reports & WIP", icon: "📈" },
       { href: "/timesheets", label: "Timesheets", icon: "⏱️" },
+      { href: "/integrations", label: "Integrations", icon: "🔌" },
     ],
   },
   {
