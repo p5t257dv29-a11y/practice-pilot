@@ -19,11 +19,16 @@ async function saveMappings(trialBalanceId: string, clientId: string, formData: 
     .select("id, nominal_code")
     .eq("trial_balance_id", trialBalanceId);
 
+  const validCategories = new Set([...PL_CATEGORIES, ...BS_CATEGORIES]);
+
   for (const line of lines || []) {
     const category = String(formData.get(`category_${line.id}`) || "").trim();
     if (!category) continue;
-
-    await supabase.from("trial_balance_lines").update({ category }).eq("id", line.id);
+    if (!validCategories.has(category)) {
+      console.error(`Skipped invalid category "${category}" for line ${line.id} — no exact match in category list.`);
+      continue;
+    }
+await supabase.from("trial_balance_lines").update({ category }).eq("id", line.id);
 
     if (line.nominal_code) {
       await supabase.from("nominal_code_mappings").upsert(
@@ -395,16 +400,9 @@ export default async function TrialBalanceDetailPage({
                       Dr {fmt(Number(line.debit))} · Cr {fmt(Number(line.credit))}
                     </p>
                   </div>
-                  <select name={`category_${line.id}`}
-                    className="w-72 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white">
-                    <option value="">Select category...</option>
-                    <optgroup label="Profit & Loss">
-                      {allPLCategories.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </optgroup>
-                    <optgroup label="Balance Sheet">
-                      {BS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </optgroup>
-                  </select>
+<input list="tb-category-options" name={`category_${line.id}`} autoComplete="off"
+                    placeholder="Type or select category..."
+                    className="w-72 rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white" />
                 </div>
               ))}
               <button type="submit"
@@ -469,6 +467,10 @@ export default async function TrialBalanceDetailPage({
                               Cancel
                             </a>
                           </form>
+                          <datalist id="tb-category-options">
+              {allPLCategories.map((c) => <option key={c} value={c} />)}
+              {BS_CATEGORIES.map((c) => <option key={c} value={c} />)}
+            </datalist>
                         </td>
                       </tr>
                     );
