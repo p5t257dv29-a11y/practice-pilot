@@ -102,11 +102,9 @@ export async function POST(request: NextRequest) {
   if (error || !invoice) {
     return NextResponse.json({ error: error?.message || "Failed to create invoice" }, { status: 500 });
   }
-
-  await supabase.from("invoice_lines").insert(
+const { error: linesError } = await supabase.from("invoice_lines").insert(
     lines.map((l: any) => ({
       invoice_id: invoice.id,
-      job_id: l.job_id || null,
       description: l.description,
       qty: l.qty,
       price: l.price,
@@ -114,6 +112,10 @@ export async function POST(request: NextRequest) {
       line_total: l.qty * l.price,
     }))
   );
+  if (linesError) {
+    console.error("Could not insert invoice lines:", linesError.message);
+    return NextResponse.json({ error: "Invoice created but line items failed to save", detail: linesError.message }, { status: 500 });
+  }
 
   return NextResponse.json({ success: true, invoiceId: invoice.id });
 }
