@@ -124,10 +124,10 @@ export async function POST(request: NextRequest) {
   // Process events after responding so a slow Xero API call doesn't cause a timeout.
   const response = new NextResponse(null, { status: 200 });
 
-  try {
+try {
     const body = JSON.parse(rawBody);
+    console.log("Xero webhook payload:", JSON.stringify(body));
     const events = body.events || [];
-
     for (const event of events) {
       if (event.eventCategory === "INVOICE" && event.eventType === "UPDATE") {
         processInvoiceEvent(event.resourceId).catch((err) =>
