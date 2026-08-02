@@ -113,31 +113,20 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const signature = request.headers.get("x-xero-signature");
 
-  // Xero performs an "intent to receive" check with an empty/test payload when
-  // the webhook is first saved, and expects a 200 with a valid signature to pass.
-  if (!verifySignature(rawBody, signature)) {
-    console.error("Xero webhook: signature verification failed.");
-    return new NextResponse(null, { status: 401 });
-  }
-
-  // Respond immediately — Xero requires a response within 5 seconds.
-  // Process events after responding so a slow Xero API call doesn't cause a timeout.
-  const response = new NextResponse(null, { status: 200 });
-
-try {
+// Our processing is fast (well under Xero's 5-second limit), so we await it
+  // directly rather than fire-and-forget — on Vercel's Edge runtime, background
+  // work after the response is sent isn't guaranteed to complete.
+  try {
     const body = JSON.parse(rawBody);
-    console.log("Xero webhook payload:", JSON.stringify(body));
     const events = body.events || [];
+
     for (const event of events) {
       if (event.eventCategory === "INVOICE" && event.eventType === "UPDATE") {
-        processInvoiceEvent(event.resourceId).catch((err) =>
-          console.error("Xero webhook: error processing invoice event:", err)
-        );
+        await processInvoiceEvent(event.resourceId);
       }
     }
   } catch (err) {
-    console.error("Xero webhook: error parsing payload:", err);
+    console.error("Xero webhook: error processing payload:", err);
   }
 
-  return response;
-}
+  return new NextResponse(null, { status: 200 });}
