@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-
+import SendToXeroButton from "./send-to-xero-button";
 export const dynamic = "force-dynamic";
 
 const supabase = createClient(
@@ -245,7 +245,7 @@ export default async function InvoiceDetailPage({
                   ✓ Mark as Paid
                 </button>
               </form>
-              <form action={updateWithId}>
+<form action={updateWithId}>
                 <input type="hidden" name="status" value="Sent" />
                 <input type="hidden" name="invoice_date" value={invoice.invoice_date || ""} />
                 <input type="hidden" name="due_date" value={invoice.due_date || ""} />
@@ -255,9 +255,9 @@ export default async function InvoiceDetailPage({
                   📧 Mark as Sent
                 </button>
               </form>
+              <SendToXeroButton invoiceId={invoice.id} alreadySent={!!invoice.xero_invoice_id} />
             </div>
-          </div>
-        </div>
+          </div>        </div>
       </div>
     </div>
   );
