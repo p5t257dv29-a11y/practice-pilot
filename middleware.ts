@@ -43,11 +43,11 @@ const isPublicBypass =
   pathname.startsWith("/payslip/") ||
   pathname.startsWith("/tax/approve/") ||
   pathname.startsWith("/a/") ||
-  pathname.startsWith("/portal/set-password");
+  pathname.startsWith("/portal/set-password") ||
+  pathname.startsWith("/api/xero/");
   if (isPublicBypass) {
     return supabaseResponse;
   }
-
   // Not logged in
   if (!user) {
     if (isPortalRoute && pathname !== "/portal/login") {
