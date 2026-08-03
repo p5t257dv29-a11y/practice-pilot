@@ -52,7 +52,7 @@ async function updateTaxRates(taxYear: string, formData: FormData) {
     carContributionCap: num("p11d_carContributionCap"),
   };
 
-  const capital_gains_tax = {
+const capital_gains_tax = {
     annualExemptAmount: num("cgt_annualExemptAmount"),
     basicRate: num("cgt_basicRate"),
     higherRate: num("cgt_higherRate"),
@@ -60,14 +60,24 @@ async function updateTaxRates(taxYear: string, formData: FormData) {
     basicRateBandWidth: num("cgt_basicRateBandWidth"),
   };
 
+  const national_insurance = {
+    lowerEarningsLimit: num("ni_lowerEarningsLimit"),
+    employeePrimaryThreshold: num("ni_employeePrimaryThreshold"),
+    employeeUpperEarningsLimit: num("ni_employeeUpperEarningsLimit"),
+    employeeMainRate: num("ni_employeeMainRate"),
+    employeeUpperRate: num("ni_employeeUpperRate"),
+    employerSecondaryThreshold: num("ni_employerSecondaryThreshold"),
+    employerRate: num("ni_employerRate"),
+  };
+
   await supabase.from("tax_rates").update({
     personal_tax,
     corporation_tax,
     p11d,
     capital_gains_tax,
+    national_insurance,
     updated_at: new Date().toISOString(),
   }).eq("tax_year", taxYear);
-
   revalidatePath("/practice-settings/tax-rates");
 }
 
@@ -80,14 +90,14 @@ async function addNewTaxYear(formData: FormData) {
   const { data: source } = await supabase.from("tax_rates").select("*").eq("tax_year", copyFromYear).single();
   if (!source) return;
 
-  await supabase.from("tax_rates").insert({
+await supabase.from("tax_rates").insert({
     tax_year: newYear,
     personal_tax: source.personal_tax,
     corporation_tax: source.corporation_tax,
     p11d: source.p11d,
     capital_gains_tax: source.capital_gains_tax,
+    national_insurance: source.national_insurance,
   });
-
   revalidatePath("/practice-settings/tax-rates");
 }
 
@@ -188,9 +198,21 @@ export default async function TaxRatesSettingsPage({
               </div>
             </div>
 
-            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <h2 className="text-lg font-bold text-slate-900">P11D — {activeYear}</h2>
+<div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">National Insurance — {activeYear}</h2>
               <div className="mt-4 grid gap-4 md:grid-cols-4">
+                <Field label="Lower Earnings Limit (£)" name="ni_lowerEarningsLimit" defaultValue={current.national_insurance.lowerEarningsLimit} step="1" />
+                <Field label="Employee Primary Threshold (£)" name="ni_employeePrimaryThreshold" defaultValue={current.national_insurance.employeePrimaryThreshold} step="1" />
+                <Field label="Employee Upper Earnings Limit (£)" name="ni_employeeUpperEarningsLimit" defaultValue={current.national_insurance.employeeUpperEarningsLimit} step="1" />
+                <Field label="Employee Main Rate" name="ni_employeeMainRate" defaultValue={current.national_insurance.employeeMainRate} />
+                <Field label="Employee Upper Rate" name="ni_employeeUpperRate" defaultValue={current.national_insurance.employeeUpperRate} />
+                <Field label="Employer Secondary Threshold (£)" name="ni_employerSecondaryThreshold" defaultValue={current.national_insurance.employerSecondaryThreshold} step="1" />
+                <Field label="Employer Rate" name="ni_employerRate" defaultValue={current.national_insurance.employerRate} />
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">P11D — {activeYear}</h2>              <div className="mt-4 grid gap-4 md:grid-cols-4">
                 <Field label="Class 1A NIC Rate" name="p11d_class1ANicRate" defaultValue={current.p11d.class1ANicRate} />
                 <Field label="Default Fuel Multiplier (£)" name="p11d_defaultFuelMultiplier" defaultValue={current.p11d.defaultFuelMultiplier} step="1" />
                 <Field label="Default Official Rate of Interest (%)" name="p11d_defaultOfficialRateOfInterest" defaultValue={current.p11d.defaultOfficialRateOfInterest} />
