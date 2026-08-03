@@ -55,9 +55,8 @@ export default function NewInvoiceForm({ clients, jobs }: { clients: Client[]; j
     if (frequency === "Weekly") {
       count = Math.round((end.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000));
     } else {
-      const monthsDiff = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
-      count = frequency === "Quarterly" ? Math.round(monthsDiff / 3) : monthsDiff;
-    }
+const monthsDiff = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
+      count = frequency === "Quarterly" ? Math.round(monthsDiff / 3) : monthsDiff;    }
     setNumInstalments(Math.max(2, count));
   };
 
@@ -232,14 +231,24 @@ export default function NewInvoiceForm({ clients, jobs }: { clients: Client[]; j
         )}
       </div>
 
-      {!splitRecurring && (
+{!splitRecurring && (
         <div className="mt-4 max-w-xs">
           <label className="block text-sm font-medium text-slate-700 mb-1">Payment Due Date</label>
           <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)}
             className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+          <button
+            type="button"
+            onClick={() => {
+              const d = new Date();
+              d.setDate(d.getDate() + 7);
+              setDueDate(d.toISOString().split("T")[0]);
+            }}
+            className="mt-2 text-xs font-medium text-slate-500 hover:text-slate-900 underline"
+          >
+            Set due in 7 days
+          </button>
         </div>
       )}
-
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
       <button onClick={handleSubmit} disabled={submitting}

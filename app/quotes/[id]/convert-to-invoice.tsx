@@ -46,9 +46,8 @@ export default function ConvertToInvoiceButton({
     if (frequency === "Weekly") {
       count = Math.round((end.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000));
     } else {
-      const monthsDiff = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
-      count = frequency === "Quarterly" ? Math.round(monthsDiff / 3) : monthsDiff;
-    }
+const monthsDiff = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
+      count = frequency === "Quarterly" ? Math.round(monthsDiff / 3) : monthsDiff;    }
 
     setNumInstalments(Math.max(2, count));
   };

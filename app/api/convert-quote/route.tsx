@@ -97,11 +97,26 @@ export async function POST(request: NextRequest) {
       const instalmentSubtotal = isLast ? Math.round((subtotal - rawSubtotal * (numInstalments - 1)) * 100) / 100 : rawSubtotal;
       const instalmentVat = isLast ? Math.round((vat - rawVat * (numInstalments - 1)) * 100) / 100 : rawVat;
 
-      const instalmentDueDate = new Date(startDate);
-      if (frequency === "Weekly") instalmentDueDate.setDate(instalmentDueDate.getDate() + i * 7);
-      else if (frequency === "Quarterly") instalmentDueDate.setMonth(instalmentDueDate.getMonth() + i * 3);
-      else instalmentDueDate.setMonth(instalmentDueDate.getMonth() + i);
+let instalmentInvoiceDate: Date;
+      let instalmentDueDate: Date;
 
+      if (frequency === "Weekly") {
+        instalmentDueDate = new Date(startDate);
+        instalmentDueDate.setDate(instalmentDueDate.getDate() + i * 7);
+        instalmentInvoiceDate = instalmentDueDate;
+      } else if (frequency === "Quarterly") {
+        instalmentDueDate = new Date(startDate);
+        instalmentDueDate.setMonth(instalmentDueDate.getMonth() + i * 3);
+        instalmentInvoiceDate = instalmentDueDate;
+      } else {
+        // Monthly: invoice dated the last day of each month, due 7 days later —
+        // the common billing pattern for spreading a fixed-fee job over several months.
+        const monthAnchor = new Date(startDate);
+        monthAnchor.setMonth(monthAnchor.getMonth() + i);
+        instalmentInvoiceDate = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth() + 1, 0);
+        instalmentDueDate = new Date(instalmentInvoiceDate);
+        instalmentDueDate.setDate(instalmentDueDate.getDate() + 7);
+      }
       const invoiceNumber = `INV-${String(nextNumber).padStart(4, "0")}`;
       nextNumber++;
 
@@ -112,11 +127,9 @@ export async function POST(request: NextRequest) {
           client_id: clientId,
           job_id: createdJobId,
           quote_id: quoteId,
-          status: "Draft",
-          invoice_date: new Date().toISOString().split("T")[0],
-          due_date: instalmentDueDate.toISOString().split("T")[0],
-          subtotal: instalmentSubtotal,
-          vat: instalmentVat,
+status: "Draft",
+          invoice_date: instalmentInvoiceDate.toISOString().split("T")[0],
+          due_date: instalmentDueDate.toISOString().split("T")[0],          vat: instalmentVat,
           total: instalmentTotal,
         })
         .select()
@@ -126,11 +139,11 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: error?.message || "Failed to create instalment invoices" }, { status: 500 });
       }
 
+const workDescription = quoteLines?.[0]?.description || quote?.quote_number || "Instalment";
       await supabase.from("invoice_lines").insert({
         invoice_id: invoice.id,
-        description: `Instalment ${i + 1} of ${numInstalments} — ${quote?.quote_number || "Quote"}`,
-        qty: 1,
-        price: instalmentTotal - instalmentVat,
+        description: `${workDescription} — Instalment ${i + 1} of ${numInstalments}`,
+        qty: 1,        price: instalmentTotal - instalmentVat,
         vat_rate: instalmentSubtotal > 0 ? Math.round((instalmentVat / instalmentSubtotal) * 100) : 0,
         line_total: instalmentSubtotal,
       });
