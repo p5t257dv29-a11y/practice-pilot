@@ -25,11 +25,15 @@ export default async function FormattedAccountsPage({
 
   if (error || !tb) notFound();
 
-  const { data: lines } = await supabase
+const { data: lines } = await supabase
     .from("trial_balance_lines")
     .select("*")
     .eq("trial_balance_id", id);
 
+  const { data: chartOfAccounts } = await supabase
+    .from("chart_of_accounts")
+    .select("nominal_code, account_name");
+  const accountNameByCode = new Map((chartOfAccounts || []).map((a) => [a.nominal_code, a.account_name]));
   const customPL = await getCustomPLCategories(supabase);
   const groupOf = (cat: string) => PL_CATEGORY_GROUPS[cat] || customPL.groups[cat];
 
@@ -130,30 +134,46 @@ export default async function FormattedAccountsPage({
 
   // Deepest level: the actual trial balance lines under one category —
   // each links straight into the trial balance page's inline edit for that line.
+// Summarises every posting under a category into one row per nominal code —
+  // full transaction-level detail now lives in the Nominal Ledger report instead,
+  // so this view stays a clean summary rather than a raw posting list.
   const LineDetail = ({ category }: { category: string }) => {
     const catLines = linesByCategory.get(category) || [];
     if (catLines.length === 0) return null;
+
+    const byCode = new Map<string, { net: number; description: string }>();
+    catLines.forEach((l) => {
+      const lineNet = CREDIT_NORMAL.has(category)
+        ? Number(l.credit) - Number(l.debit)
+        : Number(l.debit) - Number(l.credit);
+      const code = l.nominal_code || "(No code)";
+      const existing = byCode.get(code);
+      byCode.set(code, {
+        net: (existing?.net || 0) + lineNet,
+        description: existing?.description || l.description,
+      });
+    });
+
+    const sortedCodes = Array.from(byCode.keys()).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
     return (
       <div className="pl-6 pr-1 pb-2 space-y-1 border-l-2 border-slate-100 ml-1.5 mt-1">
-        {catLines.map((l) => {
-          const lineNet = CREDIT_NORMAL.has(category)
-            ? Number(l.credit) - Number(l.debit)
-            : Number(l.debit) - Number(l.credit);
+        {sortedCodes.map((code) => {
+          const { net, description } = byCode.get(code)!;
+          const label = accountNameByCode.get(code) || description;
           return (
-            <div key={l.id} className="flex justify-between text-xs">
-              <a href={`/accounts-production/${id}?line_edit=${l.id}`} className="text-slate-500 hover:text-blue-600 hover:underline">
-                {l.nominal_code && <span className="font-mono mr-1">{l.nominal_code}</span>}
-                {l.description}
+            <div key={code} className="flex justify-between text-xs">
+              <a href={`/accounts-production/${id}/nominal-ledger`} className="text-slate-500 hover:text-blue-600 hover:underline">
+                {code !== "(No code)" && <span className="font-mono mr-1">{code}</span>}
+                {label}
               </a>
-              <span className="text-slate-600">{fmtSigned(lineNet)}</span>
+              <span className="text-slate-600">{fmtSigned(net)}</span>
             </div>
           );
         })}
       </div>
     );
-  };
-
-  // A category row: expands to show its underlying trial balance lines if there's
+  };  // A category row: expands to show its underlying trial balance lines if there's
   // more than one, otherwise renders as a plain non-expandable row.
 const CategoryRow = ({ label, category, value, indent }: { label: string; category: string; value: number; indent?: boolean }) => {
     const catLines = linesByCategory.get(category) || [];

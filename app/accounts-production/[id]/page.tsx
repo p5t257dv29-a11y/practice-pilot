@@ -266,11 +266,14 @@ const [{ data: lines }, { data: journals }, { data: assets }, customPL, { data: 
             ← Back to Accounts Production
           </a>
           <div className="flex gap-3">
-            <a href={`/accounts-production/${id}/journal`}
+<a href={`/accounts-production/${id}/journal`}
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               Journals {journals && journals.length > 0 ? `(${journals.length})` : ""} →
             </a>
-            <a href={`/accounts-production/${id}/workpapers`}
+            <a href={`/accounts-production/${id}/nominal-ledger`}
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              Nominal Ledger →
+            </a>            <a href={`/accounts-production/${id}/workpapers`}
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               Workpapers →
             </a>
