@@ -192,12 +192,19 @@ export default async function FixedAssetsRegisterPage({
             <h1 className="text-2xl font-bold text-slate-900">Asset Register</h1>
             <p className="text-sm text-slate-500 mt-0.5">Full list of active and disposed assets.</p>
           </div>
-          <a href={`/fixed-assets/add${qs}`}
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-            + Add Asset
-          </a>
+<div className="flex gap-3">
+            {clientFilter && (
+              <a href={`/fixed-assets/register/depreciation?client=${clientFilter}`}
+                className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                Post Depreciation →
+              </a>
+            )}
+            <a href={`/fixed-assets/add${qs}`}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              + Add Asset
+            </a>
+          </div>
         </div>
-
         <div className="mt-4">
           <form method="get" className="flex gap-2">
             <select name="client" defaultValue={clientFilter || ""}

@@ -151,13 +151,18 @@ export default async function FixedAssetsPage({
                   </div>
                 </div>
 
-                <a href={`/fixed-assets/add?client=${browseClientId}`}
-                  className="inline-block rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  + Add Asset for This Client
-                </a>
+<div className="flex gap-3">
+                  <a href={`/fixed-assets/add?client=${browseClientId}`}
+                    className="inline-block rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                    + Add Asset for This Client
+                  </a>
+                  <a href={`/fixed-assets/register/depreciation?client=${browseClientId}`}
+                    className="inline-block rounded-xl bg-white border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                    Post Depreciation →
+                  </a>
+                </div>
 
-                {/* Active assets */}
-                <div>
+                {/* Active assets */}                <div>
                   <h3 className="text-sm font-bold text-slate-900 mb-2">Active Assets ({browseActive.length})</h3>
                   <div className="space-y-2">
                     {browseActive.map((asset) => {
