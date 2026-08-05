@@ -277,10 +277,10 @@ async function createComputation(formData: FormData) {
   const get = (key: string) => String(formData.get(key) || "").trim();
   const num = (key: string) => parseFloat(get(key)) || 0;
 
-  const client_id = get("client_id");
+const client_id = get("client_id");
+  const job_id = get("job_id") || null;
   const tax_year = get("tax_year") || "2026/27";
   if (!client_id) return;
-
   const input = {
     employmentIncome: num("employment_income"),
     selfEmploymentIncome: num("self_employment_income"),
@@ -305,10 +305,10 @@ async function createComputation(formData: FormData) {
   const rates = await getTaxRates(tax_year);
   const result = calculateTax(input, rates);
 
-  await supabase.from("tax_computations").insert({
+await supabase.from("tax_computations").insert({
     client_id,
-    tax_year,
-    employment_income: input.employmentIncome,
+    job_id,
+    tax_year,    employment_income: input.employmentIncome,
     self_employment_income: input.selfEmploymentIncome,
     rental_income: input.rentalIncome,
     property_expenses: input.propertyExpenses,
@@ -343,10 +343,9 @@ async function deleteComputation(id: string) {
 export default async function PersonalTaxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mode?: string; client?: string; self_employment?: string; tax_year?: string }>;
+searchParams: Promise<{ mode?: string; client?: string; self_employment?: string; tax_year?: string; job?: string }>;
 }) {
-  const { mode: modeParam, client: selectedClient, self_employment: prefillSelfEmployment, tax_year: selectedTaxYear } = await searchParams;
-
+  const { mode: modeParam, client: selectedClient, self_employment: prefillSelfEmployment, tax_year: selectedTaxYear, job: selectedJob } = await searchParams;
   const mode = modeParam || (selectedClient ? "new" : undefined);
   const taxYear = selectedTaxYear || "2026/27";
 
@@ -579,10 +578,10 @@ export default async function PersonalTaxPage({
               </div>
             )}
 
-            <form action={createComputation} className="mt-6">
+<form action={createComputation} className="mt-6">
               <input type="hidden" name="client_id" value={selectedClient} />
+              <input type="hidden" name="job_id" value={selectedJob || ""} />
               <input type="hidden" name="tax_year" value={taxYear} />
-
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Employment Income (£)</label>

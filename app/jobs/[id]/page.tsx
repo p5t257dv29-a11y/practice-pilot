@@ -203,9 +203,10 @@ export default async function JobDetailPage({
     { data: templates },
     { data: staff },
     { data: timeEntries },
-    { data: trialBalance },
-    { data: invoices },
-    { data: writeoffs },
+{ data: trialBalance },
+    { data: ctComputation },
+    { data: taxComputation },
+    { data: invoices },    { data: writeoffs },
     { data: jobNotes },
   ] = await Promise.all([
 supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).single(),
@@ -214,9 +215,10 @@ supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).sing
     supabase.from("checklist_templates").select("id, name").order("name", { ascending: true }),
     supabase.from("staff").select("id, name").eq("is_active", true).order("name", { ascending: true }),
     supabase.from("time_entries").select("*").eq("job_id", id).order("date", { ascending: false }),
-    supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("invoices").select("subtotal, status").eq("job_id", id),
-    supabase.from("wip_writeoffs").select("*").eq("job_id", id).order("created_at", { ascending: false }),
+supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("corporation_tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("invoices").select("subtotal, status").eq("job_id", id),    supabase.from("wip_writeoffs").select("*").eq("job_id", id).order("created_at", { ascending: false }),
     supabase.from("job_notes").select("*").eq("job_id", id).order("created_at", { ascending: false }),
   ]);
 
@@ -240,10 +242,26 @@ supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).sing
   const writtenOffAmount = safeWriteoffs.reduce((sum, w) => sum + Number(w.amount), 0);
   const currentWip = Math.max(chargeOutValue - invoicedAmount - writtenOffAmount, 0);
 
-  const accountsProductionHref = trialBalance
-    ? `/accounts-production/${trialBalance.id}`
-    : `/accounts-production?job=${id}`;
+// "Start Work" routes to the correct production screen based on job type, opening the
+  // existing computation/trial balance if one exists, or starting a new one linked to
+  // this job if not. Job types without a dedicated production screen yet get no button.
+  let startWorkHref: string | null = null;
+  let startWorkLabel = "";
 
+  if (job.job_type === "Year End Accounts") {
+    startWorkHref = trialBalance ? `/accounts-production/${trialBalance.id}` : `/accounts-production?job=${id}`;
+    startWorkLabel = trialBalance ? "View Accounts" : "Prepare Accounts";
+  } else if (job.job_type === "Corporation Tax Return") {
+    startWorkHref = ctComputation
+      ? `/corporation-tax/${ctComputation.id}`
+      : `/corporation-tax?mode=new&client=${job.client_id}&job=${id}`;
+    startWorkLabel = ctComputation ? "View CT Computation" : "Prepare CT Computation";
+  } else if (job.job_type === "Self Assessment") {
+    startWorkHref = taxComputation
+      ? `/tax/${taxComputation.id}`
+      : `/tax?mode=new&client=${job.client_id}&job=${id}`;
+    startWorkLabel = taxComputation ? "View Tax Return" : "Prepare Tax Return";
+  }
   return (
     <div className="p-8">
       <a href="/jobs" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
@@ -266,11 +284,12 @@ supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).sing
         </div>
 
         <div className="flex items-center gap-2">
-          <a href={accountsProductionHref}
-            className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-            {trialBalance ? "View Accounts" : "Prepare Accounts"}
-          </a>
-
+{startWorkHref && (
+            <a href={startWorkHref}
+              className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+              {startWorkLabel}
+            </a>
+          )}
           <span
             className={`rounded-full px-4 py-2 text-sm font-semibold ${
               job.status === "Active"
