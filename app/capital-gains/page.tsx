@@ -29,6 +29,18 @@ export async function getCgtRates(taxYear: string) {
   return data?.capital_gains_tax || CGT_RATES[taxYear] || CGT_RATES["2026/27"];
 }
 
+// Works out which UK tax year (6 April to 5 April) a given date falls into.
+// Used to group a client's disposals together so the Annual Exempt Amount
+// and rate-band stacking are shared across the whole tax year, not reset
+// for every individual disposal.
+export function ukTaxYearOf(dateStr: string): string {
+  const d = new Date(dateStr);
+  const year = d.getUTCFullYear();
+  const aprilSixth = new Date(Date.UTC(year, 3, 6)); // 6 April
+  const startYear = d >= aprilSixth ? year : year - 1;
+  return `${startYear}/${String(startYear + 1).slice(-2)}`;
+}
+
 export function calculateCapitalGain(input: {
   entityType: string;
   disposalProceeds: number;
@@ -38,6 +50,8 @@ export function calculateCapitalGain(input: {
   lossesBroughtForward: number;
   badrEligible: boolean;
   taxableIncomeForBandStacking: number; // individuals only — taxable income before the gain
+  aeaAlreadyUsedThisYear?: number; // individuals only — AEA already consumed by earlier same-tax-year disposals
+  gainsStackedAheadThisYear?: number; // individuals only — taxable gains from earlier same-tax-year disposals, for rate-band stacking
   rolloverReliefClaimed: boolean;
   amountReinvested: number;
   replacementAssetCost: number;
@@ -81,7 +95,11 @@ export function calculateCapitalGain(input: {
 
   // Individual: AEA applied first (protecting it from being wasted against a small
   // gain), brought-forward losses applied after, only as far as needed.
-  const aeaApplied = Math.min(gainAfterRollover, rates.annualExemptAmount);
+  // AEA is shared across the whole tax year, so we subtract whatever earlier
+  // same-tax-year disposals for this client have already used.
+  const aeaAlreadyUsed = input.aeaAlreadyUsedThisYear || 0;
+  const aeaRemaining = Math.max(0, rates.annualExemptAmount - aeaAlreadyUsed);
+  const aeaApplied = Math.min(gainAfterRollover, aeaRemaining);
   const gainAfterAEA = Math.max(0, gainAfterRollover - aeaApplied);
   const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterAEA);
   const taxableGain = gainAfterAEA - lossesUsed;
@@ -94,7 +112,14 @@ export function calculateCapitalGain(input: {
   if (input.badrEligible) {
     cgtDue = taxableGain * rates.badrRate;
   } else {
-    const remainingBasicBand = Math.max(0, rates.basicRateBandWidth - input.taxableIncomeForBandStacking);
+    // The basic-rate band is shared across the whole tax year too — income uses
+    // it first, then gains stack on top in the order disposals are processed,
+    // so we subtract any taxable gains from earlier same-tax-year disposals
+    // before working out how much basic-rate band space is left for this one.
+    const gainsStackedAhead = input.gainsStackedAheadThisYear || 0;
+    const remainingBasicBand = Math.max(0,
+      rates.basicRateBandWidth - input.taxableIncomeForBandStacking - gainsStackedAhead
+    );
     gainAtBasicRate = Math.min(taxableGain, remainingBasicBand);
     gainAtHigherRate = taxableGain - gainAtBasicRate;
     cgtDue = gainAtBasicRate * rates.basicRate + gainAtHigherRate * rates.higherRate;
@@ -162,8 +187,30 @@ export default async function CapitalGainsPage({
     supabase.from("tax_computations").select("id, tax_year, client_id"),
   ]);
 
-  const rows = await Promise.all(
-    (computations || []).map(async (comp) => {
+  // --- Per-tax-year aggregation of AEA and rate-band stacking ---
+  // Group this client's disposals by UK tax year, process them in
+  // chronological order within each group, and carry a running total of
+  // AEA used and taxable gains so far into each subsequent disposal's
+  // calculation. Company disposals don't use AEA/rate bands so they're
+  // excluded from the running totals (but still calculated individually).
+  const groups = new Map<string, any[]>();
+  for (const comp of computations || []) {
+    const key = `${comp.client_id}:${ukTaxYearOf(comp.disposal_date)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(comp);
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime());
+  }
+
+  const cgtRates = await getCgtRates("2026/27");
+  const resultByCompId = new Map<string, any>();
+
+  for (const group of groups.values()) {
+    let aeaUsedSoFar = 0;
+    let gainsStackedSoFar = 0;
+
+    for (const comp of group) {
       let taxableIncome = 0;
       if (comp.linked_tax_computation_id) {
         const { data: tc } = await supabase
@@ -178,7 +225,6 @@ export default async function CapitalGainsPage({
         }
       }
 
-      const cgtRates = await getCgtRates("2026/27");
       const result = calculateCapitalGain({
         entityType: comp.entity_type,
         disposalProceeds: Number(comp.disposal_proceeds),
@@ -188,16 +234,40 @@ export default async function CapitalGainsPage({
         lossesBroughtForward: Number(comp.losses_brought_forward),
         badrEligible: comp.badr_eligible,
         taxableIncomeForBandStacking: taxableIncome,
+        aeaAlreadyUsedThisYear: aeaUsedSoFar,
+        gainsStackedAheadThisYear: gainsStackedSoFar,
         rolloverReliefClaimed: comp.rollover_relief_claimed,
         amountReinvested: Number(comp.amount_reinvested),
         replacementAssetCost: Number(comp.replacement_asset_cost),
       }, cgtRates);
 
-      return { comp, result };
-    })
-  );
+      if (comp.entity_type !== "Company") {
+        aeaUsedSoFar += result.aeaApplied;
+        gainsStackedSoFar += result.taxableGain;
+      }
 
+      resultByCompId.set(comp.id, result);
+    }
+  }
+
+  const rows = (computations || []).map((comp) => ({
+    comp,
+    result: resultByCompId.get(comp.id),
+  }));
+
+  const openRows = rows.filter((r) => r.comp.status !== "Approved");
+  const completedRows = rows.filter((r) => r.comp.status === "Approved");
   const browseRows = browseClientId ? rows.filter((r) => r.comp.client_id === browseClientId) : [];
+
+  const statusBadge = (status: string | null | undefined) => {
+    const s = status || "Draft";
+    const style =
+      s === "Sent" ? "bg-yellow-100 text-yellow-700"
+      : s === "Queried" ? "bg-orange-100 text-orange-700"
+      : s === "Approved" ? "bg-green-100 text-green-700"
+      : "bg-slate-100 text-slate-600";
+    return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
+  };
 
   const renderRow = ({ comp, result }: (typeof rows)[number]) => {
     const is60Day = comp.entity_type === "Individual" && comp.asset_category === "Residential Property";
@@ -208,9 +278,12 @@ export default async function CapitalGainsPage({
       <div key={comp.id} className="rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
         <div className="flex items-center justify-between">
           <a href={`/capital-gains/${comp.id}`} className="flex-1">
-            <p className="font-semibold text-slate-900">
-              {(comp.clients as any)?.client_name || "No client"} — {comp.asset_description}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-slate-900">
+                {(comp.clients as any)?.client_name || "No client"} — {comp.asset_description}
+              </p>
+              {statusBadge(comp.status)}
+            </div>
             <p className="text-sm text-slate-500">
               {comp.entity_type} · Disposed {new Date(comp.disposal_date).toLocaleDateString("en-GB")}
               {comp.badr_eligible && " · BADR"}
@@ -259,8 +332,22 @@ export default async function CapitalGainsPage({
           </div>
         )}
 
-        {/* Entry choice: Browse existing vs Start New */}
-        <div className="grid gap-4 md:grid-cols-2 mb-6">
+        {/* Entry choice: Open / Completed / Browse Existing / New */}
+        <div className="grid gap-4 md:grid-cols-4 mb-6">
+          <a href="/capital-gains?mode=open"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "open" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "open" ? "text-white" : "text-slate-900"}`}>Open</p>
+            <p className={`text-sm mt-1 ${mode === "open" ? "text-slate-300" : "text-slate-500"}`}>{openRows.length} not yet completed</p>
+          </a>
+          <a href="/capital-gains?mode=completed"
+            className={`rounded-2xl p-6 shadow-sm border transition-all ${
+              mode === "completed" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
+            }`}>
+            <p className={`font-bold text-lg ${mode === "completed" ? "text-white" : "text-slate-900"}`}>Completed</p>
+            <p className={`text-sm mt-1 ${mode === "completed" ? "text-slate-300" : "text-slate-500"}`}>{completedRows.length} approved</p>
+          </a>
           <a href="/capital-gains?mode=browse"
             className={`rounded-2xl p-6 shadow-sm border transition-all ${
               mode === "browse" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
@@ -276,6 +363,34 @@ export default async function CapitalGainsPage({
             <p className={`text-sm mt-1 ${mode === "new" ? "text-slate-300" : "text-slate-500"}`}>Record a disposal for a client</p>
           </a>
         </div>
+
+        {/* OPEN MODE */}
+        {mode === "open" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Open Computations</h2>
+            {openRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No open computations — everything's approved.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {openRows.map(renderRow)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* COMPLETED MODE */}
+        {mode === "completed" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Completed Computations</h2>
+            {completedRows.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">Nothing approved yet.</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {completedRows.map(renderRow)}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* BROWSE MODE */}
         {mode === "browse" && (

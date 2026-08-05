@@ -143,7 +143,11 @@ function computeCore(input: TaxInput, rates?: any) {
   const psaUsed = Math.min(afterStartingRate, psa);
   const taxableSavings = afterStartingRate - psaUsed;
 
-  const savingsBase = taxableNonSavings;
+  // The starting-rate and PSA portions of savings are taxed at 0%, but they
+  // still occupy basic/higher-rate band space ahead of the taxable slice of
+  // savings — so both need adding here, not just taxableNonSavings, or the
+  // taxable savings get pushed into a lower rate band than they should be.
+  const savingsBase = taxableNonSavings + startingRateUsed + psaUsed;
   const savingsBasicRemaining = Math.max(0, r.basicRateLimit - savingsBase);
   const savingsHigherRemaining = Math.max(0, r.additionalRateThreshold - Math.max(savingsBase, r.basicRateLimit));
 

@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { calculateTax, getPaymentSchedule, getTaxRates } from "../../tax/page";
+import { calculateCapitalGain, getCgtRates, ukTaxYearOf } from "../../capital-gains/page";
 import PrintButton from "../../print-button";
 
 const supabase = createClient(
@@ -45,7 +46,7 @@ export default async function PublicTaxComputationPage({
 
   if (error || !comp) notFound();
 
-const firmName = practiceSettings?.firm_name || "Your Accountant";
+  const firmName = practiceSettings?.firm_name || "Your Accountant";
 
   const approveWithToken = approveComputation.bind(null, token);
   const queryWithToken = queryComputation.bind(null, token);
@@ -57,7 +58,7 @@ const firmName = practiceSettings?.firm_name || "Your Accountant";
   const rates = await getTaxRates(comp.tax_year);
 
   const result = calculateTax({
-  employmentIncome: Number(comp.employment_income),
+    employmentIncome: Number(comp.employment_income),
     selfEmploymentIncome: Number(comp.self_employment_income),
     rentalIncome: Number(comp.rental_income),
     propertyExpenses: Number(comp.property_expenses),
@@ -73,11 +74,72 @@ const firmName = practiceSettings?.firm_name || "Your Accountant";
     foreignPropertyExpenses: Number(comp.foreign_property_expenses),
     foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
-  foreignTaxPaid: Number(comp.foreign_tax_paid),
+    foreignTaxPaid: Number(comp.foreign_tax_paid),
     taxYear: comp.tax_year,
   }, rates);
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
-    const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // --- Capital Gains Tax linked to this computation ---
+  // Any CGT disposals the practice has linked to this specific Personal Tax
+  // computation are pulled in here, using the same per-tax-year AEA and
+  // rate-band aggregation as the Capital Gains module itself, so the figure
+  // shown to the client always matches what's shown internally.
+  const { data: linkedGains } = await supabase
+    .from("capital_gains_computations")
+    .select("*")
+    .eq("linked_tax_computation_id", comp.id)
+    .neq("entity_type", "Company");
+
+  const cgtRates = await getCgtRates("2026/27");
+
+  // Same rough income proxy the Capital Gains module uses for band stacking
+  // when a disposal is linked to this computation.
+  const taxableIncomeForGains = Math.max(0,
+    Number(comp.employment_income) + Number(comp.self_employment_income) +
+    Number(comp.rental_income) + Number(comp.pension_income) - 12570
+  );
+
+  const sortedGains = (linkedGains || [])
+    .filter((g) => ukTaxYearOf(g.disposal_date) === comp.tax_year)
+    .sort((a, b) => {
+      const diff = new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime();
+      if (diff !== 0) return diff;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+
+  let aeaUsedSoFar = 0;
+  let gainsStackedSoFar = 0;
+  const cgtRows = sortedGains.map((g) => {
+    const gResult = calculateCapitalGain({
+      entityType: g.entity_type,
+      disposalProceeds: Number(g.disposal_proceeds),
+      acquisitionCost: Number(g.acquisition_cost),
+      incidentalCosts: Number(g.incidental_costs),
+      improvementCosts: Number(g.improvement_costs),
+      lossesBroughtForward: Number(g.losses_brought_forward),
+      badrEligible: g.badr_eligible,
+      taxableIncomeForBandStacking: taxableIncomeForGains,
+      aeaAlreadyUsedThisYear: aeaUsedSoFar,
+      gainsStackedAheadThisYear: gainsStackedSoFar,
+      rolloverReliefClaimed: g.rollover_relief_claimed,
+      amountReinvested: Number(g.amount_reinvested),
+      replacementAssetCost: Number(g.replacement_asset_cost),
+    }, cgtRates);
+
+    aeaUsedSoFar += gResult.aeaApplied;
+    gainsStackedSoFar += gResult.taxableGain;
+
+    const isProperty = g.asset_category === "Residential Property";
+    return { comp: g, result: gResult, isProperty };
+  });
+
+  const nonPropertyCgtDue = cgtRows.filter((r) => !r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
+  const propertyCgtDue = cgtRows.filter((r) => r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
+  const hasCgt = cgtRows.length > 0;
+
+  const grandTotalAtBalancingPayment = schedule.dueAtBalancingPayment + nonPropertyCgtDue;
+
+  const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const fmtDateTime = (d: string) =>
     `${new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
@@ -249,6 +311,32 @@ const firmName = practiceSettings?.firm_name || "Your Accountant";
             </div>
           </div>
 
+          {/* Capital Gains Tax, shown when any disposals are linked to this computation */}
+          {hasCgt && (
+            <div className="p-6 border-b border-slate-100">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Capital Gains Tax</h2>
+              <div className="space-y-3">
+                {cgtRows.map((row) => (
+                  <div key={row.comp.id} className="text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">{row.comp.asset_description}{row.isProperty && " (residential property)"}</span>
+                      <span className="font-medium">{fmt(row.result.cgtDue)}</span>
+                    </div>
+                    {row.isProperty && (
+                      <p className="text-xs text-amber-700 mt-0.5">
+                        Reported and paid separately via HMRC's 60-day property service — not included in the 31 January balancing payment below.
+                      </p>
+                    )}
+                  </div>
+                ))}
+                <div className="flex justify-between font-bold border-t border-slate-100 pt-2">
+                  <span>Total Capital Gains Tax</span>
+                  <span>{fmt(nonPropertyCgtDue + propertyCgtDue)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Payment Schedule */}
           <div className="p-6 bg-slate-50 print:bg-white">
             <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Payment Schedule</h2>
@@ -260,6 +348,12 @@ const firmName = practiceSettings?.firm_name || "Your Accountant";
                     <span className="text-slate-500">Balancing payment ({comp.tax_year})</span>
                     <span className="font-medium">{fmt(schedule.balanceDue)}</span>
                   </div>
+                  {nonPropertyCgtDue > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Capital Gains Tax (non-property)</span>
+                      <span className="font-medium">{fmt(nonPropertyCgtDue)}</span>
+                    </div>
+                  )}
                   {schedule.poaRequired && (
                     <div className="flex justify-between">
                       <span className="text-slate-500">1st payment on account ({schedule.nextTaxYear})</span>
@@ -268,7 +362,7 @@ const firmName = practiceSettings?.firm_name || "Your Accountant";
                   )}
                   <div className="flex justify-between font-bold border-t border-slate-100 pt-1">
                     <span>Total due</span>
-                    <span>{fmt(schedule.dueAtBalancingPayment)}</span>
+                    <span>{fmt(grandTotalAtBalancingPayment)}</span>
                   </div>
                 </div>
               </div>
@@ -279,6 +373,16 @@ const firmName = practiceSettings?.firm_name || "Your Accountant";
                   <div className="mt-1 flex justify-between text-sm font-bold">
                     <span>2nd payment on account ({schedule.nextTaxYear})</span>
                     <span>{fmt(schedule.dueAtPoa2)}</span>
+                  </div>
+                </div>
+              )}
+
+              {propertyCgtDue > 0 && (
+                <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
+                  <p className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Separately reported</p>
+                  <div className="mt-1 flex justify-between text-sm font-bold text-amber-800">
+                    <span>Capital Gains Tax (property, via 60-day service)</span>
+                    <span>{fmt(propertyCgtDue)}</span>
                   </div>
                 </div>
               )}

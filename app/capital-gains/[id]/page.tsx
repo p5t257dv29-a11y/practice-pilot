@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { calculateCapitalGain } from "../page";
+import { calculateCapitalGain, ukTaxYearOf } from "../page";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +38,20 @@ async function updateComputation(id: string, formData: FormData) {
   revalidatePath("/capital-gains");
 }
 
+// Works out the taxable income to use for rate-band stacking for a given
+// computation row (via its linked Personal Tax computation, if any).
+async function taxableIncomeFor(comp: any): Promise<number> {
+  if (!comp.linked_tax_computation_id) return 0;
+  const { data: tc } = await supabase
+    .from("tax_computations")
+    .select("employment_income, self_employment_income, rental_income, pension_income")
+    .eq("id", comp.linked_tax_computation_id)
+    .single();
+  if (!tc) return 0;
+  const total = Number(tc.employment_income) + Number(tc.self_employment_income) + Number(tc.rental_income) + Number(tc.pension_income);
+  return Math.max(0, total - 12570);
+}
+
 export default async function CapitalGainsDetailPage({
   params,
 }: {
@@ -57,6 +71,55 @@ export default async function CapitalGainsDetailPage({
     .from("tax_computations")
     .select("id, tax_year")
     .eq("client_id", comp.client_id);
+
+  // --- Per-tax-year AEA / rate-band aggregation, matching the list page ---
+  // Individuals share one Annual Exempt Amount and one basic-rate band across
+  // the whole UK tax year. To get the same figure the list page shows, we
+  // need to replay every other Individual disposal this client made in the
+  // same tax year (in date order) and carry the running AEA/gains totals up
+  // to — but not including — this disposal.
+  let aeaAlreadyUsedThisYear = 0;
+  let gainsStackedAheadThisYear = 0;
+
+  if (comp.entity_type !== "Company") {
+    const { data: sameClientComps } = await supabase
+      .from("capital_gains_computations")
+      .select("*")
+      .eq("client_id", comp.client_id)
+      .neq("entity_type", "Company");
+
+    const sameTaxYear = (sameClientComps || [])
+      .filter((c) => ukTaxYearOf(c.disposal_date) === ukTaxYearOf(comp.disposal_date))
+      .sort((a, b) => {
+        const dateDiff = new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime();
+        if (dateDiff !== 0) return dateDiff;
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
+
+    for (const earlier of sameTaxYear) {
+      if (earlier.id === comp.id) break; // reached this disposal — stop, use totals accumulated so far
+
+      const earlierTaxableIncome = await taxableIncomeFor(earlier);
+      const earlierResult = calculateCapitalGain({
+        entityType: earlier.entity_type,
+        disposalProceeds: Number(earlier.disposal_proceeds),
+        acquisitionCost: Number(earlier.acquisition_cost),
+        incidentalCosts: Number(earlier.incidental_costs),
+        improvementCosts: Number(earlier.improvement_costs),
+        lossesBroughtForward: Number(earlier.losses_brought_forward),
+        badrEligible: earlier.badr_eligible,
+        taxableIncomeForBandStacking: earlierTaxableIncome,
+        aeaAlreadyUsedThisYear,
+        gainsStackedAheadThisYear,
+        rolloverReliefClaimed: earlier.rollover_relief_claimed,
+        amountReinvested: Number(earlier.amount_reinvested),
+        replacementAssetCost: Number(earlier.replacement_asset_cost),
+      });
+
+      aeaAlreadyUsedThisYear += earlierResult.aeaApplied;
+      gainsStackedAheadThisYear += earlierResult.taxableGain;
+    }
+  }
 
   let taxableIncome = 0;
   let linkedTaxYear = "";
@@ -82,6 +145,8 @@ export default async function CapitalGainsDetailPage({
     lossesBroughtForward: Number(comp.losses_brought_forward),
     badrEligible: comp.badr_eligible,
     taxableIncomeForBandStacking: taxableIncome,
+    aeaAlreadyUsedThisYear,
+    gainsStackedAheadThisYear,
     rolloverReliefClaimed: comp.rollover_relief_claimed,
     amountReinvested: Number(comp.amount_reinvested),
     replacementAssetCost: Number(comp.replacement_asset_cost),
@@ -173,6 +238,7 @@ export default async function CapitalGainsDetailPage({
               ) : (
                 <p className="text-xs text-slate-400 mt-1">
                   {linkedTaxYear ? `Based on taxable income from the ${linkedTaxYear} Personal Tax computation.` : "No linked Personal Tax computation — assumed £0 other taxable income, so the gain may be taxed more favourably than it should be. Link a computation for accuracy."}
+                  {gainsStackedAheadThisYear > 0 && ` Also accounts for ${fmt(gainsStackedAheadThisYear)} of taxable gains from this client's other disposals earlier in the same tax year.`}
                 </p>
               )}
               <div className="mt-4 space-y-2 text-sm">
