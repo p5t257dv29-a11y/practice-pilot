@@ -1,8 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { calculateCorporationTax, applyLossRelief, getCtRates } from "../page";
-import { calculateCapitalAllowances } from "../../fixed-assets/capital-allowances/page";
+import { getCtRates, calculateFullCorporationTax } from "../page";
 import { calculateS455 } from "../../directors-loan-account/page";
 import SendCTButton from "../../send-ct-button";
 
@@ -27,6 +26,7 @@ async function updateComputation(id: string, formData: FormData) {
     depreciation_addback: num("depreciation_addback"),
     disallowable_expenses: num("disallowable_expenses"),
     other_allowable_deductions: num("other_allowable_deductions"),
+    accounting_profit_on_disposal: num("accounting_profit_on_disposal"),
     brought_forward_losses: num("brought_forward_losses"),
     associated_companies: parseInt(get("associated_companies")) || 0,
     main_pool_bfwd: num("main_pool_bfwd"),
@@ -81,34 +81,84 @@ export default async function CorporationTaxDetailPage({
   }));
   const totalS455 = dlaResults.reduce((s, r) => s + r.result.s455Due, 0);
 
-  const ca = calculateCapitalAllowances({
-    assets: assets || [],
-    periodStart: comp.period_start,
-    periodEnd: comp.period_end,
-    mainPoolBfwd: Number(comp.main_pool_bfwd),
-    specialRatePoolBfwd: Number(comp.special_rate_pool_bfwd),
-    jobId: comp.job_id,
-  });
-
-  const taxableProfitBeforeLosses =
-    Number(comp.accounting_profit) +
-    Number(comp.depreciation_addback) +
-    Number(comp.disallowable_expenses) -
-    ca.totalCapitalAllowances -
-    Number(comp.other_allowable_deductions);
-
-  const loss = applyLossRelief(taxableProfitBeforeLosses, Number(comp.brought_forward_losses));
-
   const ctRates = await getCtRates("2026/27");
-  const ct = calculateCorporationTax({
-    taxableProfit: loss.taxableProfitAfterLosses,
-    periodStart: comp.period_start,
-    periodEnd: comp.period_end,
-    associatedCompanies: comp.associated_companies,
-  }, ctRates);
+  const full = await calculateFullCorporationTax(comp, assets || [], ctRates);
+  const { periods, isSplit, totalCorporationTax, totalLossesCarriedForward } = full;
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB");
   const updateWithId = updateComputation.bind(null, id);
+
+  // Renders one sub-period's figures. Used once when there's no split, and
+  // twice (stacked) when there is.
+  const renderPeriodBreakdown = (p: any, index: number, total: number) => (
+    <div key={index} className={total > 1 ? "rounded-xl border border-slate-100 p-4" : ""}>
+      {total > 1 && (
+        <p className="text-xs font-bold text-purple-700 uppercase tracking-wide mb-3">
+          CT600 {index + 1} of {total} · {fmtDate(p.periodStart)} to {fmtDate(p.periodEnd)}
+        </p>
+      )}
+      <div className="space-y-2 text-sm">
+        <div className="flex justify-between"><span className="text-slate-500">Accounting Profit{total > 1 ? " (apportioned)" : ""}</span><span className="font-medium">{fmt(p.accountingProfitShare)}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Add: Depreciation</span><span className="font-medium">{fmt(p.depreciationShare)}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Add: Other Disallowable Expenses</span><span className="font-medium">{fmt(p.disallowableShare)}</span></div>
+        <div className="flex justify-between border-t border-slate-100 pt-2">
+          <span className="text-slate-500">Less: Capital Allowances</span>
+          <span className="font-medium text-red-600">({fmt(p.ca.totalCapitalAllowances)})</span>
+        </div>
+        <div className="flex justify-between"><span className="text-slate-500">Less: Other Allowable Deductions</span><span className="font-medium text-red-600">({fmt(p.otherDeductionsShare)})</span></div>
+        {p.profitOnDisposalShare !== 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">Less: Profit/(Loss) on Disposal Per Accounts</span><span className="font-medium text-red-600">({fmt(p.profitOnDisposalShare)})</span></div>
+        )}
+        {p.totalChargeableGains > 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">Add: Chargeable Gains</span><span className="font-medium">{fmt(p.totalChargeableGains)}</span></div>
+        )}
+        <div className="border-t border-slate-100 pt-2 flex justify-between font-medium">
+          <span>Profit Before Loss Relief</span>
+          <span>{fmt(p.taxableProfitBeforeLosses)}</span>
+        </div>
+        <div className="flex justify-between"><span className="text-slate-500">Less: Losses Used This Period</span><span className="font-medium text-red-600">({fmt(p.loss.lossesUsed)})</span></div>
+        <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
+          <span>Taxable Profit</span>
+          <span>{fmt(p.loss.taxableProfitAfterLosses)}</span>
+        </div>
+        <div className="flex justify-between text-slate-500 pt-1">
+          <span>Losses Carried Forward</span>
+          <span className="font-medium">{fmt(p.loss.lossesCarriedForward)}</span>
+        </div>
+        <div className="border-t border-slate-100 pt-2 mt-2">
+          <div className="flex justify-between">
+            <span className="text-slate-500">Band</span>
+            <span className="font-medium">{p.ct.band}</span>
+          </div>
+          <div className="flex justify-between"><span className="text-slate-500">Effective Rate</span><span className="font-medium">{(p.ct.effectiveRate * 100).toFixed(2)}%</span></div>
+          <div className="flex justify-between font-bold text-base pt-1">
+            <span>Corporation Tax Due</span>
+            <span>{fmt(p.ct.corporationTax)}</span>
+          </div>
+        </div>
+        {p.ca.additions.length > 0 && (
+          <p className="text-xs text-slate-400 pt-2">
+            {p.ca.additions.length} asset addition{p.ca.additions.length !== 1 ? "s" : ""} in this sub-period ·{" "}
+            <a href={`/fixed-assets/capital-allowances?client=${comp.client_id}&period_start=${p.periodStart}&period_end=${p.periodEnd}&main_pool_bfwd=${index === 0 ? comp.main_pool_bfwd : periods[index - 1].ca.mainPoolClosingBalance}&special_rate_pool_bfwd=${index === 0 ? comp.special_rate_pool_bfwd : periods[index - 1].ca.specialRateClosingBalance}`}
+              className="text-blue-600 hover:underline">
+              View full capital allowances detail →
+            </a>
+          </p>
+        )}
+        {p.gainRows.length > 0 && (
+          <div className="pt-2 space-y-1">
+            {p.gainRows.map(({ comp: g, result: gResult }: any) => (
+              <a key={g.id} href={`/capital-gains/${g.id}`} className="flex justify-between text-xs hover:bg-slate-50 rounded px-1 py-0.5 -mx-1">
+                <span className="text-slate-400">{g.asset_description} · {fmtDate(g.disposal_date)}</span>
+                <span className="text-slate-500">{fmt(gResult.taxableGain)}</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -125,7 +175,7 @@ export default async function CorporationTaxDetailPage({
         <div className="mt-4">
           <h1 className="text-2xl font-bold text-slate-900">{(comp.clients as any)?.client_name || "No client"}</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Accounting period {new Date(comp.period_start).toLocaleDateString("en-GB")} to {new Date(comp.period_end).toLocaleDateString("en-GB")}
+            Accounting period {fmtDate(comp.period_start)} to {fmtDate(comp.period_end)}
             {(comp.jobs as any)?.job_name && ` · Job: ${(comp.jobs as any)?.job_name}`}
           </p>
         </div>
@@ -134,139 +184,31 @@ export default async function CorporationTaxDetailPage({
       <div className="p-8 grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-6">
 
-          {/* Taxable Profit Computation */}
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Taxable Profit Computation</h2>
-            <div className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Accounting Profit</span><span className="font-medium">{fmt(Number(comp.accounting_profit))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Add: Depreciation</span><span className="font-medium">{fmt(Number(comp.depreciation_addback))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Add: Other Disallowable Expenses</span><span className="font-medium">{fmt(Number(comp.disallowable_expenses))}</span></div>
-              <div className="flex justify-between border-t border-slate-100 pt-2">
-                <span className="text-slate-500">Less: Capital Allowances</span>
-                <span className="font-medium text-red-600">({fmt(ca.totalCapitalAllowances)})</span>
-              </div>
-              <div className="flex justify-between"><span className="text-slate-500">Less: Other Allowable Deductions</span><span className="font-medium text-red-600">({fmt(Number(comp.other_allowable_deductions))})</span></div>
-              <div className="border-t border-slate-100 pt-2 flex justify-between font-medium">
-                <span>Profit Before Loss Relief</span>
-                <span>{fmt(taxableProfitBeforeLosses)}</span>
-              </div>
-              <div className="flex justify-between"><span className="text-slate-500">Losses Brought Forward</span><span className="font-medium">{fmt(Number(comp.brought_forward_losses))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Less: Losses Used This Period</span><span className="font-medium text-red-600">({fmt(loss.lossesUsed)})</span></div>
-              <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
-                <span>Taxable Profit</span>
-                <span>{fmt(loss.taxableProfitAfterLosses)}</span>
-              </div>
-              <div className="flex justify-between text-slate-500 pt-2">
-                <span>Losses Carried Forward to Next Period</span>
-                <span className="font-medium">{fmt(loss.lossesCarriedForward)}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Capital Allowances — linked from Fixed Asset Register */}
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900">Capital Allowances</h2>
-              <a href={`/fixed-assets/capital-allowances?client=${comp.client_id}&period_start=${comp.period_start}&period_end=${comp.period_end}&main_pool_bfwd=${comp.main_pool_bfwd}&special_rate_pool_bfwd=${comp.special_rate_pool_bfwd}`}
-                className="text-xs font-semibold text-blue-600 hover:underline">
-                Open standalone summary →
-              </a>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">
-              {comp.job_id
-                ? `Pulled automatically from assets linked to the job "${(comp.jobs as any)?.job_name}" in the Fixed Asset Register.`
-                : "Pulled automatically from assets acquired within this date range in the Fixed Asset Register."}
-              {" "}AIA limit for this period: {fmt(ca.aiaLimit)}
-            </p>
-
-            {/* Additions in period */}
-            <div className="mt-4">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-                Additions in Period ({ca.additions.length})
+          {isSplit && (
+            <div className="rounded-2xl bg-purple-50 border border-purple-200 p-4">
+              <p className="text-sm font-bold text-purple-800">
+                ⚠ This accounting period is longer than HMRC's 12-month limit for a single Corporation Tax accounting period.
               </p>
-              <div className="space-y-1">
-                {ca.additions.map((a: any) => (
-                  <div key={a.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-1.5">
-                    <div>
-                      <p className="text-sm text-slate-900">{a.description}</p>
-                      <p className="text-xs text-slate-400">{a.capital_allowance_pool}</p>
-                    </div>
-                    <p className="text-sm font-medium">{fmt(Number(a.cost))}</p>
-                  </div>
-                ))}
-                {ca.additions.length === 0 && (
-                  <p className="text-sm text-slate-400 text-center py-3">No asset additions in this period.</p>
-                )}
-              </div>
+              <p className="text-xs text-purple-700 mt-1">
+                It has been automatically split into two separate CT600s below: the first covers the initial 12 months, the second covers the remainder. Trading profit, depreciation, and other whole-period adjustments are apportioned by day count between the two. Capital allowances and chargeable gains are calculated separately for each sub-period from the actual asset and disposal dates, not apportioned — this matches HMRC's rules. Two separate CT600 returns will need to be filed.
+              </p>
             </div>
+          )}
 
-            {/* AIA & FYA allocation */}
-            <div className="mt-4 border-t border-slate-100 pt-4">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">AIA & First Year Allowances</p>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">AIA on Special Rate Pool additions (used first)</span><span className="font-medium">{fmt(ca.aiaOnSpecialRate)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">AIA on Main Pool additions</span><span className="font-medium">{fmt(ca.aiaOnMainPool)}</span></div>
-                <div className="flex justify-between font-medium border-t border-slate-100 pt-1"><span>Total AIA Claimed</span><span>{fmt(ca.totalAIAClaimed)}</span></div>
-                <div className="flex justify-between mt-1"><span className="text-slate-500">100% FYA — Zero Emission Cars</span><span className="font-medium">{fmt(ca.totalFYA)}</span></div>
-              </div>
-            </div>
-
-            {/* WDA pools */}
-            <div className="mt-4 border-t border-slate-100 pt-4 grid gap-4 md:grid-cols-2">
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Main Pool (14%)</p>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-500">Brought forward</span><span>{fmt(Number(comp.main_pool_bfwd))}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Additions not covered by AIA</span><span>{fmt(ca.mainPoolAdditionsAfterAIA)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Cars (Main Pool)</span><span>{fmt(ca.mainPoolCarsTotal)}</span></div>
-                  <div className="flex justify-between font-medium border-t border-slate-100 pt-1"><span>Pool balance</span><span>{fmt(ca.mainPoolBalance)}</span></div>
-                  <div className="flex justify-between text-green-700 font-bold"><span>WDA claimed (14%)</span><span>{fmt(ca.mainPoolWDA)}</span></div>
-                  <div className="flex justify-between text-slate-500"><span>Closing balance (c/fwd)</span><span>{fmt(ca.mainPoolClosingBalance)}</span></div>
-                </div>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Special Rate Pool (6%)</p>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-500">Brought forward</span><span>{fmt(Number(comp.special_rate_pool_bfwd))}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Additions not covered by AIA</span><span>{fmt(ca.specialRateAdditionsAfterAIA)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Cars (Special Rate)</span><span>{fmt(ca.specialRateCarsTotal)}</span></div>
-                  <div className="flex justify-between font-medium border-t border-slate-100 pt-1"><span>Pool balance</span><span>{fmt(ca.specialRateBalance)}</span></div>
-                  <div className="flex justify-between text-green-700 font-bold"><span>WDA claimed (6%)</span><span>{fmt(ca.specialRateWDA)}</span></div>
-                  <div className="flex justify-between text-slate-500"><span>Closing balance (c/fwd)</span><span>{fmt(ca.specialRateClosingBalance)}</span></div>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4 border-t border-slate-100 pt-4 flex justify-between font-bold">
-              <span>Total Capital Allowances</span>
-              <span>{fmt(ca.totalCapitalAllowances)}</span>
-            </div>
-          </div>
-
-          {/* CT Calculation */}
+          {/* Taxable Profit & CT Calculation — one block per sub-period */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Corporation Tax Calculation</h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Small profits threshold: {fmt(ct.smallProfitsThreshold)} · Main rate threshold: {fmt(ct.mainRateThreshold)}
-              {comp.associated_companies > 0 && ` (adjusted for ${comp.associated_companies} associated compan${comp.associated_companies === 1 ? "y" : "ies"})`}
-            </p>
-            <div className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Band</span>
-                <span className="font-medium">{ct.band}</span>
-              </div>
-              {ct.band === "Marginal Relief" && (
-                <>
-                  <div className="flex justify-between"><span className="text-slate-500">Tax at Main Rate ({(ctRates.mainRate * 100).toFixed(0)}%)</span><span className="font-medium">{fmt(ct.profit * ctRates.mainRate)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Less: Marginal Relief</span><span className="font-medium text-red-600">({fmt(ct.marginalRelief)})</span></div>
-                </>
-              )}
-              <div className="flex justify-between"><span className="text-slate-500">Effective Rate</span><span className="font-medium">{(ct.effectiveRate * 100).toFixed(2)}%</span></div>
-              <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
-                <span>Corporation Tax Due</span>
-                <span>{fmt(ct.corporationTax)}</span>
-              </div>
+            <h2 className="text-lg font-bold text-slate-900">
+              {isSplit ? "Taxable Profit & Corporation Tax — Both Periods" : "Taxable Profit & Corporation Tax Calculation"}
+            </h2>
+            <div className={isSplit ? "mt-4 space-y-4" : "mt-4"}>
+              {periods.map((p: any, i: number) => renderPeriodBreakdown(p, i, periods.length))}
             </div>
+            {isSplit && (
+              <div className="mt-4 pt-4 border-t border-slate-200 flex justify-between font-bold text-lg">
+                <span>Total Corporation Tax Due (both periods)</span>
+                <span>{fmt(totalCorporationTax)}</span>
+              </div>
+            )}
           </div>
 
           {dlaResults.length > 0 && (
@@ -305,16 +247,20 @@ export default async function CorporationTaxDetailPage({
         <div className="space-y-6">
           <div className="rounded-2xl bg-slate-900 p-6 shadow-sm text-white">
             <h2 className="text-lg font-bold">Total Tax Payable</h2>
-            <p className="mt-4 text-3xl font-bold">{fmt(ct.corporationTax + totalS455)}</p>
+            <p className="mt-4 text-3xl font-bold">{fmt(totalCorporationTax + totalS455)}</p>
             <div className="mt-3 space-y-1 text-sm text-slate-300 border-t border-slate-700 pt-3">
-              <div className="flex justify-between"><span>Corporation Tax</span><span>{fmt(ct.corporationTax)}</span></div>
+              <div className="flex justify-between"><span>Corporation Tax{isSplit && " (both periods)"}</span><span>{fmt(totalCorporationTax)}</span></div>
               {totalS455 > 0 && (
                 <div className="flex justify-between"><span>S455 (Loans to Participators)</span><span>{fmt(totalS455)}</span></div>
               )}
             </div>
-            <p className="mt-1 text-sm text-slate-300">{ct.band} · {(ct.effectiveRate * 100).toFixed(2)}% effective</p>
+            {totalLossesCarriedForward > 0 && (
+              <p className="mt-3 text-sm text-slate-300">{fmt(totalLossesCarriedForward)} losses carried forward</p>
+            )}
             <p className="mt-4 text-xs text-slate-400">
-              Due nine months and one day after the end of the accounting period.
+              {isSplit
+                ? "Each CT600 is due nine months and one day after the end of its own accounting period."
+                : "Due nine months and one day after the end of the accounting period."}
             </p>
           </div>
 
@@ -351,6 +297,7 @@ export default async function CorporationTaxDetailPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">Period End</label>
                 <input name="period_end" type="date" defaultValue={comp.period_end}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <p className="text-xs text-slate-400 mt-1">If over 12 months from the start date, this will split into two CT600s automatically.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Linked Job (optional)</label>
@@ -388,6 +335,14 @@ export default async function CorporationTaxDetailPage({
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
               </div>
               <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Profit/(Loss) on Disposal Per Accounts (£)</label>
+                <input name="accounting_profit_on_disposal" type="number" step="0.01" defaultValue={comp.accounting_profit_on_disposal || 0}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <p className="text-xs text-slate-400 mt-1">
+                  If Accounting Profit already includes a profit/(loss) on disposal, enter it here to remove it — the tax-basis chargeable gain is added automatically from the Capital Gains module instead. If the period is split, this is apportioned by day count between the two sub-periods.
+                </p>
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Brought Forward Losses (£)</label>
                 <input name="brought_forward_losses" type="number" step="0.01" min="0" defaultValue={comp.brought_forward_losses}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
@@ -401,6 +356,7 @@ export default async function CorporationTaxDetailPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">Main Pool Brought Forward (£)</label>
                 <input name="main_pool_bfwd" type="number" step="0.01" min="0" defaultValue={comp.main_pool_bfwd}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <p className="text-xs text-slate-400 mt-1">Used as the brought-forward balance for the first sub-period if the accounting period is split.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Special Rate Pool Brought Forward (£)</label>
