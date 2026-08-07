@@ -66,6 +66,8 @@ type TaxInput = {
   foreignPropertyFinanceCosts?: number;
   foreignFinanceCostsBf?: number;
   foreignTaxPaid?: number;
+  personalPensionContributions?: number; // relief-at-source, amount actually paid (net)
+  giftAidDonations?: number; // amount actually paid (net)
   taxYear: string;
 };
 
@@ -93,9 +95,27 @@ function computeCore(input: TaxInput, rates?: any) {
     propertyProfit + foreignPropertyProfit + input.pensionIncome;
   const totalIncome = nonSavingsIncome + combinedInterestIncome + combinedDividendIncome;
 
+  // Relief-at-source personal pension contributions and Gift Aid donations
+  // are paid net of basic-rate tax. Grossing them up (÷0.8) and extending
+  // the basic-rate and higher-rate band limits by that gross amount is how
+  // higher/additional-rate relief is actually given — more income gets
+  // taxed at the lower rates rather than a separate refund being paid. The
+  // same gross amount also reduces "adjusted net income" for the Personal
+  // Allowance taper, which is based on adjusted net income, not gross total
+  // income. Net-pay-arrangement pension contributions (deducted from salary
+  // before tax by an employer scheme) don't need this — they're already
+  // reflected in a lower Employment Income figure.
+  const pensionGross = (input.personalPensionContributions || 0) / 0.8;
+  const giftAidGross = (input.giftAidDonations || 0) / 0.8;
+  const reliefExtension = pensionGross + giftAidGross;
+
+  const effectiveBasicRateLimit = r.basicRateLimit + reliefExtension;
+  const effectiveAdditionalRateThreshold = r.additionalRateThreshold + reliefExtension;
+
   let personalAllowance = r.personalAllowance;
-  if (totalIncome > r.paTaperStart) {
-    const reduction = Math.floor((totalIncome - r.paTaperStart) / 2);
+  const adjustedNetIncome = Math.max(0, totalIncome - reliefExtension);
+  if (adjustedNetIncome > r.paTaperStart) {
+    const reduction = Math.floor((adjustedNetIncome - r.paTaperStart) / 2);
     personalAllowance = Math.max(0, r.personalAllowance - reduction);
   }
 
@@ -104,12 +124,12 @@ function computeCore(input: TaxInput, rates?: any) {
 
   const taxableNonSavings = Math.max(0, nonSavingsIncome - paUsedAgainstNonSavings);
 
-  const basicBandNonDiv = Math.min(taxableNonSavings, r.basicRateLimit);
+  const basicBandNonDiv = Math.min(taxableNonSavings, effectiveBasicRateLimit);
   const higherBandNonDiv = Math.min(
-    Math.max(0, taxableNonSavings - r.basicRateLimit),
-    r.additionalRateThreshold - r.basicRateLimit
+    Math.max(0, taxableNonSavings - effectiveBasicRateLimit),
+    effectiveAdditionalRateThreshold - effectiveBasicRateLimit
   );
-  const additionalBandNonDiv = Math.max(0, taxableNonSavings - r.additionalRateThreshold);
+  const additionalBandNonDiv = Math.max(0, taxableNonSavings - effectiveAdditionalRateThreshold);
 
   const nonDividendTax =
     basicBandNonDiv * r.basicRate +
@@ -137,8 +157,8 @@ function computeCore(input: TaxInput, rates?: any) {
   const afterStartingRate = savingsAfterPA - startingRateUsed;
 
   let psa = r.personalSavingsAllowanceBasic;
-  if (taxableNonSavings >= r.additionalRateThreshold) psa = r.personalSavingsAllowanceAdditional;
-  else if (taxableNonSavings >= r.basicRateLimit) psa = r.personalSavingsAllowanceHigher;
+  if (taxableNonSavings >= effectiveAdditionalRateThreshold) psa = r.personalSavingsAllowanceAdditional;
+  else if (taxableNonSavings >= effectiveBasicRateLimit) psa = r.personalSavingsAllowanceHigher;
 
   const psaUsed = Math.min(afterStartingRate, psa);
   const taxableSavings = afterStartingRate - psaUsed;
@@ -148,8 +168,8 @@ function computeCore(input: TaxInput, rates?: any) {
   // savings — so both need adding here, not just taxableNonSavings, or the
   // taxable savings get pushed into a lower rate band than they should be.
   const savingsBase = taxableNonSavings + startingRateUsed + psaUsed;
-  const savingsBasicRemaining = Math.max(0, r.basicRateLimit - savingsBase);
-  const savingsHigherRemaining = Math.max(0, r.additionalRateThreshold - Math.max(savingsBase, r.basicRateLimit));
+  const savingsBasicRemaining = Math.max(0, effectiveBasicRateLimit - savingsBase);
+  const savingsHigherRemaining = Math.max(0, effectiveAdditionalRateThreshold - Math.max(savingsBase, effectiveBasicRateLimit));
 
   const savingsBasic = Math.min(taxableSavings, savingsBasicRemaining);
   const savingsHigher = Math.min(Math.max(0, taxableSavings - savingsBasic), savingsHigherRemaining);
@@ -165,8 +185,8 @@ function computeCore(input: TaxInput, rates?: any) {
   const taxableDividends = dividendsAfterPA - dividendAllowanceUsed;
 
   const dividendBase = taxableNonSavings + startingRateUsed + psaUsed + taxableSavings;
-  const divBasicRemaining = Math.max(0, r.basicRateLimit - dividendBase);
-  const divHigherRemaining = Math.max(0, r.additionalRateThreshold - Math.max(dividendBase, r.basicRateLimit));
+  const divBasicRemaining = Math.max(0, effectiveBasicRateLimit - dividendBase);
+  const divHigherRemaining = Math.max(0, effectiveAdditionalRateThreshold - Math.max(dividendBase, effectiveBasicRateLimit));
 
   const divBasic = Math.min(taxableDividends, divBasicRemaining);
   const divHigher = Math.min(Math.max(0, taxableDividends - divBasic), divHigherRemaining);
@@ -211,6 +231,12 @@ function computeCore(input: TaxInput, rates?: any) {
     foreignFinanceCostReliefCap,
     foreignFinanceCostTaxReducer,
     unusedForeignFinanceCostsCf,
+    pensionGross,
+    giftAidGross,
+    reliefExtension,
+    adjustedNetIncome,
+    effectiveBasicRateLimit,
+    effectiveAdditionalRateThreshold,
     bands: {
       basicBandNonDiv, higherBandNonDiv, additionalBandNonDiv,
       savingsBasic, savingsHigher, savingsAdditional,
@@ -303,16 +329,19 @@ const client_id = get("client_id");
     foreignPropertyFinanceCosts: num("foreign_property_finance_costs"),
     foreignFinanceCostsBf: num("foreign_finance_costs_bf"),
     foreignTaxPaid: num("foreign_tax_paid"),
+    personalPensionContributions: num("personal_pension_contributions"),
+    giftAidDonations: num("gift_aid_donations"),
     taxYear: tax_year,
   };
 
   const rates = await getTaxRates(tax_year);
   const result = calculateTax(input, rates);
 
-await supabase.from("tax_computations").insert({
+  const { error: insertError } = await supabase.from("tax_computations").insert({
     client_id,
     job_id,
-    tax_year,    employment_income: input.employmentIncome,
+    tax_year,
+    employment_income: input.employmentIncome,
     self_employment_income: input.selfEmploymentIncome,
     rental_income: input.rentalIncome,
     property_expenses: input.propertyExpenses,
@@ -331,9 +360,15 @@ await supabase.from("tax_computations").insert({
     foreign_finance_costs_bf: input.foreignFinanceCostsBf,
     foreign_finance_costs_cf: result.unusedForeignFinanceCostsCf,
     foreign_tax_paid: input.foreignTaxPaid,
+    personal_pension_contributions: input.personalPensionContributions,
+    gift_aid_donations: input.giftAidDonations,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   });
+
+  if (insertError) {
+    throw new Error(`Failed to save Personal Tax computation: ${insertError.message}`);
+  }
 
   revalidatePath("/tax");
 }
@@ -407,6 +442,8 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
       foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
       foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
       foreignTaxPaid: Number(comp.foreign_tax_paid),
+      personalPensionContributions: Number(comp.personal_pension_contributions),
+      giftAidDonations: Number(comp.gift_aid_donations),
       taxYear: comp.tax_year,
     }, rates);
     const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
@@ -629,6 +666,27 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
                   <input name="tax_paid_at_source" type="number" step="0.01" min="0" defaultValue="0"
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                     placeholder="From P60, if employed" />
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+                <h3 className="text-sm font-bold text-slate-900">Pension Contributions & Gift Aid</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Enter the net amount actually paid for relief-at-source personal pension contributions (e.g. to a SIPP or personal pension — not workplace contributions already deducted from Employment Income above) and Gift Aid donations. Both are grossed up automatically and extend the basic and higher-rate bands, and reduce adjusted net income for the Personal Allowance taper — this is how higher/additional-rate relief is actually given.
+                </p>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Personal Pension Contributions Paid (£)</label>
+                    <input name="personal_pension_contributions" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Net amount paid, relief at source" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Gift Aid Donations Paid (£)</label>
+                    <input name="gift_aid_donations" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Net amount paid" />
+                  </div>
                 </div>
               </div>
 

@@ -20,6 +20,13 @@ export const CGT_RATES: Record<string, any> = {
   },
 };
 
+// Private Residence Relief final-period exemption: the last 9 months of
+// ownership always count as exempt occupation, regardless of whether the
+// client actually lived there then, as long as the property was their main
+// residence at some point during ownership. This has been 9 months since
+// April 2020 (was 18, then 36, months before that).
+const PRR_FINAL_PERIOD_MONTHS = 9;
+
 // Fetches live rates from the tax_rates table (editable via Practice Settings →
 // Tax Rates), falling back to the hardcoded defaults above if no row exists
 // for that year yet. This is the single point every CGT calculation should
@@ -41,6 +48,48 @@ export function ukTaxYearOf(dateStr: string): string {
   return `${startYear}/${String(startYear + 1).slice(-2)}`;
 }
 
+// Works out the fraction of a residential property's ownership period that
+// qualifies for Private Residence Relief: actual occupation as main
+// residence, unioned with the automatic final-9-months exemption (so the
+// two aren't double-counted if they overlap). Returns a fraction between 0
+// and 1 to apply to the gain.
+function calculatePRRFraction(input: {
+  acquisitionDate: string;
+  disposalDate: string;
+  mainResidenceFrom: string;
+  mainResidenceTo: string;
+}): { prrFraction: number; qualifyingDays: number; totalOwnershipDays: number } {
+  const ownershipStart = new Date(input.acquisitionDate);
+  const ownershipEnd = new Date(input.disposalDate);
+  const totalOwnershipDays = Math.max(1, Math.round((ownershipEnd.getTime() - ownershipStart.getTime()) / (24 * 60 * 60 * 1000)) + 1);
+
+  // Clip the claimed occupation period to the actual ownership period
+  const occStart = new Date(Math.max(new Date(input.mainResidenceFrom).getTime(), ownershipStart.getTime()));
+  const occEnd = new Date(Math.min(new Date(input.mainResidenceTo).getTime(), ownershipEnd.getTime()));
+  const occupationDays = occEnd >= occStart ? Math.round((occEnd.getTime() - occStart.getTime()) / (24 * 60 * 60 * 1000)) + 1 : 0;
+
+  // Final period exemption: the last 9 months of ownership, clipped so it
+  // never starts before the ownership period itself began.
+  const finalPeriodStartRaw = new Date(ownershipEnd);
+  finalPeriodStartRaw.setUTCMonth(finalPeriodStartRaw.getUTCMonth() - PRR_FINAL_PERIOD_MONTHS);
+  finalPeriodStartRaw.setUTCDate(finalPeriodStartRaw.getUTCDate() + 1);
+  const finalPeriodStart = new Date(Math.max(finalPeriodStartRaw.getTime(), ownershipStart.getTime()));
+  const finalPeriodDays = Math.round((ownershipEnd.getTime() - finalPeriodStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+
+  // Union of the occupation period and the final period, so overlapping days
+  // (e.g. the client lived there right up until sale) aren't counted twice.
+  const overlapStart = new Date(Math.max(occStart.getTime(), finalPeriodStart.getTime()));
+  const overlapEnd = new Date(Math.min(occEnd.getTime(), ownershipEnd.getTime()));
+  const overlapDays = overlapEnd >= overlapStart ? Math.round((overlapEnd.getTime() - overlapStart.getTime()) / (24 * 60 * 60 * 1000)) + 1 : 0;
+
+  const qualifyingDaysRaw = occupationDays + finalPeriodDays - overlapDays;
+  const qualifyingDays = Math.min(Math.max(0, qualifyingDaysRaw), totalOwnershipDays);
+
+  const prrFraction = totalOwnershipDays > 0 ? qualifyingDays / totalOwnershipDays : 0;
+
+  return { prrFraction, qualifyingDays, totalOwnershipDays };
+}
+
 export function calculateCapitalGain(input: {
   entityType: string;
   disposalProceeds: number;
@@ -55,6 +104,11 @@ export function calculateCapitalGain(input: {
   rolloverReliefClaimed: boolean;
   amountReinvested: number;
   replacementAssetCost: number;
+  acquisitionDate?: string; // required if prrClaimed is true
+  disposalDate?: string; // required if prrClaimed is true
+  prrClaimed?: boolean;
+  mainResidenceFrom?: string;
+  mainResidenceTo?: string;
 }, liveRates?: any) {
   const rates = liveRates || CGT_RATES["2026/27"];
 
@@ -79,9 +133,27 @@ export function calculateCapitalGain(input: {
 
   const gainAfterRollover = gainChargeableNow;
 
+  // Private Residence Relief: individuals only, applies before AEA/losses
+  // since it's specific to this disposal rather than an annual allowance.
+  let prrFraction = 0;
+  let prrAmount = 0;
+  if (input.entityType !== "Company" && input.prrClaimed && input.acquisitionDate && input.disposalDate && input.mainResidenceFrom && input.mainResidenceTo) {
+    const prr = calculatePRRFraction({
+      acquisitionDate: input.acquisitionDate,
+      disposalDate: input.disposalDate,
+      mainResidenceFrom: input.mainResidenceFrom,
+      mainResidenceTo: input.mainResidenceTo,
+    });
+    prrFraction = prr.prrFraction;
+    prrAmount = gainAfterRollover * prrFraction;
+  }
+
+  const gainAfterPRR = Math.max(0, gainAfterRollover - prrAmount);
+
   if (input.entityType === "Company") {
     // Companies pay Corporation Tax on chargeable gains, not CGT — no AEA, no CGT rates.
-    // Brought-forward capital losses still offset the gain directly.
+    // Brought-forward capital losses still offset the gain directly. PRR
+    // never applies to a company (a company can't have a "residence").
     const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterRollover);
     const chargeableGain = gainAfterRollover - lossesUsed;
     const lossesCarriedForward = input.lossesBroughtForward - lossesUsed;
@@ -90,6 +162,7 @@ export function calculateCapitalGain(input: {
       lossesCarriedForward, gainAtBasicRate: 0, gainAtHigherRate: 0,
       cgtDue: 0, isCompany: true,
       gainRolledOver, gainChargeableNow, adjustedReplacementBaseCost,
+      prrFraction: 0, prrAmount: 0,
     };
   }
 
@@ -99,8 +172,8 @@ export function calculateCapitalGain(input: {
   // same-tax-year disposals for this client have already used.
   const aeaAlreadyUsed = input.aeaAlreadyUsedThisYear || 0;
   const aeaRemaining = Math.max(0, rates.annualExemptAmount - aeaAlreadyUsed);
-  const aeaApplied = Math.min(gainAfterRollover, aeaRemaining);
-  const gainAfterAEA = Math.max(0, gainAfterRollover - aeaApplied);
+  const aeaApplied = Math.min(gainAfterPRR, aeaRemaining);
+  const gainAfterAEA = Math.max(0, gainAfterPRR - aeaApplied);
   const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterAEA);
   const taxableGain = gainAfterAEA - lossesUsed;
   const lossesCarriedForward = input.lossesBroughtForward - lossesUsed;
@@ -129,6 +202,7 @@ export function calculateCapitalGain(input: {
     grossGain, aeaApplied, lossesUsed, taxableGain, lossesCarriedForward,
     gainAtBasicRate, gainAtHigherRate, cgtDue, isCompany: false,
     gainRolledOver, gainChargeableNow, adjustedReplacementBaseCost,
+    prrFraction, prrAmount,
   };
 }
 
@@ -158,6 +232,9 @@ async function createComputation(formData: FormData) {
     rollover_relief_claimed: formData.get("rollover_relief_claimed") === "on",
     amount_reinvested: num("amount_reinvested"),
     replacement_asset_cost: num("replacement_asset_cost"),
+    main_residence_relief_claimed: formData.get("main_residence_relief_claimed") === "on",
+    main_residence_from: get("main_residence_from") || null,
+    main_residence_to: get("main_residence_to") || null,
     notes: get("notes"),
   });
 
@@ -239,6 +316,11 @@ export default async function CapitalGainsPage({
         rolloverReliefClaimed: comp.rollover_relief_claimed,
         amountReinvested: Number(comp.amount_reinvested),
         replacementAssetCost: Number(comp.replacement_asset_cost),
+        acquisitionDate: comp.acquisition_date,
+        disposalDate: comp.disposal_date,
+        prrClaimed: comp.main_residence_relief_claimed,
+        mainResidenceFrom: comp.main_residence_from,
+        mainResidenceTo: comp.main_residence_to,
       }, cgtRates);
 
       if (comp.entity_type !== "Company") {
@@ -283,6 +365,9 @@ export default async function CapitalGainsPage({
                 {(comp.clients as any)?.client_name || "No client"} — {comp.asset_description}
               </p>
               {statusBadge(comp.status)}
+              {comp.main_residence_relief_claimed && (
+                <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-teal-100 text-teal-700">PRR</span>
+              )}
             </div>
             <p className="text-sm text-slate-500">
               {comp.entity_type} · Disposed {new Date(comp.disposal_date).toLocaleDateString("en-GB")}
@@ -321,7 +406,7 @@ export default async function CapitalGainsPage({
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <h1 className="text-2xl font-bold text-slate-900">Capital Gains Tax</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          Computes CGT for individuals (2026/27 rates) and chargeable gains for companies, including the 60-day UK property reporting deadline.
+          Computes CGT for individuals (2026/27 rates) and chargeable gains for companies, including the 60-day UK property reporting deadline and Private Residence Relief.
         </p>
       </div>
 
@@ -549,6 +634,29 @@ export default async function CapitalGainsPage({
                     <label className="block text-sm font-medium text-slate-700 mb-1">Cost of Replacement Asset (£)</label>
                     <input name="replacement_asset_cost" type="number" step="0.01" min="0" defaultValue="0"
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="md:col-span-3 rounded-xl border border-teal-100 bg-teal-50/50 p-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-3">
+                  <input name="main_residence_relief_claimed" type="checkbox" className="w-4 h-4 rounded" />
+                  <span className="text-sm font-medium text-slate-700">Claiming Private Residence Relief (individuals only — this was their home)</span>
+                </label>
+                <p className="text-xs text-slate-500 mb-3">
+                  Exempts the fraction of the gain covering the period the property was the client's main residence, plus an automatic final 9 months of ownership. Doesn't yet account for deemed periods of absence (working abroad, job-related accommodation) or Letting Relief — check these manually if they apply.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Main Residence From</label>
+                    <input name="main_residence_from" type="date"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Main Residence To</label>
+                    <input name="main_residence_to" type="date"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    <p className="text-xs text-slate-400 mt-1">Doesn't need to be the disposal date — the final 9 months are added automatically.</p>
                   </div>
                 </div>
               </div>

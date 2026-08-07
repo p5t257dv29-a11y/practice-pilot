@@ -263,7 +263,7 @@ async function createComputation(formData: FormData) {
   const client_id = get("client_id");
   if (!client_id) return;
 
-  await supabase.from("corporation_tax_computations").insert({
+const { error: insertError } = await supabase.from("corporation_tax_computations").insert({
     client_id,
     job_id: get("job_id") || null,
     period_start: get("period_start"),
@@ -282,6 +282,9 @@ async function createComputation(formData: FormData) {
     notes: get("notes"),
   });
 
+  if (insertError) {
+    throw new Error(`Failed to save Corporation Tax computation: ${insertError.message}`);
+  }
   revalidatePath("/corporation-tax");
 }
 

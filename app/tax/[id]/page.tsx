@@ -36,13 +36,15 @@ async function updateComputation(id: string, formData: FormData) {
     foreignPropertyFinanceCosts: num("foreign_property_finance_costs"),
     foreignFinanceCostsBf: num("foreign_finance_costs_bf"),
     foreignTaxPaid: num("foreign_tax_paid"),
+    personalPensionContributions: num("personal_pension_contributions"),
+    giftAidDonations: num("gift_aid_donations"),
     taxYear: existing?.tax_year || "2026/27",
   };
 
   const rates = await getTaxRates(input.taxYear);
   const result = calculateTax(input, rates);
 
-  await supabase.from("tax_computations").update({
+  const { error: updateError } = await supabase.from("tax_computations").update({
     employment_income: input.employmentIncome,
     self_employment_income: input.selfEmploymentIncome,
     rental_income: input.rentalIncome,
@@ -62,9 +64,15 @@ async function updateComputation(id: string, formData: FormData) {
     foreign_finance_costs_bf: input.foreignFinanceCostsBf,
     foreign_finance_costs_cf: result.unusedForeignFinanceCostsCf,
     foreign_tax_paid: input.foreignTaxPaid,
+    personal_pension_contributions: input.personalPensionContributions,
+    gift_aid_donations: input.giftAidDonations,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   }).eq("id", id);
+
+  if (updateError) {
+    throw new Error(`Failed to save Personal Tax computation: ${updateError.message}`);
+  }
 
   revalidatePath(`/tax/${id}`);
   revalidatePath("/tax");
@@ -105,6 +113,8 @@ export default async function TaxComputationDetailPage({
     foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
     foreignTaxPaid: Number(comp.foreign_tax_paid),
+    personalPensionContributions: Number(comp.personal_pension_contributions),
+    giftAidDonations: Number(comp.gift_aid_donations),
     taxYear: comp.tax_year,
   }, rates);
 
@@ -115,6 +125,7 @@ export default async function TaxComputationDetailPage({
   const hasForeignIncome = Number(comp.foreign_employment_income) > 0 || Number(comp.foreign_interest_income) > 0 ||
     Number(comp.foreign_dividend_income) > 0 || Number(comp.foreign_rental_income) > 0 || Number(comp.foreign_finance_costs_bf) > 0;
   const hasPropertyIncome = Number(comp.rental_income) > 0 || Number(comp.finance_costs_bf) > 0;
+  const hasPensionOrGiftAid = Number(comp.personal_pension_contributions) > 0 || Number(comp.gift_aid_donations) > 0;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -165,6 +176,40 @@ export default async function TaxComputationDetailPage({
               </div>
             </div>
           </div>
+
+          {/* Pension Contributions & Gift Aid */}
+          {hasPensionOrGiftAid && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Pension Contributions & Gift Aid</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Basic-rate relief on these is already claimed at source by the pension provider or charity. Higher/additional-rate relief is given by extending the basic and higher-rate bands below by the grossed-up amount, and adjusted net income (used for the Personal Allowance taper) is reduced by the same amount.
+              </p>
+              <div className="mt-4 space-y-2 text-sm">
+                {Number(comp.personal_pension_contributions) > 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Personal pension contributions paid (net)</span><span className="font-medium">{fmt(Number(comp.personal_pension_contributions))}</span></div>
+                )}
+                {Number(comp.gift_aid_donations) > 0 && (
+                  <div className="flex justify-between"><span className="text-slate-500">Gift Aid donations paid (net)</span><span className="font-medium">{fmt(Number(comp.gift_aid_donations))}</span></div>
+                )}
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold">
+                  <span>Total Grossed Up</span>
+                  <span>{fmt(result.reliefExtension)}</span>
+                </div>
+                <div className="flex justify-between text-slate-500 pt-1">
+                  <span>Extended basic-rate band limit</span>
+                  <span>{fmt(result.effectiveBasicRateLimit)}</span>
+                </div>
+                <div className="flex justify-between text-slate-500">
+                  <span>Extended higher-rate threshold</span>
+                  <span>{fmt(result.effectiveAdditionalRateThreshold)}</span>
+                </div>
+                <div className="flex justify-between text-slate-500">
+                  <span>Adjusted net income (for PA taper)</span>
+                  <span>{fmt(result.adjustedNetIncome)}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Property Income & Finance Costs */}
           {hasPropertyIncome && (
@@ -467,7 +512,7 @@ export default async function TaxComputationDetailPage({
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for pension contributions, Gift Aid, marriage allowance, student loans, the High Income Child Benefit Charge, property income losses, or Scottish tax rates. Always verify before filing.
+              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for marriage allowance, student loans, the High Income Child Benefit Charge, property income losses, or Scottish tax rates. Always verify before filing.
             </p>
           </div>
 
@@ -499,6 +544,23 @@ export default async function TaxComputationDetailPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">Dividend Income (£)</label>
                 <input name="dividend_income" type="number" step="0.01" min="0" defaultValue={comp.dividend_income}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-2">Pension Contributions & Gift Aid</p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Personal Pension Contributions Paid (£)</label>
+                    <input name="personal_pension_contributions" type="number" step="0.01" min="0" defaultValue={comp.personal_pension_contributions || 0}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    <p className="text-xs text-slate-400 mt-1">Net amount paid, relief at source — not workplace contributions already deducted from Employment Income.</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Gift Aid Donations Paid (£)</label>
+                    <input name="gift_aid_donations" type="number" step="0.01" min="0" defaultValue={comp.gift_aid_donations || 0}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                </div>
               </div>
 
               <div className="border-t border-slate-100 pt-4">

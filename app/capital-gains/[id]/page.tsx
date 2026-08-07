@@ -30,6 +30,9 @@ async function updateComputation(id: string, formData: FormData) {
     rollover_relief_claimed: formData.get("rollover_relief_claimed") === "on",
     amount_reinvested: num("amount_reinvested"),
     replacement_asset_cost: num("replacement_asset_cost"),
+    main_residence_relief_claimed: formData.get("main_residence_relief_claimed") === "on",
+    main_residence_from: get("main_residence_from") || null,
+    main_residence_to: get("main_residence_to") || null,
     linked_tax_computation_id: get("linked_tax_computation_id") || null,
     notes: get("notes"),
   }).eq("id", id);
@@ -114,6 +117,11 @@ export default async function CapitalGainsDetailPage({
         rolloverReliefClaimed: earlier.rollover_relief_claimed,
         amountReinvested: Number(earlier.amount_reinvested),
         replacementAssetCost: Number(earlier.replacement_asset_cost),
+        acquisitionDate: earlier.acquisition_date,
+        disposalDate: earlier.disposal_date,
+        prrClaimed: earlier.main_residence_relief_claimed,
+        mainResidenceFrom: earlier.main_residence_from,
+        mainResidenceTo: earlier.main_residence_to,
       });
 
       aeaAlreadyUsedThisYear += earlierResult.aeaApplied;
@@ -150,6 +158,11 @@ export default async function CapitalGainsDetailPage({
     rolloverReliefClaimed: comp.rollover_relief_claimed,
     amountReinvested: Number(comp.amount_reinvested),
     replacementAssetCost: Number(comp.replacement_asset_cost),
+    acquisitionDate: comp.acquisition_date,
+    disposalDate: comp.disposal_date,
+    prrClaimed: comp.main_residence_relief_claimed,
+    mainResidenceFrom: comp.main_residence_from,
+    mainResidenceTo: comp.main_residence_to,
   });
 
   const is60Day = comp.entity_type === "Individual" && comp.asset_category === "Residential Property";
@@ -212,6 +225,13 @@ export default async function CapitalGainsDetailPage({
                 </>
               )}
 
+              {comp.main_residence_relief_claimed && !result.isCompany && (
+                <div className="flex justify-between text-teal-700">
+                  <span>Less: Private Residence Relief ({(result.prrFraction * 100).toFixed(1)}% exempt)</span>
+                  <span className="font-medium">({fmt(result.prrAmount)})</span>
+                </div>
+              )}
+
               {!result.isCompany && (
                 <div className="flex justify-between"><span className="text-slate-500">Less: Annual Exempt Amount</span><span className="font-medium text-red-600">({fmt(result.aeaApplied)})</span></div>
               )}
@@ -266,6 +286,19 @@ export default async function CapitalGainsDetailPage({
             </div>
           )}
 
+          {comp.main_residence_relief_claimed && !result.isCompany && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Private Residence Relief</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Main residence from {comp.main_residence_from ? new Date(comp.main_residence_from).toLocaleDateString("en-GB") : "—"} to {comp.main_residence_to ? new Date(comp.main_residence_to).toLocaleDateString("en-GB") : "—"}, plus an automatic final 9 months of ownership (whichever is later, without double-counting). Doesn't account for deemed periods of absence or Letting Relief — check these manually if they apply.
+              </p>
+              <div className="mt-4 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Exempt Fraction of Gain</span><span className="font-medium">{(result.prrFraction * 100).toFixed(1)}%</span></div>
+                <div className="flex justify-between font-bold"><span>Relief Given</span><span>{fmt(result.prrAmount)}</span></div>
+              </div>
+            </div>
+          )}
+
           {comp.rollover_relief_claimed && (
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Rollover Relief</h2>
@@ -310,7 +343,7 @@ export default async function CapitalGainsDetailPage({
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              Uses 2026/27 rates (£3,000 Annual Exempt Amount, 18%/24%, BADR 18%). Does not track cumulative BADR lifetime limit usage, Private Residence Relief, or indexation allowance for older corporate assets. Always verify before filing — property disposals by individuals must still be reported via HMRC's 60-day service separately from Self Assessment.
+              Uses 2026/27 rates (£3,000 Annual Exempt Amount, 18%/24%, BADR 18%). Does not track cumulative BADR lifetime limit usage, deemed periods of absence for Private Residence Relief, Letting Relief, or indexation allowance for older corporate assets. Always verify before filing — property disposals by individuals must still be reported via HMRC's 60-day service separately from Self Assessment.
             </p>
           </div>
 
@@ -401,6 +434,24 @@ export default async function CapitalGainsDetailPage({
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">Cost of Replacement Asset (£)</label>
                     <input name="replacement_asset_cost" type="number" step="0.01" min="0" defaultValue={comp.replacement_asset_cost}
+                      className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-xl border border-teal-100 bg-teal-50/50 p-3">
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input name="main_residence_relief_claimed" type="checkbox" defaultChecked={comp.main_residence_relief_claimed} className="w-4 h-4 rounded" />
+                  <span className="text-sm font-medium text-slate-700">Claiming Private Residence Relief</span>
+                </label>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Main Residence From</label>
+                    <input name="main_residence_from" type="date" defaultValue={comp.main_residence_from || ""}
+                      className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Main Residence To</label>
+                    <input name="main_residence_to" type="date" defaultValue={comp.main_residence_to || ""}
                       className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
                 </div>

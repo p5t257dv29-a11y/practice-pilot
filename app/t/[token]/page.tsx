@@ -82,8 +82,9 @@ export default async function PublicTaxComputationPage({
   // --- Capital Gains Tax linked to this computation ---
   // Any CGT disposals the practice has linked to this specific Personal Tax
   // computation are pulled in here, using the same per-tax-year AEA and
-  // rate-band aggregation as the Capital Gains module itself, so the figure
-  // shown to the client always matches what's shown internally.
+  // rate-band aggregation — and now the same Private Residence Relief
+  // calculation — as the Capital Gains module itself, so the figure shown
+  // to the client always matches what's shown internally.
   const { data: linkedGains } = await supabase
     .from("capital_gains_computations")
     .select("*")
@@ -124,6 +125,11 @@ export default async function PublicTaxComputationPage({
       rolloverReliefClaimed: g.rollover_relief_claimed,
       amountReinvested: Number(g.amount_reinvested),
       replacementAssetCost: Number(g.replacement_asset_cost),
+      acquisitionDate: g.acquisition_date,
+      disposalDate: g.disposal_date,
+      prrClaimed: g.main_residence_relief_claimed,
+      mainResidenceFrom: g.main_residence_from,
+      mainResidenceTo: g.main_residence_to,
     }, cgtRates);
 
     aeaUsedSoFar += gResult.aeaApplied;
@@ -319,7 +325,10 @@ export default async function PublicTaxComputationPage({
                 {cgtRows.map((row) => (
                   <div key={row.comp.id} className="text-sm">
                     <div className="flex justify-between">
-                      <span className="text-slate-500">{row.comp.asset_description}{row.isProperty && " (residential property)"}</span>
+                      <span className="text-slate-500">
+                        {row.comp.asset_description}{row.isProperty && " (residential property)"}
+                        {row.comp.main_residence_relief_claimed && " · PRR applied"}
+                      </span>
                       <span className="font-medium">{fmt(row.result.cgtDue)}</span>
                     </div>
                     {row.isProperty && (
