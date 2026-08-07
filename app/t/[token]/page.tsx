@@ -75,16 +75,14 @@ export default async function PublicTaxComputationPage({
     foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
     foreignTaxPaid: Number(comp.foreign_tax_paid),
+    personalPensionContributions: Number(comp.personal_pension_contributions),
+    giftAidDonations: Number(comp.gift_aid_donations),
+    childBenefitReceived: Number(comp.child_benefit_received),
     taxYear: comp.tax_year,
   }, rates);
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
 
   // --- Capital Gains Tax linked to this computation ---
-  // Any CGT disposals the practice has linked to this specific Personal Tax
-  // computation are pulled in here, using the same per-tax-year AEA and
-  // rate-band aggregation — and now the same Private Residence Relief
-  // calculation — as the Capital Gains module itself, so the figure shown
-  // to the client always matches what's shown internally.
   const { data: linkedGains } = await supabase
     .from("capital_gains_computations")
     .select("*")
@@ -93,8 +91,6 @@ export default async function PublicTaxComputationPage({
 
   const cgtRates = await getCgtRates("2026/27");
 
-  // Same rough income proxy the Capital Gains module uses for band stacking
-  // when a disposal is linked to this computation.
   const taxableIncomeForGains = Math.max(0,
     Number(comp.employment_income) + Number(comp.self_employment_income) +
     Number(comp.rental_income) + Number(comp.pension_income) - 12570
@@ -107,6 +103,13 @@ export default async function PublicTaxComputationPage({
       if (diff !== 0) return diff;
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     });
+
+  const rawGainOf = (g: any) =>
+    Number(g.disposal_proceeds) - Number(g.acquisition_cost) - Number(g.incidental_costs) - Number(g.improvement_costs);
+
+  let currentYearLossesAvailable = sortedGains
+    .filter((g) => rawGainOf(g) < 0)
+    .reduce((sum, g) => sum + Math.abs(rawGainOf(g)), 0);
 
   let aeaUsedSoFar = 0;
   let gainsStackedSoFar = 0;
@@ -122,6 +125,7 @@ export default async function PublicTaxComputationPage({
       taxableIncomeForBandStacking: taxableIncomeForGains,
       aeaAlreadyUsedThisYear: aeaUsedSoFar,
       gainsStackedAheadThisYear: gainsStackedSoFar,
+      currentYearLossesAvailable,
       rolloverReliefClaimed: g.rollover_relief_claimed,
       amountReinvested: Number(g.amount_reinvested),
       replacementAssetCost: Number(g.replacement_asset_cost),
@@ -132,6 +136,7 @@ export default async function PublicTaxComputationPage({
       mainResidenceTo: g.main_residence_to,
     }, cgtRates);
 
+    currentYearLossesAvailable -= gResult.currentYearLossOffset;
     aeaUsedSoFar += gResult.aeaApplied;
     gainsStackedSoFar += gResult.taxableGain;
 
@@ -141,7 +146,6 @@ export default async function PublicTaxComputationPage({
 
   const nonPropertyCgtDue = cgtRows.filter((r) => !r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
   const propertyCgtDue = cgtRows.filter((r) => r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
-  const hasCgt = cgtRows.length > 0;
 
   const grandTotalAtBalancingPayment = schedule.dueAtBalancingPayment + nonPropertyCgtDue;
 
@@ -306,6 +310,9 @@ export default async function PublicTaxComputationPage({
               {Number(comp.self_employment_income) > 0 && (
                 <div className="flex justify-between"><span className="text-slate-500">Class 4 National Insurance</span><span className="font-medium">{fmt(result.class4NI)}</span></div>
               )}
+              {result.hicbcCharge > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">High Income Child Benefit Charge</span><span className="font-medium">{fmt(result.hicbcCharge)}</span></div>
+              )}
               <div className="flex justify-between font-bold border-t border-slate-100 pt-2">
                 <span>Total Liability</span>
                 <span>{fmt(result.totalLiability)}</span>
@@ -318,7 +325,7 @@ export default async function PublicTaxComputationPage({
           </div>
 
           {/* Capital Gains Tax, shown when any disposals are linked to this computation */}
-          {hasCgt && (
+          {cgtRows.length > 0 && (
             <div className="p-6 border-b border-slate-100">
               <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Capital Gains Tax</h2>
               <div className="space-y-3">
@@ -328,10 +335,13 @@ export default async function PublicTaxComputationPage({
                       <span className="text-slate-500">
                         {row.comp.asset_description}{row.isProperty && " (residential property)"}
                         {row.comp.main_residence_relief_claimed && " · PRR applied"}
+                        {row.result.isLoss && " · loss"}
                       </span>
-                      <span className="font-medium">{fmt(row.result.cgtDue)}</span>
+                      <span className="font-medium">
+                        {row.result.isLoss ? `(${fmt(row.result.lossAmount)})` : fmt(row.result.cgtDue)}
+                      </span>
                     </div>
-                    {row.isProperty && (
+                    {row.isProperty && !row.result.isLoss && (
                       <p className="text-xs text-amber-700 mt-0.5">
                         Reported and paid separately via HMRC's 60-day property service — not included in the 31 January balancing payment below.
                       </p>

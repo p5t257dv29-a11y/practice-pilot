@@ -38,6 +38,7 @@ async function updateComputation(id: string, formData: FormData) {
     foreignTaxPaid: num("foreign_tax_paid"),
     personalPensionContributions: num("personal_pension_contributions"),
     giftAidDonations: num("gift_aid_donations"),
+    childBenefitReceived: num("child_benefit_received"),
     taxYear: existing?.tax_year || "2026/27",
   };
 
@@ -66,6 +67,7 @@ async function updateComputation(id: string, formData: FormData) {
     foreign_tax_paid: input.foreignTaxPaid,
     personal_pension_contributions: input.personalPensionContributions,
     gift_aid_donations: input.giftAidDonations,
+    child_benefit_received: input.childBenefitReceived,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   }).eq("id", id);
@@ -115,6 +117,7 @@ export default async function TaxComputationDetailPage({
     foreignTaxPaid: Number(comp.foreign_tax_paid),
     personalPensionContributions: Number(comp.personal_pension_contributions),
     giftAidDonations: Number(comp.gift_aid_donations),
+    childBenefitReceived: Number(comp.child_benefit_received),
     taxYear: comp.tax_year,
   }, rates);
 
@@ -126,6 +129,7 @@ export default async function TaxComputationDetailPage({
     Number(comp.foreign_dividend_income) > 0 || Number(comp.foreign_rental_income) > 0 || Number(comp.foreign_finance_costs_bf) > 0;
   const hasPropertyIncome = Number(comp.rental_income) > 0 || Number(comp.finance_costs_bf) > 0;
   const hasPensionOrGiftAid = Number(comp.personal_pension_contributions) > 0 || Number(comp.gift_aid_donations) > 0;
+  const hasChildBenefit = Number(comp.child_benefit_received) > 0;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -182,7 +186,7 @@ export default async function TaxComputationDetailPage({
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Pension Contributions & Gift Aid</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Basic-rate relief on these is already claimed at source by the pension provider or charity. Higher/additional-rate relief is given by extending the basic and higher-rate bands below by the grossed-up amount, and adjusted net income (used for the Personal Allowance taper) is reduced by the same amount.
+                Basic-rate relief on these is already claimed at source by the pension provider or charity. Higher/additional-rate relief is given by extending the basic and higher-rate bands below by the grossed-up amount, and adjusted net income (used for the Personal Allowance taper and High Income Child Benefit Charge) is reduced by the same amount.
               </p>
               <div className="mt-4 space-y-2 text-sm">
                 {Number(comp.personal_pension_contributions) > 0 && (
@@ -204,8 +208,27 @@ export default async function TaxComputationDetailPage({
                   <span>{fmt(result.effectiveAdditionalRateThreshold)}</span>
                 </div>
                 <div className="flex justify-between text-slate-500">
-                  <span>Adjusted net income (for PA taper)</span>
+                  <span>Adjusted net income (for PA taper & HICBC)</span>
                   <span>{fmt(result.adjustedNetIncome)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* High Income Child Benefit Charge */}
+          {hasChildBenefit && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">High Income Child Benefit Charge</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Based on this client's own adjusted net income — not household income — so only enter Child Benefit received here if this client is the higher-earning parent. Fully clawed back once adjusted net income reaches £{rates.hicbcFullClawbackAt?.toLocaleString("en-GB") || "80,000"}.
+              </p>
+              <div className="mt-4 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Adjusted net income</span><span className="font-medium">{fmt(result.adjustedNetIncome)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Child Benefit received</span><span className="font-medium">{fmt(Number(comp.child_benefit_received))}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Charge percentage</span><span className="font-medium">{(result.hicbcChargePercentage * 100).toFixed(1)}%</span></div>
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
+                  <span>HICBC Due</span>
+                  <span>{fmt(result.hicbcCharge)}</span>
                 </div>
               </div>
             </div>
@@ -429,6 +452,9 @@ export default async function TaxComputationDetailPage({
             <div className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between"><span className="text-slate-300">Income Tax</span><span>{fmt(result.totalIncomeTax)}</span></div>
               <div className="flex justify-between"><span className="text-slate-300">Class 4 NI</span><span>{fmt(result.class4NI)}</span></div>
+              {result.hicbcCharge > 0 && (
+                <div className="flex justify-between"><span className="text-slate-300">High Income Child Benefit Charge</span><span>{fmt(result.hicbcCharge)}</span></div>
+              )}
               <div className="border-t border-slate-700 pt-2 flex justify-between font-bold text-base">
                 <span>Total Due</span>
                 <span>{fmt(result.totalLiability)}</span>
@@ -512,7 +538,7 @@ export default async function TaxComputationDetailPage({
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for marriage allowance, student loans, the High Income Child Benefit Charge, property income losses, or Scottish tax rates. Always verify before filing.
+              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for marriage allowance, student loans, property income losses, or Scottish tax rates. Always verify before filing.
             </p>
           </div>
 
@@ -560,6 +586,16 @@ export default async function TaxComputationDetailPage({
                     <input name="gift_aid_donations" type="number" step="0.01" min="0" defaultValue={comp.gift_aid_donations || 0}
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">High Income Child Benefit Charge</p>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Child Benefit Received This Tax Year (£)</label>
+                  <input name="child_benefit_received" type="number" step="0.01" min="0" defaultValue={comp.child_benefit_received || 0}
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  <p className="text-xs text-slate-400 mt-1">Only if this client is the higher-earning parent.</p>
                 </div>
               </div>
 

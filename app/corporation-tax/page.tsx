@@ -43,10 +43,12 @@ export function applyLossRelief(taxableProfitBeforeLosses: number, lossesBrought
 }
 
 // Sums the tax-basis chargeable gains (per the Capital Gains module) for any
-// Company disposals a client made within a given accounting period. This is
-// the figure that belongs in the Corporation Tax computation — not the
-// accounting profit/loss on disposal already embedded in the accounts, which
-// is removed separately via accounting_profit_on_disposal.
+// Company disposals a client made within a given accounting period. Losses
+// arising from other disposals in the same period are pooled and offset
+// against gains first (mandatory, chronological order), before each
+// disposal's own brought-forward capital losses are applied — the same
+// same-period netting principle as individuals share an Annual Exempt
+// Amount for, just without an AEA in the company case.
 export async function getChargeableGainsForPeriod(clientId: string, periodStart: string, periodEnd: string) {
   const { data: gains } = await supabase
     .from("capital_gains_computations")
@@ -56,7 +58,22 @@ export async function getChargeableGainsForPeriod(clientId: string, periodStart:
     .gte("disposal_date", periodStart)
     .lte("disposal_date", periodEnd);
 
-  const rows = (gains || []).map((g) => {
+  const sorted = (gains || []).sort((a, b) => {
+    const dateDiff = new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  });
+
+  const rawGainOf = (g: any) =>
+    Number(g.disposal_proceeds) - Number(g.acquisition_cost) - Number(g.incidental_costs) - Number(g.improvement_costs);
+
+  const totalPeriodLosses = sorted
+    .filter((g) => rawGainOf(g) < 0)
+    .reduce((sum, g) => sum + Math.abs(rawGainOf(g)), 0);
+
+  let periodLossPool = totalPeriodLosses;
+
+  const rows = sorted.map((g) => {
     const result = calculateCapitalGain({
       entityType: g.entity_type,
       disposalProceeds: Number(g.disposal_proceeds),
@@ -66,16 +83,21 @@ export async function getChargeableGainsForPeriod(clientId: string, periodStart:
       lossesBroughtForward: Number(g.losses_brought_forward),
       badrEligible: g.badr_eligible,
       taxableIncomeForBandStacking: 0, // not used for companies
+      currentYearLossesAvailable: periodLossPool,
       rolloverReliefClaimed: g.rollover_relief_claimed,
       amountReinvested: Number(g.amount_reinvested),
       replacementAssetCost: Number(g.replacement_asset_cost),
+      acquisitionDate: g.acquisition_date,
+      disposalDate: g.disposal_date,
     });
+    periodLossPool -= result.currentYearLossOffset;
     return { comp: g, result };
   });
 
   const totalChargeableGains = rows.reduce((sum, r) => sum + r.result.taxableGain, 0);
+  const unusedPeriodLosses = Math.max(0, periodLossPool);
 
-  return { rows, totalChargeableGains };
+  return { rows, totalChargeableGains, totalPeriodLosses, unusedPeriodLosses };
 }
 
 export function calculateCorporationTax(input: {
@@ -203,7 +225,8 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       jobId: comp.job_id,
     });
 
-    const { rows: gainRows, totalChargeableGains } = await getChargeableGainsForPeriod(comp.client_id, sp.start, sp.end);
+    const { rows: gainRows, totalChargeableGains, totalPeriodLosses, unusedPeriodLosses } =
+      await getChargeableGainsForPeriod(comp.client_id, sp.start, sp.end);
 
     const taxableProfitBeforeLosses =
       accountingProfitShares[i] +
@@ -236,6 +259,8 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       ca,
       gainRows,
       totalChargeableGains,
+      totalPeriodLosses,
+      unusedPeriodLosses,
       taxableProfitBeforeLosses,
       loss,
       ct,
@@ -263,7 +288,7 @@ async function createComputation(formData: FormData) {
   const client_id = get("client_id");
   if (!client_id) return;
 
-const { error: insertError } = await supabase.from("corporation_tax_computations").insert({
+  const { error: insertError } = await supabase.from("corporation_tax_computations").insert({
     client_id,
     job_id: get("job_id") || null,
     period_start: get("period_start"),
@@ -285,6 +310,7 @@ const { error: insertError } = await supabase.from("corporation_tax_computations
   if (insertError) {
     throw new Error(`Failed to save Corporation Tax computation: ${insertError.message}`);
   }
+
   revalidatePath("/corporation-tax");
 }
 
@@ -441,7 +467,7 @@ export default async function CorporationTaxPage({
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <h1 className="text-2xl font-bold text-slate-900">Corporation Tax</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          Computes Corporation Tax liability using 2026/27 rates, pulling capital allowances live from the Fixed Asset Register and chargeable gains live from the Capital Gains module. Accounting periods over 12 months are automatically split into the two CT600s HMRC requires.
+          Computes Corporation Tax liability using 2026/27 rates, pulling capital allowances live from the Fixed Asset Register and chargeable gains live from the Capital Gains module, with same-period capital losses netted against gains automatically. Accounting periods over 12 months are automatically split into the two CT600s HMRC requires.
         </p>
       </div>
 
@@ -510,7 +536,7 @@ export default async function CorporationTaxPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">New Corporation Tax Computation</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              Capital allowances are calculated automatically from assets acquired in this period in the Fixed Asset Register. Chargeable gains are pulled automatically from any Company disposals recorded in the Capital Gains module within this accounting period. If the accounting period exceeds 12 months, it will be automatically split into two CT600s per HMRC's rules once saved.
+              Capital allowances are calculated automatically from assets acquired in this period in the Fixed Asset Register. Chargeable gains are pulled automatically from any Company disposals recorded in the Capital Gains module within this accounting period, with any losses among them netted against gains automatically. If the accounting period exceeds 12 months, it will be automatically split into two CT600s per HMRC's rules once saved.
             </p>
 
             <form method="get" className="mt-4 flex gap-2 items-end">

@@ -37,9 +37,9 @@ export async function getCgtRates(taxYear: string) {
 }
 
 // Works out which UK tax year (6 April to 5 April) a given date falls into.
-// Used to group a client's disposals together so the Annual Exempt Amount
-// and rate-band stacking are shared across the whole tax year, not reset
-// for every individual disposal.
+// Used to group a client's disposals together so the Annual Exempt Amount,
+// rate-band stacking, and current-year loss offset are shared across the
+// whole tax year, not reset for every individual disposal.
 export function ukTaxYearOf(dateStr: string): string {
   const d = new Date(dateStr);
   const year = d.getUTCFullYear();
@@ -63,21 +63,16 @@ function calculatePRRFraction(input: {
   const ownershipEnd = new Date(input.disposalDate);
   const totalOwnershipDays = Math.max(1, Math.round((ownershipEnd.getTime() - ownershipStart.getTime()) / (24 * 60 * 60 * 1000)) + 1);
 
-  // Clip the claimed occupation period to the actual ownership period
   const occStart = new Date(Math.max(new Date(input.mainResidenceFrom).getTime(), ownershipStart.getTime()));
   const occEnd = new Date(Math.min(new Date(input.mainResidenceTo).getTime(), ownershipEnd.getTime()));
   const occupationDays = occEnd >= occStart ? Math.round((occEnd.getTime() - occStart.getTime()) / (24 * 60 * 60 * 1000)) + 1 : 0;
 
-  // Final period exemption: the last 9 months of ownership, clipped so it
-  // never starts before the ownership period itself began.
   const finalPeriodStartRaw = new Date(ownershipEnd);
   finalPeriodStartRaw.setUTCMonth(finalPeriodStartRaw.getUTCMonth() - PRR_FINAL_PERIOD_MONTHS);
   finalPeriodStartRaw.setUTCDate(finalPeriodStartRaw.getUTCDate() + 1);
   const finalPeriodStart = new Date(Math.max(finalPeriodStartRaw.getTime(), ownershipStart.getTime()));
   const finalPeriodDays = Math.round((ownershipEnd.getTime() - finalPeriodStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
 
-  // Union of the occupation period and the final period, so overlapping days
-  // (e.g. the client lived there right up until sale) aren't counted twice.
   const overlapStart = new Date(Math.max(occStart.getTime(), finalPeriodStart.getTime()));
   const overlapEnd = new Date(Math.min(occEnd.getTime(), ownershipEnd.getTime()));
   const overlapDays = overlapEnd >= overlapStart ? Math.round((overlapEnd.getTime() - overlapStart.getTime()) / (24 * 60 * 60 * 1000)) + 1 : 0;
@@ -101,6 +96,7 @@ export function calculateCapitalGain(input: {
   taxableIncomeForBandStacking: number; // individuals only — taxable income before the gain
   aeaAlreadyUsedThisYear?: number; // individuals only — AEA already consumed by earlier same-tax-year disposals
   gainsStackedAheadThisYear?: number; // individuals only — taxable gains from earlier same-tax-year disposals, for rate-band stacking
+  currentYearLossesAvailable?: number; // pooled losses from other same-year disposals not yet absorbed — applies before AEA (individuals) or before brought-forward losses (companies)
   rolloverReliefClaimed: boolean;
   amountReinvested: number;
   replacementAssetCost: number;
@@ -112,9 +108,27 @@ export function calculateCapitalGain(input: {
 }, liveRates?: any) {
   const rates = liveRates || CGT_RATES["2026/27"];
 
-  const grossGain = Math.max(0,
-    input.disposalProceeds - input.acquisitionCost - input.incidentalCosts - input.improvementCosts
-  );
+  // The raw result — proceeds less costs — can be negative. Rollover relief,
+  // PRR, AEA, and rate bands only ever reduce a gain, so a negative result
+  // is simply an allowable loss: recorded and returned immediately, to be
+  // pooled and offset against other same-year gains upstream (mandatory),
+  // with any excess carried forward. Previously this was floored at zero,
+  // which silently discarded any loss-making disposal entirely.
+  const rawGainOrLoss = input.disposalProceeds - input.acquisitionCost - input.incidentalCosts - input.improvementCosts;
+
+  if (rawGainOrLoss < 0) {
+    const lossAmount = Math.abs(rawGainOrLoss);
+    return {
+      grossGain: rawGainOrLoss, aeaApplied: 0, lossesUsed: 0, taxableGain: 0,
+      lossesCarriedForward: input.lossesBroughtForward, gainAtBasicRate: 0, gainAtHigherRate: 0,
+      cgtDue: 0, isCompany: input.entityType === "Company", isLoss: true, lossAmount,
+      currentYearLossOffset: 0,
+      gainRolledOver: 0, gainChargeableNow: 0, adjustedReplacementBaseCost: 0,
+      prrFraction: 0, prrAmount: 0,
+    };
+  }
+
+  const grossGain = rawGainOrLoss; // guaranteed >= 0 from here on
 
   // Rollover Relief: applies before any other relief, since it defers the gain
   // arising on the disposal itself. If proceeds aren't fully reinvested, tax is
@@ -151,29 +165,39 @@ export function calculateCapitalGain(input: {
   const gainAfterPRR = Math.max(0, gainAfterRollover - prrAmount);
 
   if (input.entityType === "Company") {
-    // Companies pay Corporation Tax on chargeable gains, not CGT — no AEA, no CGT rates.
-    // Brought-forward capital losses still offset the gain directly. PRR
-    // never applies to a company (a company can't have a "residence").
-    const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterRollover);
-    const chargeableGain = gainAfterRollover - lossesUsed;
+    // Companies pay Corporation Tax on chargeable gains, not CGT — no AEA, no
+    // CGT rates. Same-period losses from other company disposals (pooled
+    // upstream) offset first, mandatorily, then brought-forward losses.
+    const currentYearLossesAvailable = input.currentYearLossesAvailable || 0;
+    const currentYearLossOffset = Math.min(gainAfterPRR, currentYearLossesAvailable);
+    const gainAfterCurrentYearLosses = Math.max(0, gainAfterPRR - currentYearLossOffset);
+
+    const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterCurrentYearLosses);
+    const chargeableGain = gainAfterCurrentYearLosses - lossesUsed;
     const lossesCarriedForward = input.lossesBroughtForward - lossesUsed;
     return {
       grossGain, aeaApplied: 0, lossesUsed, taxableGain: chargeableGain,
       lossesCarriedForward, gainAtBasicRate: 0, gainAtHigherRate: 0,
-      cgtDue: 0, isCompany: true,
+      cgtDue: 0, isCompany: true, isLoss: false, lossAmount: 0, currentYearLossOffset,
       gainRolledOver, gainChargeableNow, adjustedReplacementBaseCost,
       prrFraction: 0, prrAmount: 0,
     };
   }
 
-  // Individual: AEA applied first (protecting it from being wasted against a small
-  // gain), brought-forward losses applied after, only as far as needed.
-  // AEA is shared across the whole tax year, so we subtract whatever earlier
-  // same-tax-year disposals for this client have already used.
+  // Individual: same-tax-year losses from other disposals offset first
+  // (mandatory, even if it wastes some of the AEA), then AEA applied
+  // (protecting it from being wasted against a small gain further than
+  // necessary), then brought-forward losses applied after AEA, only as far
+  // as needed. AEA is shared across the whole tax year, so we subtract
+  // whatever earlier same-tax-year disposals have already used.
+  const currentYearLossesAvailable = input.currentYearLossesAvailable || 0;
+  const currentYearLossOffset = Math.min(gainAfterPRR, currentYearLossesAvailable);
+  const gainAfterCurrentYearLosses = Math.max(0, gainAfterPRR - currentYearLossOffset);
+
   const aeaAlreadyUsed = input.aeaAlreadyUsedThisYear || 0;
   const aeaRemaining = Math.max(0, rates.annualExemptAmount - aeaAlreadyUsed);
-  const aeaApplied = Math.min(gainAfterPRR, aeaRemaining);
-  const gainAfterAEA = Math.max(0, gainAfterPRR - aeaApplied);
+  const aeaApplied = Math.min(gainAfterCurrentYearLosses, aeaRemaining);
+  const gainAfterAEA = Math.max(0, gainAfterCurrentYearLosses - aeaApplied);
   const lossesUsed = Math.min(input.lossesBroughtForward, gainAfterAEA);
   const taxableGain = gainAfterAEA - lossesUsed;
   const lossesCarriedForward = input.lossesBroughtForward - lossesUsed;
@@ -185,10 +209,6 @@ export function calculateCapitalGain(input: {
   if (input.badrEligible) {
     cgtDue = taxableGain * rates.badrRate;
   } else {
-    // The basic-rate band is shared across the whole tax year too — income uses
-    // it first, then gains stack on top in the order disposals are processed,
-    // so we subtract any taxable gains from earlier same-tax-year disposals
-    // before working out how much basic-rate band space is left for this one.
     const gainsStackedAhead = input.gainsStackedAheadThisYear || 0;
     const remainingBasicBand = Math.max(0,
       rates.basicRateBandWidth - input.taxableIncomeForBandStacking - gainsStackedAhead
@@ -200,7 +220,8 @@ export function calculateCapitalGain(input: {
 
   return {
     grossGain, aeaApplied, lossesUsed, taxableGain, lossesCarriedForward,
-    gainAtBasicRate, gainAtHigherRate, cgtDue, isCompany: false,
+    gainAtBasicRate, gainAtHigherRate, cgtDue, isCompany: false, isLoss: false, lossAmount: 0,
+    currentYearLossOffset,
     gainRolledOver, gainChargeableNow, adjustedReplacementBaseCost,
     prrFraction, prrAmount,
   };
@@ -214,7 +235,7 @@ async function createComputation(formData: FormData) {
   const client_id = get("client_id");
   if (!client_id) return;
 
-  await supabase.from("capital_gains_computations").insert({
+  const { error: insertError } = await supabase.from("capital_gains_computations").insert({
     client_id,
     job_id: get("job_id") || null,
     linked_tax_computation_id: get("linked_tax_computation_id") || null,
@@ -237,6 +258,10 @@ async function createComputation(formData: FormData) {
     main_residence_to: get("main_residence_to") || null,
     notes: get("notes"),
   });
+
+  if (insertError) {
+    throw new Error(`Failed to save Capital Gains computation: ${insertError.message}`);
+  }
 
   revalidatePath("/capital-gains");
 }
@@ -264,12 +289,12 @@ export default async function CapitalGainsPage({
     supabase.from("tax_computations").select("id, tax_year, client_id"),
   ]);
 
-  // --- Per-tax-year aggregation of AEA and rate-band stacking ---
-  // Group this client's disposals by UK tax year, process them in
-  // chronological order within each group, and carry a running total of
-  // AEA used and taxable gains so far into each subsequent disposal's
-  // calculation. Company disposals don't use AEA/rate bands so they're
-  // excluded from the running totals (but still calculated individually).
+  // --- Per-tax-year aggregation of AEA, rate-band stacking, and current-year
+  // loss offset --- Group this client's disposals by UK tax year, process
+  // them in chronological order within each group. Same-year losses are
+  // mandatorily offset against gains first, then AEA and rate-band stacking
+  // proceed as before. Company disposals don't share AEA/bands but DO share
+  // a same-period loss pool with other company disposals for this client.
   const groups = new Map<string, any[]>();
   for (const comp of computations || []) {
     const key = `${comp.client_id}:${ukTaxYearOf(comp.disposal_date)}`;
@@ -284,6 +309,18 @@ export default async function CapitalGainsPage({
   const resultByCompId = new Map<string, any>();
 
   for (const group of groups.values()) {
+    // Individuals and companies pool separately — individuals share AEA,
+    // companies never have AEA, so keep the loss pools distinct too.
+    const rawGainOf = (c: any) =>
+      Number(c.disposal_proceeds) - Number(c.acquisition_cost) - Number(c.incidental_costs) - Number(c.improvement_costs);
+
+    let individualLossPool = group
+      .filter((c) => c.entity_type !== "Company" && rawGainOf(c) < 0)
+      .reduce((sum, c) => sum + Math.abs(rawGainOf(c)), 0);
+    let companyLossPool = group
+      .filter((c) => c.entity_type === "Company" && rawGainOf(c) < 0)
+      .reduce((sum, c) => sum + Math.abs(rawGainOf(c)), 0);
+
     let aeaUsedSoFar = 0;
     let gainsStackedSoFar = 0;
 
@@ -296,12 +333,12 @@ export default async function CapitalGainsPage({
           .eq("id", comp.linked_tax_computation_id)
           .single();
         if (tc) {
-          // Rough proxy: total non-savings income less personal allowance
           const total = Number(tc.employment_income) + Number(tc.self_employment_income) + Number(tc.rental_income) + Number(tc.pension_income);
           taxableIncome = Math.max(0, total - 12570);
         }
       }
 
+      const isCompanyRow = comp.entity_type === "Company";
       const result = calculateCapitalGain({
         entityType: comp.entity_type,
         disposalProceeds: Number(comp.disposal_proceeds),
@@ -313,6 +350,7 @@ export default async function CapitalGainsPage({
         taxableIncomeForBandStacking: taxableIncome,
         aeaAlreadyUsedThisYear: aeaUsedSoFar,
         gainsStackedAheadThisYear: gainsStackedSoFar,
+        currentYearLossesAvailable: isCompanyRow ? companyLossPool : individualLossPool,
         rolloverReliefClaimed: comp.rollover_relief_claimed,
         amountReinvested: Number(comp.amount_reinvested),
         replacementAssetCost: Number(comp.replacement_asset_cost),
@@ -323,7 +361,10 @@ export default async function CapitalGainsPage({
         mainResidenceTo: comp.main_residence_to,
       }, cgtRates);
 
-      if (comp.entity_type !== "Company") {
+      if (isCompanyRow) {
+        companyLossPool -= result.currentYearLossOffset;
+      } else {
+        individualLossPool -= result.currentYearLossOffset;
         aeaUsedSoFar += result.aeaApplied;
         gainsStackedSoFar += result.taxableGain;
       }
@@ -368,6 +409,9 @@ export default async function CapitalGainsPage({
               {comp.main_residence_relief_claimed && (
                 <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-teal-100 text-teal-700">PRR</span>
               )}
+              {result.isLoss && (
+                <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-rose-100 text-rose-700">Loss</span>
+              )}
             </div>
             <p className="text-sm text-slate-500">
               {comp.entity_type} · Disposed {new Date(comp.disposal_date).toLocaleDateString("en-GB")}
@@ -377,9 +421,13 @@ export default async function CapitalGainsPage({
           <div className="flex items-center gap-4">
             <div className="text-right">
               <p className="font-bold text-slate-900">
-                {result.isCompany ? `£${result.taxableGain.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `£${result.cgtDue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                {result.isLoss
+                  ? `(£${result.lossAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
+                  : result.isCompany
+                    ? `£${result.taxableGain.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : `£${result.cgtDue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
               </p>
-              <p className="text-xs text-slate-400">{result.isCompany ? "chargeable gain" : "CGT due"}</p>
+              <p className="text-xs text-slate-400">{result.isLoss ? "allowable loss" : result.isCompany ? "chargeable gain" : "CGT due"}</p>
             </div>
             <form action={deleteComputation.bind(null, comp.id)}>
               <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
@@ -406,7 +454,7 @@ export default async function CapitalGainsPage({
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <h1 className="text-2xl font-bold text-slate-900">Capital Gains Tax</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          Computes CGT for individuals (2026/27 rates) and chargeable gains for companies, including the 60-day UK property reporting deadline and Private Residence Relief.
+          Computes CGT for individuals (2026/27 rates) and chargeable gains for companies, including the 60-day UK property reporting deadline, Private Residence Relief, and mandatory same-year loss offset.
         </p>
       </div>
 
@@ -512,7 +560,7 @@ export default async function CapitalGainsPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">New Capital Gains Computation</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              For a company, this calculates the chargeable gain to include in its Corporation Tax computation — companies don't pay CGT directly.
+              For a company, this calculates the chargeable gain to include in its Corporation Tax computation — companies don't pay CGT directly. If disposal proceeds are lower than costs, this is recorded as an allowable loss instead of a gain.
             </p>
 
             <form action={createComputation} className="mt-6 grid gap-4 md:grid-cols-3">
@@ -597,6 +645,7 @@ export default async function CapitalGainsPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">Losses Brought Forward (£)</label>
                 <input name="losses_brought_forward" type="number" step="0.01" min="0" defaultValue="0"
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <p className="text-xs text-slate-400 mt-1">Unused losses from earlier tax years only — losses arising in this same tax year from other disposals are offset automatically.</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Linked Personal Tax Computation</label>

@@ -15,7 +15,7 @@ async function updateComputation(id: string, formData: FormData) {
   const get = (key: string) => String(formData.get(key) || "").trim();
   const num = (key: string) => parseFloat(get(key)) || 0;
 
-  await supabase.from("capital_gains_computations").update({
+  const { error: updateError } = await supabase.from("capital_gains_computations").update({
     entity_type: get("entity_type") || "Individual",
     asset_description: get("asset_description"),
     asset_category: get("asset_category") || "Other Assets",
@@ -36,6 +36,10 @@ async function updateComputation(id: string, formData: FormData) {
     linked_tax_computation_id: get("linked_tax_computation_id") || null,
     notes: get("notes"),
   }).eq("id", id);
+
+  if (updateError) {
+    throw new Error(`Failed to save Capital Gains computation: ${updateError.message}`);
+  }
 
   revalidatePath(`/capital-gains/${id}`);
   revalidatePath("/capital-gains");
@@ -75,55 +79,66 @@ export default async function CapitalGainsDetailPage({
     .select("id, tax_year")
     .eq("client_id", comp.client_id);
 
-  // --- Per-tax-year AEA / rate-band aggregation, matching the list page ---
-  // Individuals share one Annual Exempt Amount and one basic-rate band across
-  // the whole UK tax year. To get the same figure the list page shows, we
-  // need to replay every other Individual disposal this client made in the
-  // same tax year (in date order) and carry the running AEA/gains totals up
-  // to — but not including — this disposal.
+  // --- Per-tax-year AEA / rate-band / loss-offset aggregation, matching the
+  // list page --- Individuals share one AEA and one basic-rate band across
+  // the whole UK tax year, and same-year losses (from any entity of the same
+  // type) are mandatorily offset against gains before AEA. To get the same
+  // figure the list page shows, we replay every other disposal this client
+  // made in the same tax year (same entity type), in date order, and carry
+  // the running totals up to — but not including — this disposal.
   let aeaAlreadyUsedThisYear = 0;
   let gainsStackedAheadThisYear = 0;
+  let currentYearLossesAvailable = 0;
 
-  if (comp.entity_type !== "Company") {
-    const { data: sameClientComps } = await supabase
-      .from("capital_gains_computations")
-      .select("*")
-      .eq("client_id", comp.client_id)
-      .neq("entity_type", "Company");
+  const { data: sameClientComps } = await supabase
+    .from("capital_gains_computations")
+    .select("*")
+    .eq("client_id", comp.client_id)
+    .eq("entity_type", comp.entity_type);
 
-    const sameTaxYear = (sameClientComps || [])
-      .filter((c) => ukTaxYearOf(c.disposal_date) === ukTaxYearOf(comp.disposal_date))
-      .sort((a, b) => {
-        const dateDiff = new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime();
-        if (dateDiff !== 0) return dateDiff;
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      });
+  const sameTaxYear = (sameClientComps || [])
+    .filter((c) => ukTaxYearOf(c.disposal_date) === ukTaxYearOf(comp.disposal_date))
+    .sort((a, b) => {
+      const dateDiff = new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime();
+      if (dateDiff !== 0) return dateDiff;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
 
-    for (const earlier of sameTaxYear) {
-      if (earlier.id === comp.id) break; // reached this disposal — stop, use totals accumulated so far
+  const rawGainOf = (c: any) =>
+    Number(c.disposal_proceeds) - Number(c.acquisition_cost) - Number(c.incidental_costs) - Number(c.improvement_costs);
 
-      const earlierTaxableIncome = await taxableIncomeFor(earlier);
-      const earlierResult = calculateCapitalGain({
-        entityType: earlier.entity_type,
-        disposalProceeds: Number(earlier.disposal_proceeds),
-        acquisitionCost: Number(earlier.acquisition_cost),
-        incidentalCosts: Number(earlier.incidental_costs),
-        improvementCosts: Number(earlier.improvement_costs),
-        lossesBroughtForward: Number(earlier.losses_brought_forward),
-        badrEligible: earlier.badr_eligible,
-        taxableIncomeForBandStacking: earlierTaxableIncome,
-        aeaAlreadyUsedThisYear,
-        gainsStackedAheadThisYear,
-        rolloverReliefClaimed: earlier.rollover_relief_claimed,
-        amountReinvested: Number(earlier.amount_reinvested),
-        replacementAssetCost: Number(earlier.replacement_asset_cost),
-        acquisitionDate: earlier.acquisition_date,
-        disposalDate: earlier.disposal_date,
-        prrClaimed: earlier.main_residence_relief_claimed,
-        mainResidenceFrom: earlier.main_residence_from,
-        mainResidenceTo: earlier.main_residence_to,
-      });
+  currentYearLossesAvailable = sameTaxYear
+    .filter((c) => rawGainOf(c) < 0)
+    .reduce((sum, c) => sum + Math.abs(rawGainOf(c)), 0);
 
+  for (const earlier of sameTaxYear) {
+    if (earlier.id === comp.id) break; // reached this disposal — stop, use totals accumulated so far
+
+    const earlierTaxableIncome = await taxableIncomeFor(earlier);
+    const earlierResult = calculateCapitalGain({
+      entityType: earlier.entity_type,
+      disposalProceeds: Number(earlier.disposal_proceeds),
+      acquisitionCost: Number(earlier.acquisition_cost),
+      incidentalCosts: Number(earlier.incidental_costs),
+      improvementCosts: Number(earlier.improvement_costs),
+      lossesBroughtForward: Number(earlier.losses_brought_forward),
+      badrEligible: earlier.badr_eligible,
+      taxableIncomeForBandStacking: earlierTaxableIncome,
+      aeaAlreadyUsedThisYear,
+      gainsStackedAheadThisYear,
+      currentYearLossesAvailable,
+      rolloverReliefClaimed: earlier.rollover_relief_claimed,
+      amountReinvested: Number(earlier.amount_reinvested),
+      replacementAssetCost: Number(earlier.replacement_asset_cost),
+      acquisitionDate: earlier.acquisition_date,
+      disposalDate: earlier.disposal_date,
+      prrClaimed: earlier.main_residence_relief_claimed,
+      mainResidenceFrom: earlier.main_residence_from,
+      mainResidenceTo: earlier.main_residence_to,
+    });
+
+    currentYearLossesAvailable -= earlierResult.currentYearLossOffset;
+    if (comp.entity_type !== "Company") {
       aeaAlreadyUsedThisYear += earlierResult.aeaApplied;
       gainsStackedAheadThisYear += earlierResult.taxableGain;
     }
@@ -155,6 +170,7 @@ export default async function CapitalGainsDetailPage({
     taxableIncomeForBandStacking: taxableIncome,
     aeaAlreadyUsedThisYear,
     gainsStackedAheadThisYear,
+    currentYearLossesAvailable,
     rolloverReliefClaimed: comp.rollover_relief_claimed,
     amountReinvested: Number(comp.amount_reinvested),
     replacementAssetCost: Number(comp.replacement_asset_cost),
@@ -205,52 +221,79 @@ export default async function CapitalGainsDetailPage({
             </div>
           )}
 
-          {/* Gain Computation */}
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Gain Computation</h2>
-            <div className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Disposal Proceeds</span><span className="font-medium">{fmt(Number(comp.disposal_proceeds))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Less: Acquisition Cost</span><span className="font-medium text-red-600">({fmt(Number(comp.acquisition_cost))})</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Less: Incidental Costs</span><span className="font-medium text-red-600">({fmt(Number(comp.incidental_costs))})</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Less: Improvement Costs</span><span className="font-medium text-red-600">({fmt(Number(comp.improvement_costs))})</span></div>
-              <div className="border-t border-slate-100 pt-2 flex justify-between font-bold">
-                <span>Gross Gain</span>
-                <span>{fmt(result.grossGain)}</span>
-              </div>
-
-              {comp.rollover_relief_claimed && (
-                <>
-                  <div className="flex justify-between text-slate-500 pt-1"><span>Less: Gain Rolled Over</span><span className="text-red-600 font-medium">({fmt(result.gainRolledOver)})</span></div>
-                  <div className="flex justify-between font-medium"><span>Gain Chargeable Now</span><span>{fmt(result.gainChargeableNow)}</span></div>
-                </>
-              )}
-
-              {comp.main_residence_relief_claimed && !result.isCompany && (
-                <div className="flex justify-between text-teal-700">
-                  <span>Less: Private Residence Relief ({(result.prrFraction * 100).toFixed(1)}% exempt)</span>
-                  <span className="font-medium">({fmt(result.prrAmount)})</span>
+          {result.isLoss ? (
+            /* Loss Computation */
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-rose-100">
+              <h2 className="text-lg font-bold text-slate-900">Loss Computation</h2>
+              <div className="mt-4 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Disposal Proceeds</span><span className="font-medium">{fmt(Number(comp.disposal_proceeds))}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Less: Acquisition Cost</span><span className="font-medium text-red-600">({fmt(Number(comp.acquisition_cost))})</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Less: Incidental Costs</span><span className="font-medium text-red-600">({fmt(Number(comp.incidental_costs))})</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Less: Improvement Costs</span><span className="font-medium text-red-600">({fmt(Number(comp.improvement_costs))})</span></div>
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base text-rose-700">
+                  <span>Allowable Loss</span>
+                  <span>({fmt(result.lossAmount)})</span>
                 </div>
-              )}
-
-              {!result.isCompany && (
-                <div className="flex justify-between"><span className="text-slate-500">Less: Annual Exempt Amount</span><span className="font-medium text-red-600">({fmt(result.aeaApplied)})</span></div>
-              )}
-              <div className="flex justify-between"><span className="text-slate-500">Less: Losses Brought Forward Used</span><span className="font-medium text-red-600">({fmt(result.lossesUsed)})</span></div>
-              <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
-                <span>{result.isCompany ? "Chargeable Gain" : "Taxable Gain"}</span>
-                <span>{fmt(result.taxableGain)}</span>
               </div>
-              {result.lossesCarriedForward > 0 && (
-                <div className="flex justify-between text-slate-500 pt-1">
-                  <span>Losses Carried Forward</span>
-                  <span>{fmt(result.lossesCarriedForward)}</span>
-                </div>
-              )}
+              <p className="text-xs text-slate-500 mt-4">
+                This loss is offset first against any other gains this client made in the same tax year (mandatory), before those gains' Annual Exempt Amount is applied. Any amount not absorbed this way is carried forward to offset future years' gains.
+              </p>
             </div>
-          </div>
+          ) : (
+            /* Gain Computation */
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Gain Computation</h2>
+              <div className="mt-4 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Disposal Proceeds</span><span className="font-medium">{fmt(Number(comp.disposal_proceeds))}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Less: Acquisition Cost</span><span className="font-medium text-red-600">({fmt(Number(comp.acquisition_cost))})</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Less: Incidental Costs</span><span className="font-medium text-red-600">({fmt(Number(comp.incidental_costs))})</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Less: Improvement Costs</span><span className="font-medium text-red-600">({fmt(Number(comp.improvement_costs))})</span></div>
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold">
+                  <span>Gross Gain</span>
+                  <span>{fmt(result.grossGain)}</span>
+                </div>
+
+                {comp.rollover_relief_claimed && (
+                  <>
+                    <div className="flex justify-between text-slate-500 pt-1"><span>Less: Gain Rolled Over</span><span className="text-red-600 font-medium">({fmt(result.gainRolledOver)})</span></div>
+                    <div className="flex justify-between font-medium"><span>Gain Chargeable Now</span><span>{fmt(result.gainChargeableNow)}</span></div>
+                  </>
+                )}
+
+                {comp.main_residence_relief_claimed && !result.isCompany && (
+                  <div className="flex justify-between text-teal-700">
+                    <span>Less: Private Residence Relief ({(result.prrFraction * 100).toFixed(1)}% exempt)</span>
+                    <span className="font-medium">({fmt(result.prrAmount)})</span>
+                  </div>
+                )}
+
+                {result.currentYearLossOffset > 0 && (
+                  <div className="flex justify-between text-rose-700">
+                    <span>Less: Current Year Losses Offset (mandatory)</span>
+                    <span className="font-medium">({fmt(result.currentYearLossOffset)})</span>
+                  </div>
+                )}
+
+                {!result.isCompany && (
+                  <div className="flex justify-between"><span className="text-slate-500">Less: Annual Exempt Amount</span><span className="font-medium text-red-600">({fmt(result.aeaApplied)})</span></div>
+                )}
+                <div className="flex justify-between"><span className="text-slate-500">Less: Losses Brought Forward Used</span><span className="font-medium text-red-600">({fmt(result.lossesUsed)})</span></div>
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
+                  <span>{result.isCompany ? "Chargeable Gain" : "Taxable Gain"}</span>
+                  <span>{fmt(result.taxableGain)}</span>
+                </div>
+                {result.lossesCarriedForward > 0 && (
+                  <div className="flex justify-between text-slate-500 pt-1">
+                    <span>Losses Carried Forward</span>
+                    <span>{fmt(result.lossesCarriedForward)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Tax Calculation */}
-          {!result.isCompany ? (
+          {!result.isLoss && (!result.isCompany ? (
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">CGT Calculation</h2>
               {comp.badr_eligible ? (
@@ -284,22 +327,9 @@ export default async function CapitalGainsDetailPage({
                 Go to Corporation Tax →
               </a>
             </div>
-          )}
+          ))}
 
-          {comp.main_residence_relief_claimed && !result.isCompany && (
-            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-              <h2 className="text-lg font-bold text-slate-900">Private Residence Relief</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                Main residence from {comp.main_residence_from ? new Date(comp.main_residence_from).toLocaleDateString("en-GB") : "—"} to {comp.main_residence_to ? new Date(comp.main_residence_to).toLocaleDateString("en-GB") : "—"}, plus an automatic final 9 months of ownership (whichever is later, without double-counting). Doesn't account for deemed periods of absence or Letting Relief — check these manually if they apply.
-              </p>
-              <div className="mt-4 space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Exempt Fraction of Gain</span><span className="font-medium">{(result.prrFraction * 100).toFixed(1)}%</span></div>
-                <div className="flex justify-between font-bold"><span>Relief Given</span><span>{fmt(result.prrAmount)}</span></div>
-              </div>
-            </div>
-          )}
-
-          {comp.rollover_relief_claimed && (
+          {comp.rollover_relief_claimed && !result.isLoss && (
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Rollover Relief</h2>
               <p className="text-xs text-slate-400 mt-1">
@@ -336,9 +366,11 @@ export default async function CapitalGainsDetailPage({
 
         {/* Right column */}
         <div className="space-y-6">
-          <div className="rounded-2xl bg-slate-900 p-6 shadow-sm text-white">
-            <h2 className="text-lg font-bold">{result.isCompany ? "Chargeable Gain" : "CGT Due"}</h2>
-            <p className="mt-4 text-3xl font-bold">{fmt(result.isCompany ? result.taxableGain : result.cgtDue)}</p>
+          <div className={`rounded-2xl p-6 shadow-sm text-white ${result.isLoss ? "bg-rose-900" : "bg-slate-900"}`}>
+            <h2 className="text-lg font-bold">{result.isLoss ? "Allowable Loss" : result.isCompany ? "Chargeable Gain" : "CGT Due"}</h2>
+            <p className="mt-4 text-3xl font-bold">
+              {result.isLoss ? `(${fmt(result.lossAmount)})` : fmt(result.isCompany ? result.taxableGain : result.cgtDue)}
+            </p>
           </div>
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">

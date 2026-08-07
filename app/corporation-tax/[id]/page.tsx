@@ -94,12 +94,6 @@ export default async function CorporationTaxDetailPage({
   const currentPeriodLoss = finalPeriod.loss.newLossThisPeriod;
 
   // --- s37 Loss Carry-Back ---
-  // A trading loss arising in this period can be carried back against the
-  // total profits of the accounting period(s) ending within the 12 months
-  // immediately before this one started. Find eligible prior computations
-  // for this client, then work out what the prior period's CT would have
-  // been with the reduced profit, using the same shared calculation
-  // functions as everywhere else — the difference is the refund.
   const twelveMonthsBeforeStart = new Date(comp.period_start);
   twelveMonthsBeforeStart.setUTCFullYear(twelveMonthsBeforeStart.getUTCFullYear() - 1);
 
@@ -161,9 +155,6 @@ export default async function CorporationTaxDetailPage({
 
   const netLossesCarriedForward = Math.max(0, totalLossesCarriedForward - claimedCarryBack);
 
-  // Is this computation itself the target of a carry-back claim from a
-  // later period? Shown as a simple heads-up — the calculated refund lives
-  // on the later computation's own page, not recomputed twice here.
   const { data: carryBackClaimsAgainstThis } = await supabase
     .from("corporation_tax_computations")
     .select("id, period_start, period_end, loss_carried_back")
@@ -174,8 +165,6 @@ export default async function CorporationTaxDetailPage({
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB");
   const updateWithId = updateComputation.bind(null, id);
 
-  // Renders one sub-period's figures. Used once when there's no split, and
-  // twice (stacked) when there is.
   const renderPeriodBreakdown = (p: any, index: number, total: number) => (
     <div key={index} className={total > 1 ? "rounded-xl border border-slate-100 p-4" : ""}>
       {total > 1 && (
@@ -196,7 +185,7 @@ export default async function CorporationTaxDetailPage({
           <div className="flex justify-between"><span className="text-slate-500">Less: Profit/(Loss) on Disposal Per Accounts</span><span className="font-medium text-red-600">({fmt(p.profitOnDisposalShare)})</span></div>
         )}
         {p.totalChargeableGains > 0 && (
-          <div className="flex justify-between"><span className="text-slate-500">Add: Chargeable Gains</span><span className="font-medium">{fmt(p.totalChargeableGains)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Add: Chargeable Gains (net of same-period losses)</span><span className="font-medium">{fmt(p.totalChargeableGains)}</span></div>
         )}
         <div className="border-t border-slate-100 pt-2 flex justify-between font-medium">
           <span>Profit Before Loss Relief</span>
@@ -230,16 +219,6 @@ export default async function CorporationTaxDetailPage({
               View full capital allowances detail →
             </a>
           </p>
-        )}
-        {p.gainRows.length > 0 && (
-          <div className="pt-2 space-y-1">
-            {p.gainRows.map(({ comp: g, result: gResult }: any) => (
-              <a key={g.id} href={`/capital-gains/${g.id}`} className="flex justify-between text-xs hover:bg-slate-50 rounded px-1 py-0.5 -mx-1">
-                <span className="text-slate-400">{g.asset_description} · {fmtDate(g.disposal_date)}</span>
-                <span className="text-slate-500">{fmt(gResult.taxableGain)}</span>
-              </a>
-            ))}
-          </div>
         )}
       </div>
     </div>
@@ -310,12 +289,57 @@ export default async function CorporationTaxDetailPage({
             )}
           </div>
 
+          {/* Chargeable Gains — linked from the Capital Gains module, per sub-period */}
+          {periods.some((p: any) => p.gainRows.length > 0) && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">Chargeable Gains</h2>
+                <a href="/capital-gains" className="text-xs font-semibold text-blue-600 hover:underline">Manage disposals →</a>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Company disposals with a disposal date inside this accounting period. Losses among them are netted against gains automatically, in date order, before any brought-forward capital losses are applied.
+              </p>
+              <div className={periods.length > 1 ? "mt-4 space-y-4" : "mt-4"}>
+                {periods.map((p: any, i: number) => p.gainRows.length > 0 && (
+                  <div key={i}>
+                    {periods.length > 1 && (
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                        {fmtDate(p.periodStart)} to {fmtDate(p.periodEnd)}
+                      </p>
+                    )}
+                    <div className="space-y-2 text-sm">
+                      {p.gainRows.map(({ comp: g, result: gResult }: any) => (
+                        <a key={g.id} href={`/capital-gains/${g.id}`} className="flex justify-between hover:bg-slate-50 rounded-lg px-2 py-1 -mx-2 transition-colors">
+                          <span className={gResult.isLoss ? "text-rose-600" : "text-slate-500"}>
+                            {g.asset_description} · {fmtDate(g.disposal_date)}{gResult.isLoss && " · loss"}
+                          </span>
+                          <span className="font-medium">
+                            {gResult.isLoss ? `(${fmt(gResult.lossAmount)})` : fmt(gResult.taxableGain)}
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                    {p.unusedPeriodLosses > 0 && (
+                      <p className="text-xs text-rose-700 mt-2">
+                        {fmt(p.unusedPeriodLosses)} of this period's capital losses weren't fully absorbed by this period's own gains — check the relevant disposal's own "Losses Carried Forward" figure in the Capital Gains module to confirm it's available for future disposals.
+                      </p>
+                    )}
+                  </div>
+                ))}
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
+                  <span>Total Chargeable Gains (both periods, net of losses)</span>
+                  <span>{fmt(periods.reduce((s: number, p: any) => s + p.totalChargeableGains, 0))}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Loss Carry-Back (s37) — only shown when this period made a loss */}
           {currentPeriodLoss > 0 && (
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <h2 className="text-lg font-bold text-slate-900">Loss Carry-Back (s37)</h2>
               <p className="text-xs text-slate-400 mt-1">
-                This period made a trading loss of {fmt(currentPeriodLoss)}. Instead of only carrying it forward, some or all can be carried back against the total profits of an accounting period ending within the 12 months before this one started — generating a cash refund now rather than relief against an uncertain future profit.
+                This period made a trading loss of {fmt(currentPeriodLoss)}. Instead of only carrying it forward, some or all can be carried back against the total profits of an accounting period ending within the 12 months before this one started — generating a cash refund now rather than relief against an uncertain future profit. Note: this is separate from capital losses on disposals, which can only offset capital gains, not trading profits.
               </p>
 
               {carryBackTarget ? (

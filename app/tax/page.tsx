@@ -31,6 +31,8 @@ export const TAX_RATES: Record<string, any> = {
     class4UpperLimit: 50270,
     class4MainRate: 0.06,
     class4UpperRate: 0.02,
+    hicbcThreshold: 60000, // High Income Child Benefit Charge starts here (adjusted net income)
+    hicbcFullClawbackAt: 80000, // Child Benefit fully clawed back at this adjusted net income
   },
 };
 
@@ -68,6 +70,7 @@ type TaxInput = {
   foreignTaxPaid?: number;
   personalPensionContributions?: number; // relief-at-source, amount actually paid (net)
   giftAidDonations?: number; // amount actually paid (net)
+  childBenefitReceived?: number; // annual Child Benefit received this tax year, if any
   taxYear: string;
 };
 
@@ -101,10 +104,11 @@ function computeCore(input: TaxInput, rates?: any) {
   // higher/additional-rate relief is actually given — more income gets
   // taxed at the lower rates rather than a separate refund being paid. The
   // same gross amount also reduces "adjusted net income" for the Personal
-  // Allowance taper, which is based on adjusted net income, not gross total
-  // income. Net-pay-arrangement pension contributions (deducted from salary
-  // before tax by an employer scheme) don't need this — they're already
-  // reflected in a lower Employment Income figure.
+  // Allowance taper AND the High Income Child Benefit Charge — both are
+  // based on adjusted net income, not gross total income. Net-pay-arrangement
+  // pension contributions (deducted from salary before tax by an employer
+  // scheme) don't need this — they're already reflected in a lower
+  // Employment Income figure.
   const pensionGross = (input.personalPensionContributions || 0) / 0.8;
   const giftAidGross = (input.giftAidDonations || 0) / 0.8;
   const reliefExtension = pensionGross + giftAidGross;
@@ -245,8 +249,27 @@ function computeCore(input: TaxInput, rates?: any) {
   };
 }
 
+// High Income Child Benefit Charge: claws back Child Benefit via Self
+// Assessment where the higher-earning parent's adjusted net income exceeds
+// the threshold, tapered at 1% of the Child Benefit received per £200 over
+// that, fully clawed back once adjusted net income reaches the upper
+// threshold. Uses the same adjusted net income figure as the Personal
+// Allowance taper — not household income, and only the higher-earning
+// parent's own income counts, so this should only be entered on whichever
+// parent's return is actually the higher earner.
+function calculateHICBC(childBenefitReceived: number, adjustedNetIncome: number, rates: any) {
+  if (childBenefitReceived <= 0 || adjustedNetIncome <= rates.hicbcThreshold) {
+    return { hicbcChargePercentage: 0, hicbcCharge: 0 };
+  }
+  const band = rates.hicbcFullClawbackAt - rates.hicbcThreshold;
+  const hicbcChargePercentage = Math.min(1, (adjustedNetIncome - rates.hicbcThreshold) / band);
+  const hicbcCharge = childBenefitReceived * hicbcChargePercentage;
+  return { hicbcChargePercentage, hicbcCharge };
+}
+
 export function calculateTax(input: TaxInput, rates?: any) {
-  const actual = computeCore(input, rates);
+  const r = rates || TAX_RATES[input.taxYear] || TAX_RATES["2026/27"];
+  const actual = computeCore(input, r);
 
   const baseline = computeCore({
     ...input,
@@ -257,7 +280,7 @@ export function calculateTax(input: TaxInput, rates?: any) {
     foreignPropertyExpenses: 0,
     foreignPropertyFinanceCosts: 0,
     foreignFinanceCostsBf: 0,
-  }, rates);
+  }, r);
 
   const ukTaxOnForeignIncome = Math.max(0, actual.totalIncomeTax - baseline.totalIncomeTax);
   const foreignTaxPaid = input.foreignTaxPaid || 0;
@@ -265,7 +288,10 @@ export function calculateTax(input: TaxInput, rates?: any) {
   const unusedForeignTaxCredit = Math.max(0, foreignTaxPaid - foreignTaxCreditRelief);
 
   const totalIncomeTax = Math.max(0, actual.totalIncomeTax - foreignTaxCreditRelief);
-  const totalLiability = totalIncomeTax + actual.class4NI;
+
+  const { hicbcChargePercentage, hicbcCharge } = calculateHICBC(input.childBenefitReceived || 0, actual.adjustedNetIncome, r);
+
+  const totalLiability = totalIncomeTax + actual.class4NI + hicbcCharge;
 
   return {
     ...actual,
@@ -275,6 +301,8 @@ export function calculateTax(input: TaxInput, rates?: any) {
     ukTaxOnForeignIncome,
     foreignTaxCreditRelief,
     unusedForeignTaxCredit,
+    hicbcChargePercentage,
+    hicbcCharge,
   };
 }
 
@@ -331,6 +359,7 @@ const client_id = get("client_id");
     foreignTaxPaid: num("foreign_tax_paid"),
     personalPensionContributions: num("personal_pension_contributions"),
     giftAidDonations: num("gift_aid_donations"),
+    childBenefitReceived: num("child_benefit_received"),
     taxYear: tax_year,
   };
 
@@ -362,6 +391,7 @@ const client_id = get("client_id");
     foreign_tax_paid: input.foreignTaxPaid,
     personal_pension_contributions: input.personalPensionContributions,
     gift_aid_donations: input.giftAidDonations,
+    child_benefit_received: input.childBenefitReceived,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   });
@@ -444,6 +474,7 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
       foreignTaxPaid: Number(comp.foreign_tax_paid),
       personalPensionContributions: Number(comp.personal_pension_contributions),
       giftAidDonations: Number(comp.gift_aid_donations),
+      childBenefitReceived: Number(comp.child_benefit_received),
       taxYear: comp.tax_year,
     }, rates);
     const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
@@ -477,6 +508,9 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
             {comp.clients?.client_name || "No client"} — {comp.tax_year}
           </p>
           {statusBadge(comp.status)}
+          {result.hicbcCharge > 0 && (
+            <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-indigo-100 text-indigo-700">HICBC</span>
+          )}
         </div>
         <p className="text-sm text-slate-500">
           Total liability: £{result.totalLiability.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -687,6 +721,19 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                       placeholder="Net amount paid" />
                   </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-900">High Income Child Benefit Charge</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Only relevant if this client (or their partner) claims Child Benefit and this client is the higher earner. The charge is based on this client's own adjusted net income (after pension/Gift Aid relief above) — leave blank if this client isn't the higher-earning parent, even if their partner claims Child Benefit.
+                </p>
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Child Benefit Received This Tax Year (£)</label>
+                  <input name="child_benefit_received" type="number" step="0.01" min="0" defaultValue="0"
+                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    placeholder="Total annual amount received" />
                 </div>
               </div>
 
