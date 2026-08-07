@@ -78,6 +78,8 @@ export default async function PublicTaxComputationPage({
     personalPensionContributions: Number(comp.personal_pension_contributions),
     giftAidDonations: Number(comp.gift_aid_donations),
     childBenefitReceived: Number(comp.child_benefit_received),
+    marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
+    marriageAllowanceReceived: comp.marriage_allowance_received,
     taxYear: comp.tax_year,
   }, rates);
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));

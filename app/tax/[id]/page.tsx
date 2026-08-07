@@ -39,6 +39,8 @@ async function updateComputation(id: string, formData: FormData) {
     personalPensionContributions: num("personal_pension_contributions"),
     giftAidDonations: num("gift_aid_donations"),
     childBenefitReceived: num("child_benefit_received"),
+    marriageAllowanceTransferredOut: formData.get("marriage_allowance_transferred_out") === "on",
+    marriageAllowanceReceived: formData.get("marriage_allowance_received") === "on",
     taxYear: existing?.tax_year || "2026/27",
   };
 
@@ -68,6 +70,8 @@ async function updateComputation(id: string, formData: FormData) {
     personal_pension_contributions: input.personalPensionContributions,
     gift_aid_donations: input.giftAidDonations,
     child_benefit_received: input.childBenefitReceived,
+    marriage_allowance_transferred_out: input.marriageAllowanceTransferredOut,
+    marriage_allowance_received: input.marriageAllowanceReceived,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   }).eq("id", id);
@@ -118,6 +122,8 @@ export default async function TaxComputationDetailPage({
     personalPensionContributions: Number(comp.personal_pension_contributions),
     giftAidDonations: Number(comp.gift_aid_donations),
     childBenefitReceived: Number(comp.child_benefit_received),
+    marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
+    marriageAllowanceReceived: comp.marriage_allowance_received,
     taxYear: comp.tax_year,
   }, rates);
 
@@ -347,7 +353,7 @@ export default async function TaxComputationDetailPage({
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Income Tax Breakdown</h2>
             <div className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Personal Allowance {result.personalAllowance < 12570 ? "(tapered)" : ""}</span><span className="font-medium">{fmt(result.personalAllowance)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Personal Allowance {result.personalAllowance < 12570 ? (comp.marriage_allowance_transferred_out ? "(reduced — Marriage Allowance transferred out, and/or tapered)" : "(tapered)") : ""}</span><span className="font-medium">{fmt(result.personalAllowance)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Taxable Non-Dividend Income</span><span className="font-medium">{fmt(result.taxableNonDividend)}</span></div>
 
               <div className="border-t border-slate-100 pt-2 mt-2">
@@ -366,6 +372,9 @@ export default async function TaxComputationDetailPage({
                 )}
                 {result.foreignFinanceCostTaxReducer > 0 && (
                   <div className="flex justify-between text-green-600 font-medium"><span>Less: foreign property finance cost tax reducer</span><span>−{fmt(result.foreignFinanceCostTaxReducer)}</span></div>
+                )}
+                {result.marriageAllowanceReducer > 0 && (
+                  <div className="flex justify-between text-green-600 font-medium"><span>Less: Marriage Allowance tax reducer</span><span>−{fmt(result.marriageAllowanceReducer)}</span></div>
                 )}
                 <div className="flex justify-between font-medium border-t border-slate-50 pt-1 mt-1">
                   <span>Non-dividend tax after reducer{result.foreignTaxCreditRelief > 0 ? "s" : ""}</span>
@@ -538,7 +547,7 @@ export default async function TaxComputationDetailPage({
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for marriage allowance, student loans, property income losses, or Scottish tax rates. Always verify before filing.
+              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for student loans, property income losses, or Scottish tax rates. Always verify before filing.
             </p>
           </div>
 
@@ -586,6 +595,21 @@ export default async function TaxComputationDetailPage({
                     <input name="gift_aid_donations" type="number" step="0.01" min="0" defaultValue={comp.gift_aid_donations || 0}
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Marriage Allowance</p>
+                <p className="text-xs text-slate-400 mb-2">Only valid if neither party is a higher/additional rate taxpayer. Tick at most one.</p>
+                <div className="flex flex-col gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="marriage_allowance_transferred_out" type="checkbox" defaultChecked={comp.marriage_allowance_transferred_out} className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Transferring £1,260 of PA to spouse/civil partner</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="marriage_allowance_received" type="checkbox" defaultChecked={comp.marriage_allowance_received} className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Receiving Marriage Allowance from spouse/civil partner</span>
+                  </label>
                 </div>
               </div>
 

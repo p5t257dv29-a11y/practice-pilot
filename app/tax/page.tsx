@@ -33,6 +33,7 @@ export const TAX_RATES: Record<string, any> = {
     class4UpperRate: 0.02,
     hicbcThreshold: 60000, // High Income Child Benefit Charge starts here (adjusted net income)
     hicbcFullClawbackAt: 80000, // Child Benefit fully clawed back at this adjusted net income
+    marriageAllowanceTransfer: 1260, // 10% of Personal Allowance, rounded up to nearest £10
   },
 };
 
@@ -71,6 +72,8 @@ type TaxInput = {
   personalPensionContributions?: number; // relief-at-source, amount actually paid (net)
   giftAidDonations?: number; // amount actually paid (net)
   childBenefitReceived?: number; // annual Child Benefit received this tax year, if any
+  marriageAllowanceTransferredOut?: boolean; // this person is giving up £1,260 of their own PA to their spouse
+  marriageAllowanceReceived?: boolean; // this person is receiving the 20% tax reducer from their spouse
   taxYear: string;
 };
 
@@ -121,6 +124,14 @@ function computeCore(input: TaxInput, rates?: any) {
   if (adjustedNetIncome > r.paTaperStart) {
     const reduction = Math.floor((adjustedNetIncome - r.paTaperStart) / 2);
     personalAllowance = Math.max(0, r.personalAllowance - reduction);
+  }
+
+  // Marriage Allowance: the transferor gives up a fixed slice of their own
+  // PA. The recipient's side isn't a PA increase — it's a tax reducer
+  // applied later, capped at basic rate, which is why it's handled
+  // separately below rather than adding to personalAllowance here.
+  if (input.marriageAllowanceTransferredOut) {
+    personalAllowance = Math.max(0, personalAllowance - r.marriageAllowanceTransfer);
   }
 
   const paUsedAgainstNonSavings = Math.min(personalAllowance, nonSavingsIncome);
@@ -205,7 +216,8 @@ function computeCore(input: TaxInput, rates?: any) {
   const class4Upper = Math.max(0, input.selfEmploymentIncome - r.class4UpperLimit);
   const class4NI = Math.max(0, class4Basic) * r.class4MainRate + class4Upper * r.class4UpperRate;
 
-  const totalReducer = financeCostTaxReducer + foreignFinanceCostTaxReducer;
+  const marriageAllowanceReducer = input.marriageAllowanceReceived ? r.marriageAllowanceTransfer * r.basicRate : 0;
+  const totalReducer = financeCostTaxReducer + foreignFinanceCostTaxReducer + marriageAllowanceReducer;
   const nonDividendTaxAfterReducer = Math.max(0, nonDividendTax - totalReducer);
   const totalIncomeTax = nonDividendTaxAfterReducer + savingsTax + dividendTax;
 
@@ -241,6 +253,7 @@ function computeCore(input: TaxInput, rates?: any) {
     adjustedNetIncome,
     effectiveBasicRateLimit,
     effectiveAdditionalRateThreshold,
+    marriageAllowanceReducer,
     bands: {
       basicBandNonDiv, higherBandNonDiv, additionalBandNonDiv,
       savingsBasic, savingsHigher, savingsAdditional,
@@ -360,6 +373,8 @@ const client_id = get("client_id");
     personalPensionContributions: num("personal_pension_contributions"),
     giftAidDonations: num("gift_aid_donations"),
     childBenefitReceived: num("child_benefit_received"),
+    marriageAllowanceTransferredOut: formData.get("marriage_allowance_transferred_out") === "on",
+    marriageAllowanceReceived: formData.get("marriage_allowance_received") === "on",
     taxYear: tax_year,
   };
 
@@ -392,6 +407,8 @@ const client_id = get("client_id");
     personal_pension_contributions: input.personalPensionContributions,
     gift_aid_donations: input.giftAidDonations,
     child_benefit_received: input.childBenefitReceived,
+    marriage_allowance_transferred_out: input.marriageAllowanceTransferredOut,
+    marriage_allowance_received: input.marriageAllowanceReceived,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   });
@@ -475,6 +492,8 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
       personalPensionContributions: Number(comp.personal_pension_contributions),
       giftAidDonations: Number(comp.gift_aid_donations),
       childBenefitReceived: Number(comp.child_benefit_received),
+      marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
+      marriageAllowanceReceived: comp.marriage_allowance_received,
       taxYear: comp.tax_year,
     }, rates);
     const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
@@ -721,6 +740,23 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                       placeholder="Net amount paid" />
                   </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-900">Marriage Allowance</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Only valid if neither spouse/civil partner is a higher or additional rate taxpayer. Tick at most one — the transferor's own record gives up £1,260 of their Personal Allowance, and the recipient's own record (a separate computation) receives a £252 tax reducer.
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="marriage_allowance_transferred_out" type="checkbox" className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Transferring £1,260 of Personal Allowance to spouse/civil partner</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="marriage_allowance_received" type="checkbox" className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Receiving Marriage Allowance from spouse/civil partner</span>
+                  </label>
                 </div>
               </div>
 
