@@ -346,7 +346,7 @@ const result = await calculatePayRun({
 
   const netPay = result.netPay + expenses - otherDeductions;
 
-  await supabase.from("payroll_runs").insert({
+  const {error:insertError}=await supabase.from("payroll_runs").insert({
     employee_id: employeeId,
     client_id: clientId,
     batch_id: batchId,
@@ -376,6 +376,9 @@ expenses,
     net_pay: netPay,
     notes: get("notes"),
   });
+if (insertError) {
+    throw new Error(`Failed to save payroll run: ${insertError.message}`);
+  }
 
   revalidatePath("/payroll");
   revalidatePath("/payroll/run");

@@ -30,6 +30,9 @@ async function updateComputation(id: string, formData: FormData) {
     brought_forward_losses: num("brought_forward_losses"),
     loss_carried_back: num("loss_carried_back"),
     loss_carried_back_to_computation_id: get("loss_carried_back_to_computation_id") || null,
+    rd_scheme: get("rd_scheme") || null,
+    rd_qualifying_expenditure: num("rd_qualifying_expenditure"),
+    rd_paye_nic_liability: num("rd_paye_nic_liability"),
     associated_companies: parseInt(get("associated_companies")) || 0,
     main_pool_bfwd: num("main_pool_bfwd"),
     special_rate_pool_bfwd: num("special_rate_pool_bfwd"),
@@ -187,6 +190,12 @@ export default async function CorporationTaxDetailPage({
         {p.totalChargeableGains > 0 && (
           <div className="flex justify-between"><span className="text-slate-500">Add: Chargeable Gains (net of same-period losses)</span><span className="font-medium">{fmt(p.totalChargeableGains)}</span></div>
         )}
+        {p.rdecCredit > 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">Add: R&D Expenditure Credit (taxable)</span><span className="font-medium">{fmt(p.rdecCredit)}</span></div>
+        )}
+        {p.rdEnhancedDeduction > 0 && (
+          <div className="flex justify-between"><span className="text-slate-500">Less: ERIS Enhanced R&D Deduction</span><span className="font-medium text-red-600">({fmt(p.rdEnhancedDeduction)})</span></div>
+        )}
         <div className="border-t border-slate-100 pt-2 flex justify-between font-medium">
           <span>Profit Before Loss Relief</span>
           <span>{fmt(p.taxableProfitBeforeLosses)}</span>
@@ -206,10 +215,20 @@ export default async function CorporationTaxDetailPage({
             <span className="font-medium">{p.ct.band}</span>
           </div>
           <div className="flex justify-between"><span className="text-slate-500">Effective Rate</span><span className="font-medium">{(p.ct.effectiveRate * 100).toFixed(2)}%</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Corporation Tax Before R&D Credit</span><span className="font-medium">{fmt(p.ct.corporationTax)}</span></div>
+          {p.rdecUsedAgainstCT > 0 && (
+            <div className="flex justify-between text-emerald-700"><span>Less: R&D Credit Used Against CT</span><span>({fmt(p.rdecUsedAgainstCT)})</span></div>
+          )}
           <div className="flex justify-between font-bold text-base pt-1">
             <span>Corporation Tax Due</span>
-            <span>{fmt(p.ct.corporationTax)}</span>
+            <span>{fmt(p.netCorporationTaxDue)}</span>
           </div>
+          {(p.rdecPayable > 0 || p.erisPayableCredit > 0) && (
+            <div className="flex justify-between font-bold text-base text-emerald-700 pt-1">
+              <span>R&D Payable Credit</span>
+              <span>{fmt(p.rdecPayable + p.erisPayableCredit)}</span>
+            </div>
+          )}
         </div>
         {p.ca.additions.length > 0 && (
           <p className="text-xs text-slate-400 pt-2">
@@ -334,6 +353,45 @@ export default async function CorporationTaxDetailPage({
             </div>
           )}
 
+          {/* R&D Relief */}
+          {periods.some((p: any) => p.rdScheme !== "None") && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">R&D Relief</h2>
+              <div className={periods.length > 1 ? "mt-4 space-y-4" : "mt-4"}>
+                {periods.map((p: any, i: number) => p.rdScheme !== "None" && (
+                  <div key={i} className="space-y-2 text-sm">
+                    {periods.length > 1 && (
+                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                        {fmtDate(p.periodStart)} to {fmtDate(p.periodEnd)}
+                      </p>
+                    )}
+                    <div className="flex justify-between"><span className="text-slate-500">Scheme</span><span className="font-medium">{p.rdScheme === "Merged" ? "Merged RDEC scheme" : "ERIS (R&D-intensive)"}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Qualifying R&D expenditure</span><span className="font-medium">{fmt(p.rdQualifyingExpenditure)}</span></div>
+                    {p.rdScheme === "Merged" && (
+                      <>
+                        <div className="flex justify-between"><span className="text-slate-500">RDEC (20% of qualifying spend)</span><span className="font-medium">{fmt(p.rdecCredit)}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Used against CT liability</span><span className="font-medium">{fmt(p.rdecUsedAgainstCT)}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Payable cap (£20,000 + 300% of PAYE/NIC)</span><span className="font-medium">{fmt(p.payeNicCap)}</span></div>
+                        <div className="flex justify-between font-bold text-emerald-700"><span>Payable credit</span><span>{fmt(p.rdecPayable)}</span></div>
+                      </>
+                    )}
+                    {p.rdScheme === "ERIS" && (
+                      <>
+                        <div className="flex justify-between"><span className="text-slate-500">Enhanced deduction (86% of qualifying spend)</span><span className="font-medium">{fmt(p.rdEnhancedDeduction)}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Loss surrendered (capped at 186% of qualifying spend)</span><span className="font-medium">{fmt(p.erisSurrenderedLoss)}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Payable cap (£20,000 + 300% of PAYE/NIC)</span><span className="font-medium">{fmt(p.payeNicCap)}</span></div>
+                        <div className="flex justify-between font-bold text-emerald-700"><span>Payable credit (14.5% of surrendered loss)</span><span>{fmt(p.erisPayableCredit)}</span></div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-amber-700 mt-4 border-t border-slate-100 pt-3">
+                Doesn't check SME size limits, R&D intensity, or contracted-out R&D restrictions — confirm eligibility separately. If a loss is both surrendered under ERIS and carried back under s37 above, check the two elections aren't double-claiming against the same underlying loss — this isn't automatically prevented.
+              </p>
+            </div>
+          )}
+
           {/* Loss Carry-Back (s37) — only shown when this period made a loss */}
           {currentPeriodLoss > 0 && (
             <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
@@ -427,6 +485,14 @@ export default async function CorporationTaxDetailPage({
                 </div>
               </div>
             )}
+            {full.totalRdBenefit > 0 && (
+              <div className="mt-3 rounded-lg bg-emerald-900/40 border border-emerald-700 px-3 py-2">
+                <div className="flex justify-between text-sm font-bold text-emerald-300">
+                  <span>R&D payable credit</span>
+                  <span>{fmt(full.totalRdBenefit)}</span>
+                </div>
+              </div>
+            )}
             {netLossesCarriedForward > 0 && (
               <p className="mt-3 text-sm text-slate-300">{fmt(netLossesCarriedForward)} losses carried forward</p>
             )}
@@ -439,7 +505,7 @@ export default async function CorporationTaxDetailPage({
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              Uses 2026/27 Corporation Tax rates. Marginal relief assumes augmented profits equal taxable profits (no exempt group dividends). Doesn't yet account for R&D reliefs, group relief, or ring-fence profits. Loss carry-back is limited to the immediately preceding 12 months per standard s37 rules — doesn't account for any temporarily extended carry-back periods that may apply in specific circumstances. Always verify before filing.
+              Uses 2026/27 Corporation Tax rates. Marginal relief assumes augmented profits equal taxable profits (no exempt group dividends). R&D relief (merged scheme and ERIS) doesn't check SME size limits, R&D intensity, or contracted-out restrictions, and doesn't prevent double-counting between an ERIS loss surrender and s37 carry-back. Doesn't yet account for group relief or ring-fence profits. Loss carry-back is limited to the immediately preceding 12 months per standard s37 rules — doesn't account for any temporarily extended carry-back periods that may apply in specific circumstances. Always verify before filing.
             </p>
           </div>
 
@@ -519,6 +585,29 @@ export default async function CorporationTaxDetailPage({
                 <label className="block text-sm font-medium text-slate-700 mb-1">Brought Forward Losses (£)</label>
                 <input name="brought_forward_losses" type="number" step="0.01" min="0" defaultValue={comp.brought_forward_losses}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+              </div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3 space-y-2">
+                <p className="text-xs font-semibold text-emerald-800">R&D Relief</p>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Scheme</label>
+                  <select name="rd_scheme" defaultValue={comp.rd_scheme || ""}
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">No R&D claim</option>
+                    <option value="Merged">Merged RDEC scheme</option>
+                    <option value="ERIS">ERIS (R&D-intensive, loss-making SME)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Qualifying R&D Expenditure (£)</label>
+                  <input name="rd_qualifying_expenditure" type="number" step="0.01" min="0" defaultValue={comp.rd_qualifying_expenditure || 0}
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">PAYE/NIC Liability for Period (£)</label>
+                  <input name="rd_paye_nic_liability" type="number" step="0.01" min="0" defaultValue={comp.rd_paye_nic_liability || 0}
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  <p className="text-xs text-slate-400 mt-1">For the £20,000 + 300% payable credit cap.</p>
+                </div>
               </div>
               {currentPeriodLoss > 0 && (
                 <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3 space-y-2">

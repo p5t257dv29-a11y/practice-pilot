@@ -41,6 +41,8 @@ async function updateComputation(id: string, formData: FormData) {
     childBenefitReceived: num("child_benefit_received"),
     marriageAllowanceTransferredOut: formData.get("marriage_allowance_transferred_out") === "on",
     marriageAllowanceReceived: formData.get("marriage_allowance_received") === "on",
+    studentLoanPlan: get("student_loan_plan") || undefined,
+    hasPostgraduateLoan: formData.get("has_postgraduate_loan") === "on",
     taxYear: existing?.tax_year || "2026/27",
   };
 
@@ -72,6 +74,8 @@ async function updateComputation(id: string, formData: FormData) {
     child_benefit_received: input.childBenefitReceived,
     marriage_allowance_transferred_out: input.marriageAllowanceTransferredOut,
     marriage_allowance_received: input.marriageAllowanceReceived,
+    student_loan_plan: input.studentLoanPlan || null,
+    has_postgraduate_loan: input.hasPostgraduateLoan,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   }).eq("id", id);
@@ -93,11 +97,36 @@ export default async function TaxComputationDetailPage({
 
   const { data: comp, error } = await supabase
     .from("tax_computations")
-    .select("*, clients(client_name, email)")
+    .select("*, clients(client_name, email, spouse_client_id)")
     .eq("id", id)
     .single();
 
   if (error || !comp) notFound();
+
+  // --- Marriage Allowance spouse consistency check ---
+  // If this client has a spouse linked, look up the spouse's own computation
+  // for the same tax year and flag if the two sides don't match — e.g. this
+  // client claims to be receiving the allowance but the spouse's return
+  // doesn't show a matching transfer.
+  let spouseComp: any = null;
+  let spouseName: string | null = null;
+  const spouseClientId = (comp.clients as any)?.spouse_client_id;
+  if (spouseClientId) {
+    const { data: spouseClient } = await supabase
+      .from("clients")
+      .select("client_name")
+      .eq("id", spouseClientId)
+      .single();
+    spouseName = spouseClient?.client_name || null;
+
+    const { data: sc } = await supabase
+      .from("tax_computations")
+      .select("id, marriage_allowance_transferred_out, marriage_allowance_received")
+      .eq("client_id", spouseClientId)
+      .eq("tax_year", comp.tax_year)
+      .maybeSingle();
+    spouseComp = sc;
+  }
 
   const rates = await getTaxRates(comp.tax_year);
 
@@ -124,6 +153,8 @@ export default async function TaxComputationDetailPage({
     childBenefitReceived: Number(comp.child_benefit_received),
     marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
     marriageAllowanceReceived: comp.marriage_allowance_received,
+    studentLoanPlan: comp.student_loan_plan,
+    hasPostgraduateLoan: comp.has_postgraduate_loan,
     taxYear: comp.tax_year,
   }, rates);
 
@@ -137,6 +168,27 @@ export default async function TaxComputationDetailPage({
   const hasPensionOrGiftAid = Number(comp.personal_pension_contributions) > 0 || Number(comp.gift_aid_donations) > 0;
   const hasChildBenefit = Number(comp.child_benefit_received) > 0;
 
+  const { count: linkedGainsCount } = await supabase
+    .from("capital_gains_computations")
+    .select("id", { count: "exact", head: true })
+    .eq("linked_tax_computation_id", comp.id);
+  const hasLinkedGains = (linkedGainsCount || 0) > 0;
+
+  let marriageAllowanceWarning: string | null = null;
+  if (comp.marriage_allowance_transferred_out) {
+    if (!spouseClientId) {
+      marriageAllowanceWarning = "This client is transferring Marriage Allowance, but no spouse/civil partner is linked on their client record — add the link on the Details tab so this can be checked.";
+    } else if (!spouseComp?.marriage_allowance_received) {
+      marriageAllowanceWarning = `This client is transferring Marriage Allowance, but ${spouseName || "their linked spouse"}'s ${comp.tax_year} computation doesn't show a matching "Receiving" claim — check this is correct before filing.`;
+    }
+  } else if (comp.marriage_allowance_received) {
+    if (!spouseClientId) {
+      marriageAllowanceWarning = "This client is receiving Marriage Allowance, but no spouse/civil partner is linked on their client record — add the link on the Details tab so this can be checked.";
+    } else if (!spouseComp?.marriage_allowance_transferred_out) {
+      marriageAllowanceWarning = `This client is receiving Marriage Allowance, but ${spouseName || "their linked spouse"}'s ${comp.tax_year} computation doesn't show a matching "Transferring" claim — check this is correct before filing.`;
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
@@ -144,10 +196,18 @@ export default async function TaxComputationDetailPage({
           <a href="/tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
             ← Back to Tax
           </a>
-          <a href={`/tax/${id}/sa100`}
-            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-            View SA100 Summary →
-          </a>
+          <div className="flex items-center gap-2">
+            {hasLinkedGains && (
+              <a href={`/tax/${id}/sa108`}
+                className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                View SA108 (Capital Gains) →
+              </a>
+            )}
+            <a href={`/tax/${id}/sa100`}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+              View SA100 Summary →
+            </a>
+          </div>
         </div>
         <div className="mt-4">
           <h1 className="text-2xl font-bold text-slate-900">
@@ -161,6 +221,13 @@ export default async function TaxComputationDetailPage({
 
         {/* Left - breakdown */}
         <div className="lg:col-span-2 space-y-6">
+
+          {marriageAllowanceWarning && (
+            <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4">
+              <p className="text-sm font-bold text-amber-800">⚠ Marriage Allowance may not be consistent</p>
+              <p className="text-xs text-amber-700 mt-1">{marriageAllowanceWarning}</p>
+            </div>
+          )}
 
           {/* Income Summary */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
@@ -220,6 +287,34 @@ export default async function TaxComputationDetailPage({
               </div>
             </div>
           )}
+
+          {/* Student Loan Repayments */}
+          {comp.student_loan_plan || comp.has_postgraduate_loan ? (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Student Loan Repayments</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Calculated on total income of {fmt(result.totalIncome)} — not reduced by pension/Gift Aid relief, unlike the Personal Allowance taper.
+              </p>
+              <div className="mt-4 space-y-2 text-sm">
+                {comp.student_loan_plan && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">{comp.student_loan_plan.replace("Plan", "Plan ")} repayment (9%)</span>
+                    <span className="font-medium">{fmt(result.undergraduateStudentLoanRepayment)}</span>
+                  </div>
+                )}
+                {comp.has_postgraduate_loan && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Postgraduate Loan repayment (6%)</span>
+                    <span className="font-medium">{fmt(result.postgraduateStudentLoanRepayment)}</span>
+                  </div>
+                )}
+                <div className="border-t border-slate-100 pt-2 flex justify-between font-bold text-base">
+                  <span>Total Student Loan Repayment</span>
+                  <span>{fmt(result.totalStudentLoanRepayment)}</span>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {/* High Income Child Benefit Charge */}
           {hasChildBenefit && (
@@ -464,6 +559,9 @@ export default async function TaxComputationDetailPage({
               {result.hicbcCharge > 0 && (
                 <div className="flex justify-between"><span className="text-slate-300">High Income Child Benefit Charge</span><span>{fmt(result.hicbcCharge)}</span></div>
               )}
+              {result.totalStudentLoanRepayment > 0 && (
+                <div className="flex justify-between"><span className="text-slate-300">Student Loan Repayment</span><span>{fmt(result.totalStudentLoanRepayment)}</span></div>
+              )}
               <div className="border-t border-slate-700 pt-2 flex justify-between font-bold text-base">
                 <span>Total Due</span>
                 <span>{fmt(result.totalLiability)}</span>
@@ -547,7 +645,7 @@ export default async function TaxComputationDetailPage({
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for student loans, property income losses, or Scottish tax rates. Always verify before filing.
+              This is an estimate based on {comp.tax_year} rates for England, Wales & Northern Ireland. It does not account for property income losses or Scottish tax rates. Always verify before filing.
             </p>
           </div>
 
@@ -595,6 +693,27 @@ export default async function TaxComputationDetailPage({
                     <input name="gift_aid_donations" type="number" step="0.01" min="0" defaultValue={comp.gift_aid_donations || 0}
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Student Loan Repayments</p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Undergraduate Plan</label>
+                    <select name="student_loan_plan" defaultValue={comp.student_loan_plan || ""}
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                      <option value="">None</option>
+                      <option value="Plan1">Plan 1 (threshold £26,900)</option>
+                      <option value="Plan2">Plan 2 (threshold £29,385)</option>
+                      <option value="Plan4">Plan 4 — Scotland (threshold £33,795)</option>
+                      <option value="Plan5">Plan 5 (threshold £25,000)</option>
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="has_postgraduate_loan" type="checkbox" defaultChecked={comp.has_postgraduate_loan} className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Also has a Postgraduate Loan (threshold £21,000)</span>
+                  </label>
                 </div>
               </div>
 

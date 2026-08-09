@@ -59,6 +59,7 @@ async function updateClientRecord(id: string, formData: FormData) {
     requires_self_assessment: formData.get("requires_self_assessment") === "on",
     vat_stagger_group: get("vat_stagger_group") || null,
     assigned_staff: get("assigned_staff") || null,
+    spouse_client_id: get("spouse_client_id") || null,
   }).eq("id", id);
 
   revalidatePath(`/clients/${id}`);
@@ -924,6 +925,18 @@ const tabs = [
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Year End</label>
                   <input name="year_end" type="date" defaultValue={client.year_end || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Spouse / Civil Partner</label>
+                  <select name="spouse_client_id" defaultValue={client.spouse_client_id || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                    <option value="">None on record</option>
+                    {(individualClients || []).filter((c) => c.id !== id).map((c) => (
+                      <option key={c.id} value={c.id}>{c.client_name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Used to check Marriage Allowance transfers are consistent between both spouses' Personal Tax computations.
+                  </p>
                 </div>
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Registered Address</label>
@@ -1893,12 +1906,11 @@ const tabs = [
                           <a
                             href={isDisposing ? `/clients/${id}?tab=assets` : `/clients/${id}?tab=assets&dispose=${asset.id}`}
                             className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
-                          >a
+                          >
                             {isDisposing ? "Close" : "Dispose"}
                           </a>
-                          
+                          <a
                             href={`/fixed-assets/register?client=${id}&edit=${asset.id}`}
-                            <a
                             className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200 transition-colors"
                           >
                             Edit

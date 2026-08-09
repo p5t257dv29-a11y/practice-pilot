@@ -80,6 +80,8 @@ export default async function PublicTaxComputationPage({
     childBenefitReceived: Number(comp.child_benefit_received),
     marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
     marriageAllowanceReceived: comp.marriage_allowance_received,
+    studentLoanPlan: comp.student_loan_plan,
+    hasPostgraduateLoan: comp.has_postgraduate_loan,
     taxYear: comp.tax_year,
   }, rates);
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
@@ -314,6 +316,9 @@ export default async function PublicTaxComputationPage({
               )}
               {result.hicbcCharge > 0 && (
                 <div className="flex justify-between"><span className="text-slate-500">High Income Child Benefit Charge</span><span className="font-medium">{fmt(result.hicbcCharge)}</span></div>
+              )}
+              {result.totalStudentLoanRepayment > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Student Loan Repayment</span><span className="font-medium">{fmt(result.totalStudentLoanRepayment)}</span></div>
               )}
               <div className="flex justify-between font-bold border-t border-slate-100 pt-2">
                 <span>Total Liability</span>

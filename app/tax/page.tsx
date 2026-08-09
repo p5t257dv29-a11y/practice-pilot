@@ -34,6 +34,13 @@ export const TAX_RATES: Record<string, any> = {
     hicbcThreshold: 60000, // High Income Child Benefit Charge starts here (adjusted net income)
     hicbcFullClawbackAt: 80000, // Child Benefit fully clawed back at this adjusted net income
     marriageAllowanceTransfer: 1260, // 10% of Personal Allowance, rounded up to nearest £10
+    studentLoanPlan1Threshold: 26900,
+    studentLoanPlan2Threshold: 29385,
+    studentLoanPlan4Threshold: 33795,
+    studentLoanPlan5Threshold: 25000,
+    studentLoanPostgradThreshold: 21000,
+    studentLoanRate: 0.09,
+    studentLoanPostgradRate: 0.06,
   },
 };
 
@@ -74,6 +81,8 @@ type TaxInput = {
   childBenefitReceived?: number; // annual Child Benefit received this tax year, if any
   marriageAllowanceTransferredOut?: boolean; // this person is giving up £1,260 of their own PA to their spouse
   marriageAllowanceReceived?: boolean; // this person is receiving the 20% tax reducer from their spouse
+  studentLoanPlan?: string; // "Plan1" | "Plan2" | "Plan4" | "Plan5" | undefined/empty for none
+  hasPostgraduateLoan?: boolean;
   taxYear: string;
 };
 
@@ -254,6 +263,7 @@ function computeCore(input: TaxInput, rates?: any) {
     effectiveBasicRateLimit,
     effectiveAdditionalRateThreshold,
     marriageAllowanceReducer,
+    totalIncome,
     bands: {
       basicBandNonDiv, higherBandNonDiv, additionalBandNonDiv,
       savingsBasic, savingsHigher, savingsAdditional,
@@ -280,6 +290,30 @@ function calculateHICBC(childBenefitReceived: number, adjustedNetIncome: number,
   return { hicbcChargePercentage, hicbcCharge };
 }
 
+// Student loan repayments via Self Assessment: each active plan is
+// calculated independently against the same total income figure, then
+// summed — someone can have both an undergraduate plan and a postgraduate
+// loan running at the same time, paid on top of each other. Unlike the PA
+// taper and HICBC, this isn't reduced by pension/Gift Aid relief, so it
+// deliberately uses plain total income rather than adjusted net income.
+function calculateStudentLoan(studentLoanPlan: string | undefined, hasPostgraduateLoan: boolean | undefined, totalIncome: number, rates: any) {
+  const thresholds: Record<string, number> = {
+    Plan1: rates.studentLoanPlan1Threshold,
+    Plan2: rates.studentLoanPlan2Threshold,
+    Plan4: rates.studentLoanPlan4Threshold,
+    Plan5: rates.studentLoanPlan5Threshold,
+  };
+  let undergraduateRepayment = 0;
+  if (studentLoanPlan && thresholds[studentLoanPlan] !== undefined) {
+    undergraduateRepayment = Math.max(0, totalIncome - thresholds[studentLoanPlan]) * rates.studentLoanRate;
+  }
+  let postgraduateRepayment = 0;
+  if (hasPostgraduateLoan) {
+    postgraduateRepayment = Math.max(0, totalIncome - rates.studentLoanPostgradThreshold) * rates.studentLoanPostgradRate;
+  }
+  return { undergraduateRepayment, postgraduateRepayment, totalStudentLoanRepayment: undergraduateRepayment + postgraduateRepayment };
+}
+
 export function calculateTax(input: TaxInput, rates?: any) {
   const r = rates || TAX_RATES[input.taxYear] || TAX_RATES["2026/27"];
   const actual = computeCore(input, r);
@@ -303,8 +337,9 @@ export function calculateTax(input: TaxInput, rates?: any) {
   const totalIncomeTax = Math.max(0, actual.totalIncomeTax - foreignTaxCreditRelief);
 
   const { hicbcChargePercentage, hicbcCharge } = calculateHICBC(input.childBenefitReceived || 0, actual.adjustedNetIncome, r);
+  const studentLoan = calculateStudentLoan(input.studentLoanPlan, input.hasPostgraduateLoan, actual.totalIncome, r);
 
-  const totalLiability = totalIncomeTax + actual.class4NI + hicbcCharge;
+  const totalLiability = totalIncomeTax + actual.class4NI + hicbcCharge + studentLoan.totalStudentLoanRepayment;
 
   return {
     ...actual,
@@ -316,6 +351,9 @@ export function calculateTax(input: TaxInput, rates?: any) {
     unusedForeignTaxCredit,
     hicbcChargePercentage,
     hicbcCharge,
+    undergraduateStudentLoanRepayment: studentLoan.undergraduateRepayment,
+    postgraduateStudentLoanRepayment: studentLoan.postgraduateRepayment,
+    totalStudentLoanRepayment: studentLoan.totalStudentLoanRepayment,
   };
 }
 
@@ -375,6 +413,8 @@ const client_id = get("client_id");
     childBenefitReceived: num("child_benefit_received"),
     marriageAllowanceTransferredOut: formData.get("marriage_allowance_transferred_out") === "on",
     marriageAllowanceReceived: formData.get("marriage_allowance_received") === "on",
+    studentLoanPlan: get("student_loan_plan") || undefined,
+    hasPostgraduateLoan: formData.get("has_postgraduate_loan") === "on",
     taxYear: tax_year,
   };
 
@@ -409,6 +449,8 @@ const client_id = get("client_id");
     child_benefit_received: input.childBenefitReceived,
     marriage_allowance_transferred_out: input.marriageAllowanceTransferredOut,
     marriage_allowance_received: input.marriageAllowanceReceived,
+    student_loan_plan: input.studentLoanPlan || null,
+    has_postgraduate_loan: input.hasPostgraduateLoan,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
   });
@@ -494,6 +536,8 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
       childBenefitReceived: Number(comp.child_benefit_received),
       marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
       marriageAllowanceReceived: comp.marriage_allowance_received,
+      studentLoanPlan: comp.student_loan_plan,
+      hasPostgraduateLoan: comp.has_postgraduate_loan,
       taxYear: comp.tax_year,
     }, rates);
     const balanceDue = result.totalLiability - Number(comp.tax_paid_at_source);
@@ -739,6 +783,32 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
                     <input name="gift_aid_donations" type="number" step="0.01" min="0" defaultValue="0"
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                       placeholder="Net amount paid" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-900">Student Loan Repayments</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Calculated on total income (not reduced by pension/Gift Aid relief, unlike the Personal Allowance taper). An undergraduate plan and a postgraduate loan can both apply at once, paid on top of each other.
+                </p>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Undergraduate Plan</label>
+                    <select name="student_loan_plan" defaultValue=""
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                      <option value="">None</option>
+                      <option value="Plan1">Plan 1 (threshold £26,900)</option>
+                      <option value="Plan2">Plan 2 (threshold £29,385)</option>
+                      <option value="Plan4">Plan 4 — Scotland (threshold £33,795)</option>
+                      <option value="Plan5">Plan 5 (threshold £25,000)</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end pb-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input name="has_postgraduate_loan" type="checkbox" className="w-4 h-4 rounded" />
+                      <span className="text-sm font-medium text-slate-700">Also has a Postgraduate Loan (threshold £21,000)</span>
+                    </label>
                   </div>
                 </div>
               </div>

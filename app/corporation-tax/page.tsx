@@ -209,6 +209,8 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
   const otherDeductionsShares = apportionByDays(Number(comp.other_allowable_deductions), subPeriods);
   const profitOnDisposalShares = apportionByDays(Number(comp.accounting_profit_on_disposal || 0), subPeriods);
   const turnoverShares = apportionByDays(Number(comp.turnover), subPeriods);
+  const rdExpenditureShares = apportionByDays(Number(comp.rd_qualifying_expenditure || 0), subPeriods);
+  const rdPayeNicShares = apportionByDays(Number(comp.rd_paye_nic_liability || 0), subPeriods);
 
   let lossesBfwd = Number(comp.brought_forward_losses);
   const periods: any[] = [];
@@ -228,6 +230,23 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
     const { rows: gainRows, totalChargeableGains, totalPeriodLosses, unusedPeriodLosses } =
       await getChargeableGainsForPeriod(comp.client_id, sp.start, sp.end);
 
+    // R&D relief. Merged scheme: a 20% above-the-line credit, taxable as
+    // trading income (added to profit here), then used to directly
+    // discharge the CT liability afterwards — any excess beyond the CT due
+    // becomes a payable cash credit, capped at £20,000 + 300% of the
+    // period's PAYE/NIC liability. ERIS: an extra 86% deduction (on top of
+    // the 100% cost already in the accounts) reduces taxable profit, and a
+    // 14.5% payable credit is claimed on the resulting loss surrendered
+    // (capped at the lower of that loss and 186% of qualifying spend),
+    // subject to the same PAYE/NIC cap.
+    const rdScheme = comp.rd_scheme || "None";
+    const rdQualifyingExpenditure = rdExpenditureShares[i];
+    const rdPayeNicLiability = rdPayeNicShares[i];
+    const payeNicCap = Math.max(0, 20000 + 3 * rdPayeNicLiability);
+
+    const rdecCredit = rdScheme === "Merged" && rdQualifyingExpenditure > 0 ? rdQualifyingExpenditure * 0.20 : 0;
+    const rdEnhancedDeduction = rdScheme === "ERIS" && rdQualifyingExpenditure > 0 ? rdQualifyingExpenditure * 0.86 : 0;
+
     const taxableProfitBeforeLosses =
       accountingProfitShares[i] +
       depreciationShares[i] +
@@ -235,7 +254,9 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       ca.totalCapitalAllowances -
       otherDeductionsShares[i] -
       profitOnDisposalShares[i] +
-      totalChargeableGains;
+      totalChargeableGains +
+      rdecCredit -
+      rdEnhancedDeduction;
 
     const loss = applyLossRelief(taxableProfitBeforeLosses, lossesBfwd);
     lossesBfwd = loss.lossesCarriedForward;
@@ -246,6 +267,24 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       periodEnd: sp.end,
       associatedCompanies: comp.associated_companies,
     }, ctRates);
+
+    let rdecUsedAgainstCT = 0;
+    let rdecPayable = 0;
+    if (rdecCredit > 0) {
+      rdecUsedAgainstCT = Math.min(rdecCredit, ct.corporationTax);
+      const excess = rdecCredit - rdecUsedAgainstCT;
+      rdecPayable = Math.min(excess, payeNicCap);
+    }
+
+    let erisSurrenderedLoss = 0;
+    let erisPayableCredit = 0;
+    if (rdScheme === "ERIS" && rdQualifyingExpenditure > 0) {
+      const surrenderCap = rdQualifyingExpenditure * 1.86;
+      erisSurrenderedLoss = Math.min(loss.newLossThisPeriod, surrenderCap);
+      erisPayableCredit = Math.min(erisSurrenderedLoss * 0.145, payeNicCap);
+    }
+
+    const netCorporationTaxDue = Math.max(0, ct.corporationTax - rdecUsedAgainstCT);
 
     periods.push({
       periodStart: sp.start,
@@ -261,19 +300,31 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       totalChargeableGains,
       totalPeriodLosses,
       unusedPeriodLosses,
+      rdScheme,
+      rdQualifyingExpenditure,
+      rdecCredit,
+      rdecUsedAgainstCT,
+      rdecPayable,
+      rdEnhancedDeduction,
+      erisSurrenderedLoss,
+      erisPayableCredit,
+      payeNicCap,
+      netCorporationTaxDue,
       taxableProfitBeforeLosses,
       loss,
       ct,
     });
   }
 
-  const totalCorporationTax = periods.reduce((s, p) => s + p.ct.corporationTax, 0);
+  const totalCorporationTax = periods.reduce((s, p) => s + p.netCorporationTaxDue, 0);
+  const totalRdBenefit = periods.reduce((s, p) => s + p.rdecPayable + p.erisPayableCredit, 0);
   const finalPeriod = periods[periods.length - 1];
 
   return {
     isSplit,
     periods,
     totalCorporationTax,
+    totalRdBenefit,
     totalLossesCarriedForward: finalPeriod.loss.lossesCarriedForward,
     finalMainPoolClosingBalance: finalPeriod.ca.mainPoolClosingBalance,
     finalSpecialRateClosingBalance: finalPeriod.ca.specialRateClosingBalance,
@@ -300,6 +351,9 @@ async function createComputation(formData: FormData) {
     other_allowable_deductions: num("other_allowable_deductions"),
     accounting_profit_on_disposal: num("accounting_profit_on_disposal"),
     brought_forward_losses: num("brought_forward_losses"),
+    rd_scheme: get("rd_scheme") || null,
+    rd_qualifying_expenditure: num("rd_qualifying_expenditure"),
+    rd_paye_nic_liability: num("rd_paye_nic_liability"),
     associated_companies: parseInt(get("associated_companies")) || 0,
     main_pool_bfwd: num("main_pool_bfwd"),
     special_rate_pool_bfwd: num("special_rate_pool_bfwd"),
@@ -445,6 +499,7 @@ export default async function CorporationTaxPage({
           )}
           {totalLossesCarriedForward > 0 && ` · £${totalLossesCarriedForward.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} losses c/fwd`}
           {periods.reduce((s: number, p: any) => s + p.totalChargeableGains, 0) > 0 && ` · £${periods.reduce((s: number, p: any) => s + p.totalChargeableGains, 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} chargeable gains`}
+          {full.totalRdBenefit > 0 && ` · £${full.totalRdBenefit.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} R&D payable credit`}
         </p>
       </a>
       <div className="flex items-center gap-4">
@@ -676,6 +731,35 @@ export default async function CorporationTaxPage({
                     </label>
                     <input name="brought_forward_losses" type="number" step="0.01" min="0" defaultValue={suggestedLossesBfwd || 0}
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  </div>
+
+                  <div className="md:col-span-3 rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
+                    <h3 className="text-sm font-bold text-slate-900">R&amp;D Relief</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Choose the scheme the company is eligible for — this doesn't check SME size limits, R&D intensity, or loss-making status; confirm eligibility separately. Merged scheme: 20% credit, taxable, then discharges the CT bill. ERIS (loss-making, R&D-intensive SMEs only): extra 86% deduction plus a 14.5% payable credit on the surrendered loss. Both payable elements are capped at £20,000 + 300% of PAYE/NIC liability for the period.
+                    </p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Scheme</label>
+                        <select name="rd_scheme" defaultValue=""
+                          className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                          <option value="">No R&D claim</option>
+                          <option value="Merged">Merged RDEC scheme</option>
+                          <option value="ERIS">ERIS (R&D-intensive, loss-making SME)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Qualifying R&D Expenditure (£)</label>
+                        <input name="rd_qualifying_expenditure" type="number" step="0.01" min="0" defaultValue="0"
+                          className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">PAYE/NIC Liability for Period (£)</label>
+                        <input name="rd_paye_nic_liability" type="number" step="0.01" min="0" defaultValue="0"
+                          className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                          placeholder="For the payable credit cap" />
+                      </div>
+                    </div>
                   </div>
 
                   <div>
