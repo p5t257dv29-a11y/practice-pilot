@@ -33,7 +33,7 @@ const navSections = [
     ],
   },
   {
-    label: "Work",
+label: "Work",
     items: [
       { href: "/jobs", label: "Jobs", icon: "💼" },
       { href: "/accounts-production", label: "Accounts Production", icon: "📊" },
@@ -43,11 +43,11 @@ const navSections = [
       { href: "/capital-gains", label: "Capital Gains", icon: "📈" },
       { href: "/tax", label: "Personal Tax", icon: "🧮" },
       { href: "/partnership-tax", label: "Partnership Tax", icon: "🤝" },
+      { href: "/mtd", label: "MTD Income Sources", icon: "🧾" },
       { href: "/p11d", label: "P11D", icon: "🚗" },
       { href: "/payroll", label: "Payroll", icon: "💷" },
       { href: "/tax-planning", label: "Tax Planning", icon: "📈" },
-    ],
-  },
+    ],  },
   {
     label: "Settings",
     items: [
