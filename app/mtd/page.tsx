@@ -82,6 +82,7 @@ async function createIncomeSource(formData: FormData) {
       description: get("description") || null,
       start_date: get("start_date") || null,
       notes: get("notes") || null,
+      job_id: get("job_id") || null,
     })
     .select()
     .single();
@@ -118,9 +119,9 @@ async function deleteIncomeSource(id: string) {
 export default async function MTDIncomeSourcesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mode?: string }>;
+  searchParams: Promise<{ mode?: string; job?: string }>;
 }) {
-  const { mode } = await searchParams;
+  const { mode, job: jobId } = await searchParams;
 
   const [{ data: sources, error }, { data: clients }] = await Promise.all([
     supabase
@@ -228,8 +229,14 @@ export default async function MTDIncomeSourcesPage({
             <p className="text-sm text-slate-500 mt-0.5">
               For a solely-owned trade or property, just fill in one owner at 100%. For jointly-owned property, add each owner with their own percentage — each will get their own quarterly figures later.
             </p>
+            {jobId && (
+              <div className="mt-3 rounded-xl bg-blue-50 border border-blue-100 p-3 text-sm text-blue-800">
+                This will be linked to the job you started from — its "Start Work" button will come straight here next time.
+              </div>
+            )}
 
             <form action={createIncomeSource} className="mt-6 grid gap-4 md:grid-cols-3">
+              {jobId && <input type="hidden" name="job_id" value={jobId} />}
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Source Type *</label>
                 <select name="source_type" required defaultValue=""

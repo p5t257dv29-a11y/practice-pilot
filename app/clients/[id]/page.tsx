@@ -530,6 +530,7 @@ export default async function ClientDetailPage({
     { data: generalDocuments },
     { data: messages },
     { data: hmrcAuthorisations },
+    { data: mtdOwnerships },
   ] = await Promise.all([
     supabase.from("clients").select("*").eq("id", id).single(),
     supabase.from("company_officers").select("*, linked_client:linked_client_id(id, client_name)").eq("client_id", id).order("is_active", { ascending: false }),
@@ -551,6 +552,7 @@ export default async function ClientDetailPage({
     supabase.from("client_general_documents").select("*").eq("client_id", id).order("uploaded_at", { ascending: false }),
   supabase.from("client_messages").select("*").eq("client_id", id).order("created_at", { ascending: true }),
   supabase.from("client_hmrc_authorisations").select("*").eq("client_id", id),
+  supabase.from("mtd_income_source_owners").select("*, mtd_income_sources(id, source_type, business_name, description, is_active)").eq("client_id", id).order("created_at", { ascending: false }),
   ]);
 
   if (error || !client) notFound();
@@ -669,6 +671,7 @@ const tabs = [
     { key: "directors", label: `Directors (${officers?.filter(o => o.is_active).length ?? 0})` },
     { key: "pscs", label: `PSCs (${pscs?.filter(p => p.is_active).length ?? 0})` },
     { key: "shareholdings", label: `Shareholdings (${shareholdings?.length ?? 0})` },
+    { key: "mtd", label: `MTD (${mtdOwnerships?.length ?? 0})` },
   ];
 
   return (
@@ -2270,6 +2273,47 @@ const tabs = [
                   Add Shareholding
                 </button>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* MTD TAB */}
+        {tab === "mtd" && (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">MTD Income Sources</h2>
+              <a href="/mtd?mode=new" className="text-xs font-semibold text-blue-600 hover:underline">+ New Income Source →</a>
+            </div>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Digital records this client is an owner of — solely, or jointly with someone else.
+            </p>
+
+            <div className="mt-4 space-y-2">
+              {(mtdOwnerships || []).map((o: any) => {
+                const source = o.mtd_income_sources;
+                if (!source) return null;
+                return (
+                  <a key={o.id} href={`/mtd/${source.id}`}
+                    className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-slate-900">{source.business_name || source.description || source.source_type}</p>
+                        <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-slate-100 text-slate-600">{source.source_type}</span>
+                        {!source.is_active && (
+                          <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-red-100 text-red-700">Inactive</span>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-500 mt-0.5">{o.ownership_percentage}% owned by this client</p>
+                    </div>
+                    <span className="text-xs font-semibold text-blue-600">View →</span>
+                  </a>
+                );
+              })}
+              {(!mtdOwnerships || mtdOwnerships.length === 0) && (
+                <p className="text-sm text-slate-500 text-center py-8">
+                  No MTD income sources linked to this client yet.
+                </p>
+              )}
             </div>
           </div>
         )}

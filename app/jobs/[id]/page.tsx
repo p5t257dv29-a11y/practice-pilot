@@ -206,7 +206,8 @@ export default async function JobDetailPage({
 { data: trialBalance },
     { data: ctComputation },
     { data: taxComputation },
-    { data: invoices },    { data: writeoffs },
+    { data: cgtComputation },
+    { data: mtdIncomeSource },    { data: invoices },    { data: writeoffs },
     { data: jobNotes },
   ] = await Promise.all([
 supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).single(),
@@ -217,7 +218,8 @@ supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).sing
     supabase.from("time_entries").select("*").eq("job_id", id).order("date", { ascending: false }),
 supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("corporation_tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),supabase.from("capital_gains_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("invoices").select("subtotal, status").eq("job_id", id),    supabase.from("wip_writeoffs").select("*").eq("job_id", id).order("created_at", { ascending: false }),
     supabase.from("job_notes").select("*").eq("job_id", id).order("created_at", { ascending: false }),
   ]);
@@ -256,13 +258,22 @@ supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at"
       ? `/corporation-tax/${ctComputation.id}`
       : `/corporation-tax?mode=new&client=${job.client_id}&job=${id}`;
     startWorkLabel = ctComputation ? "View CT Computation" : "Prepare CT Computation";
-  } else if (job.job_type === "Self Assessment") {
+} else if (job.job_type === "Self Assessment") {
     startWorkHref = taxComputation
       ? `/tax/${taxComputation.id}`
       : `/tax?mode=new&client=${job.client_id}&job=${id}`;
     startWorkLabel = taxComputation ? "View Tax Return" : "Prepare Tax Return";
-  }
-  return (
+  } else if (job.job_type === "Capital Gains Tax") {
+    startWorkHref = cgtComputation
+      ? `/capital-gains/${cgtComputation.id}`
+      : `/capital-gains?mode=new&client=${job.client_id}&job=${id}`;
+    startWorkLabel = cgtComputation ? "View CGT Computation" : "Prepare CGT Computation";
+  } else if (job.job_type === "MTD Quarterly Update") {
+    startWorkHref = mtdIncomeSource
+      ? `/mtd/${mtdIncomeSource.id}`
+      : `/mtd?mode=new&job=${id}`;
+    startWorkLabel = mtdIncomeSource ? "View MTD Records" : "Set Up MTD Records";
+  }  return (
     <div className="p-8">
       <a href="/jobs" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
         Back to Jobs
@@ -357,9 +368,9 @@ supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at"
                     <option>Bookkeeping</option>
                     <option>Management Accounts</option>
                     <option>Companies House Filing</option>
-                    <option>Capital Gains Tax</option>
+<option>Capital Gains Tax</option>
                     <option>Partnership Tax</option>
-                    <option>P11D / Benefits in Kind</option>
+                    <option>MTD Quarterly Update</option>                    <option>P11D / Benefits in Kind</option>
                     <option>Other</option>
                   </select>
                 </div>
