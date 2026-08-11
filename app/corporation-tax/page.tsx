@@ -105,6 +105,7 @@ export function calculateCorporationTax(input: {
   periodStart: string;
   periodEnd: string;
   associatedCompanies: number;
+  exemptDistributions?: number; // dividends from non-group companies — included in augmented profits for band/relief purposes only, never taxed
   taxYear?: string;
 }, liveRates?: any) {
   const rates = liveRates || CT_RATES[input.taxYear || "2026/27"] || CT_RATES["2026/27"];
@@ -116,23 +117,36 @@ export function calculateCorporationTax(input: {
   const smallProfitsThreshold = (rates.smallProfitsThreshold * (periodMonths / 12)) / divisor;
   const mainRateThreshold = (rates.mainRateThreshold * (periodMonths / 12)) / divisor;
 
-  const profit = Math.max(0, input.taxableProfit);
+  // Which band a company falls into — and the precise marginal relief given
+  // — is tested against "augmented profits" (taxable profit plus exempt
+  // dividends received from non-group companies) per CTA 2010 s.19, even
+  // though the tax itself is only ever charged on taxable profit. When
+  // there are no exempt distributions, augmented profits equal taxable
+  // profits and this collapses to exactly the same result as before.
+  const profit = Math.max(0, input.taxableProfit); // N — taxable total profits
+  const augmentedProfit = profit + Math.max(0, input.exemptDistributions || 0); // A — augmented profits
+
   let corporationTax = 0;
   let marginalRelief = 0;
   let band = "";
   let effectiveRate = 0;
 
-  if (profit <= smallProfitsThreshold) {
+  if (augmentedProfit <= smallProfitsThreshold) {
     corporationTax = profit * rates.smallProfitsRate;
     band = "Small Profits Rate";
     effectiveRate = rates.smallProfitsRate;
-  } else if (profit >= mainRateThreshold) {
+  } else if (augmentedProfit >= mainRateThreshold) {
     corporationTax = profit * rates.mainRate;
     band = "Main Rate";
     effectiveRate = rates.mainRate;
   } else {
     const taxAtMainRate = profit * rates.mainRate;
-    marginalRelief = (mainRateThreshold - profit) * rates.marginalReliefFraction;
+    // F × (U − A) × (N / A) — CTA 2010 s.19(2). The N/A ratio only matters
+    // when augmented profits exceed taxable profits (i.e. there are exempt
+    // distributions); otherwise it's 1 and this is the familiar formula.
+    marginalRelief = augmentedProfit > 0
+      ? rates.marginalReliefFraction * (mainRateThreshold - augmentedProfit) * (profit / augmentedProfit)
+      : 0;
     corporationTax = taxAtMainRate - marginalRelief;
     band = "Marginal Relief";
     effectiveRate = profit > 0 ? corporationTax / profit : 0;
@@ -143,6 +157,7 @@ export function calculateCorporationTax(input: {
     smallProfitsThreshold,
     mainRateThreshold,
     profit,
+    augmentedProfit,
     corporationTax,
     marginalRelief,
     band,
@@ -211,6 +226,7 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
   const turnoverShares = apportionByDays(Number(comp.turnover), subPeriods);
   const rdExpenditureShares = apportionByDays(Number(comp.rd_qualifying_expenditure || 0), subPeriods);
   const rdPayeNicShares = apportionByDays(Number(comp.rd_paye_nic_liability || 0), subPeriods);
+  const exemptDistributionShares = apportionByDays(Number(comp.exempt_distributions_received || 0), subPeriods);
 
   let lossesBfwd = Number(comp.brought_forward_losses);
   const periods: any[] = [];
@@ -266,6 +282,7 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       periodStart: sp.start,
       periodEnd: sp.end,
       associatedCompanies: comp.associated_companies,
+      exemptDistributions: exemptDistributionShares[i],
     }, ctRates);
 
     let rdecUsedAgainstCT = 0;
@@ -295,6 +312,7 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
       disallowableShare: disallowableShares[i],
       otherDeductionsShare: otherDeductionsShares[i],
       profitOnDisposalShare: profitOnDisposalShares[i],
+      exemptDistributionShare: exemptDistributionShares[i],
       ca,
       gainRows,
       totalChargeableGains,
@@ -331,6 +349,84 @@ export async function calculateFullCorporationTax(comp: any, assets: any[], ctRa
   };
 }
 
+// Quarterly instalment payments: required once a company's taxable profit
+// exceeds £1.5m (pro-rated by period length, divided by associated
+// companies) — the same threshold-scaling pattern as the small-profits/main
+// rate bands. This is a payment-schedule feature, not a tax calculation
+// change — it doesn't affect what's owed, only when.
+export function getQuarterlyInstalmentSchedule(input: {
+  periodStart: string;
+  periodEnd: string;
+  periodMonths: number;
+  taxableProfit: number;
+  augmentedProfit?: number; // for the large/very-large threshold tests — defaults to taxableProfit if there are no exempt distributions
+  corporationTax: number;
+  associatedCompanies: number;
+}) {
+  const divisor = input.associatedCompanies + 1;
+  const largeThreshold = (1500000 * (input.periodMonths / 12)) / divisor;
+  const veryLargeThreshold = (20000000 * (input.periodMonths / 12)) / divisor;
+  const testProfit = input.augmentedProfit ?? input.taxableProfit;
+
+  if (input.periodMonths < 3 || testProfit <= largeThreshold || input.corporationTax <= 0) {
+    return { instalmentsRequired: false, isVeryLarge: false, instalments: [] as { date: string; amount: number }[], largeThreshold, veryLargeThreshold };
+  }
+
+  const isVeryLarge = testProfit > veryLargeThreshold;
+  const periodEndDate = new Date(input.periodEnd);
+  const periodStartDate = new Date(input.periodStart);
+
+  let dates: Date[] = [];
+
+  if (isVeryLarge) {
+    // Very large companies: quarterly from month 3 of the period, ending on
+    // the period end itself. Shorter-period mechanics for very large
+    // companies specifically aren't modelled here — always verify for a
+    // very large company with a non-standard period length.
+    let d = new Date(periodStartDate);
+    d.setUTCMonth(d.getUTCMonth() + 3);
+    while (d < periodEndDate) {
+      dates.push(new Date(d));
+      d = new Date(d);
+      d.setUTCMonth(d.getUTCMonth() + 3);
+    }
+    dates.push(new Date(periodEndDate));
+  } else {
+    // Large companies: final instalment is fixed at 3 months + 14 days
+    // after period end; each earlier instalment is exactly 3 months before
+    // that; any date earlier than 6 months + 13 days after the period start
+    // is dropped — naturally reducing a short period to fewer instalments.
+    const finalDate = new Date(periodEndDate);
+    finalDate.setUTCMonth(finalDate.getUTCMonth() + 3);
+    finalDate.setUTCDate(finalDate.getUTCDate() + 14);
+
+    const cutoff = new Date(periodStartDate);
+    cutoff.setUTCMonth(cutoff.getUTCMonth() + 6);
+    cutoff.setUTCDate(cutoff.getUTCDate() + 13);
+
+    let d = new Date(finalDate);
+    while (d >= cutoff) {
+      dates.unshift(new Date(d));
+      d = new Date(d);
+      d.setUTCMonth(d.getUTCMonth() - 3);
+    }
+  }
+
+  // Splits the liability equally across whichever instalments remain — a
+  // simplification of HMRC's precise cumulative formula for partial
+  // periods, same class of approximation as the day-averaged period
+  // apportionment used elsewhere. Always verify for a non-standard period.
+  const numInstalments = dates.length || 1;
+  const perInstalment = input.corporationTax / numInstalments;
+
+  const instalments = dates.map((d) => ({
+    date: d.toISOString().split("T")[0],
+    amount: perInstalment,
+  }));
+
+  return { instalmentsRequired: true, isVeryLarge, instalments, largeThreshold, veryLargeThreshold };
+}
+
 async function createComputation(formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -354,6 +450,7 @@ async function createComputation(formData: FormData) {
     rd_scheme: get("rd_scheme") || null,
     rd_qualifying_expenditure: num("rd_qualifying_expenditure"),
     rd_paye_nic_liability: num("rd_paye_nic_liability"),
+    exempt_distributions_received: num("exempt_distributions_received"),
     associated_companies: parseInt(get("associated_companies")) || 0,
     main_pool_bfwd: num("main_pool_bfwd"),
     special_rate_pool_bfwd: num("special_rate_pool_bfwd"),
@@ -759,6 +856,18 @@ export default async function CorporationTaxPage({
                           className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                           placeholder="For the payable credit cap" />
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+                    <h3 className="text-sm font-bold text-slate-900">Augmented Profits</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Only relevant if this company received dividends from other companies it doesn't hold a 51%+ stake in (i.e. not group companies) — common for holding-company structures with minority stakes. Which CT band applies, and the precise marginal relief given, is tested against taxable profit plus these dividends — even though only the taxable profit itself is ever actually taxed. Leave at £0 if not applicable.
+                    </p>
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Exempt Dividends Received from Non-Group Companies (£)</label>
+                      <input name="exempt_distributions_received" type="number" step="0.01" min="0" defaultValue="0"
+                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                     </div>
                   </div>
 

@@ -57,6 +57,54 @@ async function updateIncomeSource(sourceId: string, formData: FormData) {
   revalidatePath(`/mtd/${sourceId}`);
 }
 
+// Updates up to four owner slots for an income source. If an owner's
+// percentage is corrected but the client stays the same, sync history
+// (synced_income etc.) is preserved — the delta-sync system recomputes from
+// the current percentage each time anyway, so it naturally pushes just the
+// difference. If the client is genuinely swapped to a different person,
+// sync history is reset to zero, since it represented what was already
+// pushed to the OLD person's tax return, not the new one.
+async function updateOwners(sourceId: string, formData: FormData) {
+  "use server";
+  const get = (key: string) => String(formData.get(key) || "").trim();
+  const num = (key: string) => parseFloat(get(key)) || 0;
+
+  for (let i = 1; i <= 4; i++) {
+    const ownerId = get(`owner_${i}_id`);
+    const clientId = get(`owner_${i}_client_id`);
+    const pct = num(`owner_${i}_percentage`);
+
+    if (ownerId && !clientId) {
+      const { error: deleteError } = await supabase.from("mtd_income_source_owners").delete().eq("id", ownerId);
+      if (deleteError) throw new Error(`Failed to remove owner: ${deleteError.message}`);
+    } else if (ownerId && clientId && pct > 0) {
+      const { data: existingOwner } = await supabase.from("mtd_income_source_owners").select("client_id").eq("id", ownerId).single();
+      const clientChanged = existingOwner && existingOwner.client_id !== clientId;
+
+      const updates: any = { client_id: clientId, ownership_percentage: pct };
+      if (clientChanged) {
+        updates.synced_income = 0;
+        updates.synced_expenses = 0;
+        updates.synced_finance_costs = 0;
+        updates.synced_tax_year = null;
+        updates.synced_at = null;
+      }
+      const { error: ownerUpdateErr } = await supabase.from("mtd_income_source_owners").update(updates).eq("id", ownerId);
+      if (ownerUpdateErr) throw new Error(`Failed to update owner: ${ownerUpdateErr.message}`);
+    } else if (!ownerId && clientId && pct > 0) {
+      const { error: ownerInsertErr } = await supabase.from("mtd_income_source_owners").insert({
+        income_source_id: sourceId,
+        client_id: clientId,
+        ownership_percentage: pct,
+      });
+      if (ownerInsertErr) throw new Error(`Failed to add owner: ${ownerInsertErr.message}`);
+    }
+  }
+
+  revalidatePath(`/mtd/${sourceId}`);
+  revalidatePath("/mtd");
+}
+
 const FINANCE_COST_CATEGORY = "Loan Interest & Finance Costs";
 
 // Syncs one owner's annual share of this income source into their own
@@ -183,6 +231,12 @@ export default async function MTDIncomeSourceDetailPage({
     .eq("income_source_id", id)
     .order("transaction_date", { ascending: false });
 
+  const { data: eligibleClients } = await supabase
+    .from("clients")
+    .select("id, client_name")
+    .in("entity_type", ["Individual", "Sole Trader"])
+    .order("client_name", { ascending: true });
+
   const owners = source.mtd_income_source_owners || [];
   const totalPct = owners.reduce((s: number, o: any) => s + Number(o.ownership_percentage), 0);
   const categories = MTD_CATEGORIES[source.source_type] || MTD_CATEGORIES["Self-Employment"];
@@ -237,6 +291,7 @@ export default async function MTDIncomeSourceDetailPage({
   });
 
   const updateWithId = updateIncomeSource.bind(null, id);
+  const updateOwnersWithId = updateOwners.bind(null, id);
   const addTransactionWithId = addTransaction.bind(null, id);
 
   return (
@@ -513,8 +568,49 @@ export default async function MTDIncomeSourceDetailPage({
               </button>
             </form>
             <p className="text-xs text-slate-400 mt-3">
-              To change owners or their percentages, this needs a small owner-editing panel we haven't built yet — for now, delete and recreate the income source with the correct splits if they change.
+              To delete this income source entirely, or change its type, use the list page.
             </p>
+          </div>
+
+          {/* Edit Owners & Splits */}
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Owners & Splits</h2>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Correcting a percentage keeps that owner's sync history intact — the next sync just pushes the difference. Swapping to a different person resets their sync history, since it belonged to whoever was there before.
+            </p>
+            <form action={updateOwnersWithId} className="mt-4 space-y-3">
+              {[0, 1, 2, 3].map((idx) => {
+                const existing = owners[idx];
+                return (
+                  <div key={idx} className="grid gap-3 md:grid-cols-3 items-end">
+                    {existing && <input type="hidden" name={`owner_${idx + 1}_id`} value={existing.id} />}
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Owner {idx + 1}</label>
+                      <select name={`owner_${idx + 1}_client_id`} defaultValue={existing?.clients?.id || ""}
+                        className="w-full rounded-xl border border-slate-200 p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-400">
+                        <option value="">None</option>
+                        {(eligibleClients || []).map((c: any) => (
+                          <option key={c.id} value={c.id}>{c.client_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Percentage</label>
+                      <input name={`owner_${idx + 1}_percentage`} type="number" step="0.01" min="0" max="100"
+                        defaultValue={existing ? existing.ownership_percentage : ""}
+                        className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="text-xs text-slate-400">
+                Clear an owner's dropdown back to "None" and save to remove them. Percentages should add up to 100%.
+              </p>
+              <button type="submit"
+                className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Save Owners
+              </button>
+            </form>
           </div>
         </div>
       </div>

@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
-import { getCtRates, calculateFullCorporationTax, calculateCorporationTax } from "../page";
+import { getCtRates, calculateFullCorporationTax, calculateCorporationTax, getQuarterlyInstalmentSchedule } from "../page";
 import { calculateS455 } from "../../directors-loan-account/page";
 import SendCTButton from "../../send-ct-button";
 
@@ -33,6 +33,7 @@ async function updateComputation(id: string, formData: FormData) {
     rd_scheme: get("rd_scheme") || null,
     rd_qualifying_expenditure: num("rd_qualifying_expenditure"),
     rd_paye_nic_liability: num("rd_paye_nic_liability"),
+    exempt_distributions_received: num("exempt_distributions_received"),
     associated_companies: parseInt(get("associated_companies")) || 0,
     main_pool_bfwd: num("main_pool_bfwd"),
     special_rate_pool_bfwd: num("special_rate_pool_bfwd"),
@@ -95,6 +96,22 @@ export default async function CorporationTaxDetailPage({
   const { periods, isSplit, totalCorporationTax, totalLossesCarriedForward } = full;
   const finalPeriod = periods[periods.length - 1];
   const currentPeriodLoss = finalPeriod.loss.newLossThisPeriod;
+
+  // Quarterly instalment payments — computed per sub-period, since a split
+  // accounting period (over 12 months) has two separate CT600s, each with
+  // its own instalment obligation if it's large enough.
+  const instalmentSchedules = periods.map((p: any) =>
+    getQuarterlyInstalmentSchedule({
+      periodStart: p.periodStart,
+      periodEnd: p.periodEnd,
+      periodMonths: p.ct.periodMonths,
+      taxableProfit: p.loss.taxableProfitAfterLosses,
+      augmentedProfit: p.ct.augmentedProfit,
+      corporationTax: p.netCorporationTaxDue,
+      associatedCompanies: comp.associated_companies,
+    })
+  );
+  const anyInstalmentsRequired = instalmentSchedules.some((s: any) => s.instalmentsRequired);
 
   // --- s37 Loss Carry-Back ---
   const twelveMonthsBeforeStart = new Date(comp.period_start);
@@ -210,6 +227,12 @@ export default async function CorporationTaxDetailPage({
           <span className="font-medium">{fmt(p.loss.lossesCarriedForward)}</span>
         </div>
         <div className="border-t border-slate-100 pt-2 mt-2">
+          {p.exemptDistributionShare > 0 && (
+            <>
+              <div className="flex justify-between"><span className="text-slate-500">Exempt Dividends (non-group)</span><span className="font-medium">{fmt(p.exemptDistributionShare)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Augmented Profit (band test only)</span><span className="font-medium">{fmt(p.ct.augmentedProfit)}</span></div>
+            </>
+          )}
           <div className="flex justify-between">
             <span className="text-slate-500">Band</span>
             <span className="font-medium">{p.ct.band}</span>
@@ -307,6 +330,47 @@ export default async function CorporationTaxDetailPage({
               </div>
             )}
           </div>
+
+          {/* Quarterly Instalment Payments — only shown when a sub-period is large enough to require them */}
+          {anyInstalmentsRequired && (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold text-slate-900">Quarterly Instalment Payments</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Required because taxable profit exceeds £1.5m (pro-rated for period length, divided by associated companies) — paid in instalments instead of the usual nine-months-and-a-day rule.
+              </p>
+              <div className={periods.length > 1 ? "mt-4 space-y-4" : "mt-4"}>
+                {periods.map((p: any, i: number) => {
+                  const schedule = instalmentSchedules[i];
+                  if (!schedule.instalmentsRequired) return null;
+                  return (
+                    <div key={i}>
+                      {periods.length > 1 && (
+                        <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-2">
+                          CT600 {i + 1} of {periods.length} · {fmtDate(p.periodStart)} to {fmtDate(p.periodEnd)}
+                        </p>
+                      )}
+                      {schedule.isVeryLarge && (
+                        <p className="text-xs text-amber-700 mb-2">
+                          Very large company (taxable profit over {fmt(schedule.veryLargeThreshold)}) — shorter-period instalment mechanics for very large companies aren't modelled here if this period isn't a standard 12 months; always verify.
+                        </p>
+                      )}
+                      <div className="space-y-1.5 text-sm">
+                        {schedule.instalments.map((inst: any, idx: number) => (
+                          <div key={idx} className="flex justify-between rounded-lg bg-slate-50 px-3 py-2">
+                            <span className="text-slate-500">Instalment {idx + 1} of {schedule.instalments.length} — {fmtDate(inst.date)}</span>
+                            <span className="font-medium text-slate-900">{fmt(inst.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-slate-400 mt-3">
+                Splits the liability equally across whichever instalments apply — HMRC's precise formula for partial periods weights slightly differently. Always verify before relying on these dates or amounts.
+              </p>
+            </div>
+          )}
 
           {/* Chargeable Gains — linked from the Capital Gains module, per sub-period */}
           {periods.some((p: any) => p.gainRows.length > 0) && (
@@ -497,15 +561,17 @@ export default async function CorporationTaxDetailPage({
               <p className="mt-3 text-sm text-slate-300">{fmt(netLossesCarriedForward)} losses carried forward</p>
             )}
             <p className="mt-4 text-xs text-slate-400">
-              {isSplit
-                ? "Each CT600 is due nine months and one day after the end of its own accounting period."
-                : "Due nine months and one day after the end of the accounting period."}
+              {anyInstalmentsRequired
+                ? "Payable in quarterly instalments — see the schedule above, not the usual nine-months-and-a-day rule."
+                : isSplit
+                  ? "Each CT600 is due nine months and one day after the end of its own accounting period."
+                  : "Due nine months and one day after the end of the accounting period."}
             </p>
           </div>
 
           <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
             <p className="text-xs text-yellow-800">
-              Uses 2026/27 Corporation Tax rates. Marginal relief assumes augmented profits equal taxable profits (no exempt group dividends). R&D relief (merged scheme and ERIS) doesn't check SME size limits, R&D intensity, or contracted-out restrictions, and doesn't prevent double-counting between an ERIS loss surrender and s37 carry-back. Doesn't yet account for group relief or ring-fence profits. Loss carry-back is limited to the immediately preceding 12 months per standard s37 rules — doesn't account for any temporarily extended carry-back periods that may apply in specific circumstances. Always verify before filing.
+              Uses 2026/27 Corporation Tax rates. R&D relief (merged scheme and ERIS) doesn't check SME size limits, R&D intensity, or contracted-out restrictions, and doesn't prevent double-counting between an ERIS loss surrender and s37 carry-back. Doesn't yet account for group relief or ring-fence profits. Loss carry-back is limited to the immediately preceding 12 months per standard s37 rules — doesn't account for any temporarily extended carry-back periods that may apply in specific circumstances. Always verify before filing.
             </p>
           </div>
 
@@ -607,6 +673,15 @@ export default async function CorporationTaxDetailPage({
                   <input name="rd_paye_nic_liability" type="number" step="0.01" min="0" defaultValue={comp.rd_paye_nic_liability || 0}
                     className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   <p className="text-xs text-slate-400 mt-1">For the £20,000 + 300% payable credit cap.</p>
+                </div>
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 space-y-2">
+                <p className="text-xs font-semibold text-indigo-800">Augmented Profits</p>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Exempt Dividends from Non-Group Companies (£)</label>
+                  <input name="exempt_distributions_received" type="number" step="0.01" min="0" defaultValue={comp.exempt_distributions_received || 0}
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  <p className="text-xs text-slate-400 mt-1">Only relevant for holding-company structures receiving dividends from companies they don't hold a 51%+ stake in. Affects which band and marginal relief apply — never taxed itself.</p>
                 </div>
               </div>
               {currentPeriodLoss > 0 && (
