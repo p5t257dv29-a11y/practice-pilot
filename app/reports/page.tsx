@@ -30,6 +30,13 @@ const STAFF_PERIODS: Record<string, string> = {
   all: "All Time",
 };
 
+const DEADLINE_FILTERS: Record<string, string> = {
+  overdue: "Overdue",
+  next7: "Next 7 Days",
+  next30: "Next 30 Days",
+  none: "No Due Date",
+};
+
 function isWithinPeriod(dateStr: string | null, period: string, now: Date): boolean {
   if (period === "all") return true;
   if (!dateStr) return false;
@@ -48,12 +55,46 @@ function isWithinPeriod(dateStr: string | null, period: string, now: Date): bool
   return true;
 }
 
+function matchesDeadlineFilter(dueDate: string | null, filterKey: string | null, today: Date): boolean {
+  if (!filterKey) return true;
+  if (filterKey === "none") return !dueDate;
+  if (!dueDate) return false;
+  const d = new Date(dueDate);
+  d.setHours(0, 0, 0, 0);
+  if (filterKey === "overdue") return d < today;
+  if (filterKey === "next7") {
+    const in7 = new Date(today);
+    in7.setDate(in7.getDate() + 7);
+    return d >= today && d <= in7;
+  }
+  if (filterKey === "next30") {
+    const in30 = new Date(today);
+    in30.setDate(in30.getDate() + 30);
+    return d >= today && d <= in30;
+  }
+  return true;
+}
+
 export default async function ReportsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string; client?: string; staffPeriod?: string }>;
+  searchParams: Promise<{
+    filter?: string;
+    client?: string;
+    staffPeriod?: string;
+    workStaff?: string;
+    workType?: string;
+    workDeadline?: string;
+  }>;
 }) {
-  const { filter, client: clientFilterId, staffPeriod } = await searchParams;
+  const {
+    filter,
+    client: clientFilterId,
+    staffPeriod,
+    workStaff: workStaffFilter,
+    workType: workTypeFilter,
+    workDeadline: workDeadlineFilter,
+  } = await searchParams;
   const activeFilter = filter && FILTERS[filter] ? filter : null;
   const activeStaffPeriod = staffPeriod && STAFF_PERIODS[staffPeriod] ? staffPeriod : "all";
 
@@ -97,7 +138,7 @@ export default async function ReportsPage({
     const jobWriteoffs = (writeoffs || []).filter(w => w.job_id === job.id);
     const writtenOffAmount = jobWriteoffs.reduce((sum, w) => sum + Number(w.amount), 0);
 
-const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
+    const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
     const overBudget = job.budgeted_fee
       ? chargeOutValue > Number(job.budgeted_fee)
       : (invoicedAmount > 0 && chargeOutValue > invoicedAmount);
@@ -177,6 +218,77 @@ const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
     displayRows = allRows.filter((d) => d.clientId === clientFilterId);
     displayFilterLabel = `Client: ${clientNameMap.get(clientFilterId) || "Unknown"}`;
   }
+
+  // --- Workload by Staff: every active job, filterable by staff / job type / deadline ---
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const activeJobs = (jobs || []).filter(
+    (j) => j.status !== "Completed" && j.status !== "Cancelled"
+  );
+
+  // Distinct filter options, derived from what's actually in the data —
+  // so the filter bar scales automatically as staff and job types are added.
+  const staffOptions = Array.from(
+    new Set(activeJobs.map((j) => j.assigned_to || "Unassigned"))
+  ).sort((a, b) => (a === "Unassigned" ? 1 : b === "Unassigned" ? -1 : a.localeCompare(b)));
+
+  const jobTypeOptions = Array.from(
+    new Set(activeJobs.map((j) => j.job_type || "No Type"))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const filteredActiveJobs = activeJobs.filter((j) => {
+    const staffName = j.assigned_to || "Unassigned";
+    const typeName = j.job_type || "No Type";
+    if (workStaffFilter && staffName !== workStaffFilter) return false;
+    if (workTypeFilter && typeName !== workTypeFilter) return false;
+    if (workDeadlineFilter && !matchesDeadlineFilter(j.due_date, workDeadlineFilter, today)) return false;
+    return true;
+  });
+
+  const workloadMap = new Map<string, typeof activeJobs>();
+  filteredActiveJobs.forEach((j) => {
+    const name = j.assigned_to || "Unassigned";
+    const list = workloadMap.get(name) || [];
+    list.push(j);
+    workloadMap.set(name, list);
+  });
+
+  const workloadByStaff = Array.from(workloadMap.entries())
+    .map(([name, jobsForStaff]) => ({
+      name,
+      jobs: jobsForStaff.sort((a, b) => {
+        if (!a.due_date) return 1;
+        if (!b.due_date) return -1;
+        return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
+      }),
+    }))
+    .sort((a, b) => {
+      if (a.name === "Unassigned") return 1;
+      if (b.name === "Unassigned") return -1;
+      return b.jobs.length - a.jobs.length;
+    });
+
+  function isOverdue(dueDate: string | null): boolean {
+    if (!dueDate) return false;
+    return new Date(dueDate) < today;
+  }
+
+  // Builds a query string for the workload filter bar, toggling one param while
+  // preserving the others — so staff/type/deadline filters combine rather than reset each other.
+  function workloadFilterHref(param: "workStaff" | "workType" | "workDeadline", value: string): string {
+    const params = new URLSearchParams();
+    const current = { workStaff: workStaffFilter, workType: workTypeFilter, workDeadline: workDeadlineFilter };
+    const isClearing = current[param] === value;
+    (["workStaff", "workType", "workDeadline"] as const).forEach((key) => {
+      const val = key === param ? (isClearing ? undefined : value) : current[key];
+      if (val) params.set(key, val);
+    });
+    const qs = params.toString();
+    return `/reports${qs ? `?${qs}` : ""}#workload-by-staff`;
+  }
+
+  const hasWorkloadFilter = !!(workStaffFilter || workTypeFilter || workDeadlineFilter);
 
   // --- Practice Overview: fee income, profitability, staff utilisation, YoY, service lines ---
 
@@ -493,6 +605,142 @@ const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
             </div>
 
           </div>
+        </div>
+
+        {/* ============ WORKLOAD BY STAFF ============ */}
+        <div id="workload-by-staff">
+          <div className="mb-4 flex items-start justify-between flex-wrap gap-2">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Workload by Staff</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Every active job. Filter by staff, job type, or deadline — filters combine.
+              </p>
+            </div>
+            {hasWorkloadFilter && (
+              <Link href="/reports#workload-by-staff"
+                className="text-xs font-semibold text-slate-400 hover:text-slate-600">
+                Clear all filters ✕
+              </Link>
+            )}
+          </div>
+
+          {/* Filter bar */}
+          <div className="mb-5 space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Staff</p>
+              <div className="flex flex-wrap gap-1.5">
+                {staffOptions.map((name) => (
+                  <Link key={name} href={workloadFilterHref("workStaff", name)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                      workStaffFilter === name ? "bg-slate-900 text-white" : "bg-white border border-slate-200 text-slate-600 hover:border-slate-300"
+                    }`}>
+                    {name}
+                  </Link>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Job Type</p>
+              <div className="flex flex-wrap gap-1.5">
+                {jobTypeOptions.map((type) => (
+                  <Link key={type} href={workloadFilterHref("workType", type)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                      workTypeFilter === type ? "bg-slate-900 text-white" : "bg-white border border-slate-200 text-slate-600 hover:border-slate-300"
+                    }`}>
+                    {type}
+                  </Link>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Deadline</p>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(DEADLINE_FILTERS).map(([key, label]) => (
+                  <Link key={key} href={workloadFilterHref("workDeadline", key)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                      workDeadlineFilter === key
+                        ? key === "overdue" ? "bg-red-600 text-white" : "bg-slate-900 text-white"
+                        : "bg-white border border-slate-200 text-slate-600 hover:border-slate-300"
+                    }`}>
+                    {label}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {hasWorkloadFilter && (
+            <p className="text-xs text-slate-500 mb-4">
+              Showing {filteredActiveJobs.length} of {activeJobs.length} active job{activeJobs.length !== 1 ? "s" : ""}
+            </p>
+          )}
+
+          {workloadByStaff.length === 0 ? (
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 text-center py-8">
+              <p className="text-slate-500 text-sm">
+                {activeJobs.length === 0 ? "No active jobs yet." : "Nothing matches these filters."}
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-2">
+              {workloadByStaff.map((group) => (
+                <div key={group.name} className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-base font-bold text-slate-900">{group.name}</h3>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-700 tabular-nums">
+                      {group.jobs.length} job{group.jobs.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {group.jobs.map((j) => {
+                      const overdue = isOverdue(j.due_date);
+                      return (
+                        <Link
+                          key={j.id}
+                          href={`/jobs/${j.id}`}
+                          className={`block rounded-xl border p-3 transition-colors ${
+                            overdue ? "border-red-200 bg-red-50 hover:border-red-300" : "border-slate-100 hover:border-slate-300"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-slate-900 truncate">{j.job_name}</p>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                {(j as any).clients?.client_name || "No client"} · {j.job_type || "No type"}
+                              </p>
+                            </div>
+                            <span
+                              className={`flex-shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                j.status === "Active"
+                                  ? "bg-green-100 text-green-700"
+                                  : j.status === "On Hold"
+                                  ? "bg-yellow-100 text-yellow-700"
+                                  : "bg-slate-100 text-slate-600"
+                              }`}
+                            >
+                              {j.status || "Draft"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between mt-2">
+                            <span className="text-xs text-slate-400">{j.workflow_stage || "Not Started"}</span>
+                            {j.due_date && (
+                              <span className={`text-xs font-semibold ${overdue ? "text-red-600" : "text-slate-500"}`}>
+                                {overdue ? "Overdue: " : "Due "}
+                                {new Date(j.due_date).toLocaleDateString("en-GB")}
+                              </span>
+                            )}
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ============ PRACTICE OVERVIEW ============ */}

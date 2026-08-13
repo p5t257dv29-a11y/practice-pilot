@@ -122,17 +122,18 @@ let instalmentInvoiceDate: Date;
 
       const { data: invoice, error } = await supabase
         .from("invoices")
-        .insert({
-          invoice_number: invoiceNumber,
-          client_id: clientId,
-          job_id: createdJobId,
-          quote_id: quoteId,
-status: "Draft",
-          invoice_date: instalmentInvoiceDate.toISOString().split("T")[0],
-          due_date: instalmentDueDate.toISOString().split("T")[0],          vat: instalmentVat,
-          total: instalmentTotal,
-        })
-        .select()
+.insert({
+  invoice_number: invoiceNumber,
+  client_id: clientId,
+  job_id: createdJobId,
+  quote_id: quoteId,
+  status: "Draft",
+  invoice_date: instalmentInvoiceDate.toISOString().split("T")[0],
+  due_date: instalmentDueDate.toISOString().split("T")[0],
+  subtotal: instalmentSubtotal,
+  vat: instalmentVat,
+  total: instalmentTotal,
+})        .select()
         .single();
 
       if (error || !invoice) {
