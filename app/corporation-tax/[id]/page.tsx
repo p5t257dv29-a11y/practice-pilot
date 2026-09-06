@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
 import { getCtRates, calculateFullCorporationTax, calculateCorporationTax, getQuarterlyInstalmentSchedule } from "../page";
 import { calculateS455 } from "../../directors-loan-account/page";
+import { calculateProfitAndLoss, getCustomPLCategories } from "../../accounts-production/page";
 import SendCTButton from "../../send-ct-button";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,51 @@ async function updateComputation(id: string, formData: FormData) {
 
   revalidatePath(`/corporation-tax/${id}`);
   revalidatePath("/corporation-tax");
+}
+
+// Pulls the current Profit Before Tax and Depreciation charge straight from the
+// linked job's most recent trial balance, and the accounting period itself from the
+// job's own dates — so a journal posted on the accounts side, or a change to the
+// job's period, doesn't leave this computation silently out of step. Only these
+// fields are touched — every other figure on the computation is left exactly as entered.
+async function syncFromTrialBalance(id: string, jobId: string | null) {
+  "use server";
+  if (!jobId) return;
+
+  const { data: job } = await supabase
+    .from("jobs")
+    .select("period_start, period_end")
+    .eq("id", jobId)
+    .single();
+
+  const { data: tb } = await supabase
+    .from("trial_balances")
+    .select("id")
+    .eq("job_id", jobId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!tb) return;
+
+  const { data: lines } = await supabase
+    .from("trial_balance_lines")
+    .select("*")
+    .eq("trial_balance_id", tb.id);
+
+  const customPL = await getCustomPLCategories(supabase);
+  const pl = calculateProfitAndLoss(lines || [], customPL.groups);
+
+  const updates: Record<string, any> = {
+    accounting_profit: pl.profitBeforeTax,
+    depreciation_addback: pl.depreciation,
+  };
+  if (job?.period_start) updates.period_start = job.period_start;
+  if (job?.period_end) updates.period_end = job.period_end;
+
+  await supabase.from("corporation_tax_computations").update(updates).eq("id", id);
+
+  revalidatePath(`/corporation-tax/${id}`);
 }
 
 export default async function CorporationTaxDetailPage({
@@ -184,6 +230,21 @@ export default async function CorporationTaxDetailPage({
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB");
   const updateWithId = updateComputation.bind(null, id);
+  const syncWithId = syncFromTrialBalance.bind(null, id, comp.job_id);
+
+  // Linked trial balance for this job, if one exists — so staff can jump straight
+  // back to the accounts instead of navigating via the sidebar.
+  let linkedTrialBalanceId: string | null = null;
+  if (comp.job_id) {
+    const { data: tbLink } = await supabase
+      .from("trial_balances")
+      .select("id")
+      .eq("job_id", comp.job_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (tbLink) linkedTrialBalanceId = tbLink.id;
+  }
 
   const renderPeriodBreakdown = (p: any, index: number, total: number) => (
     <div key={index} className={total > 1 ? "rounded-xl border border-slate-100 p-4" : ""}>
@@ -270,9 +331,16 @@ export default async function CorporationTaxDetailPage({
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <div className="flex items-center justify-between">
-          <a href="/corporation-tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
-            ← Back to Corporation Tax
-          </a>
+          <div className="flex items-center gap-4">
+            <a href="/corporation-tax" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+              ← Back to Corporation Tax
+            </a>
+            {linkedTrialBalanceId && (
+              <a href={`/accounts-production/${linkedTrialBalanceId}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
+                ← Back to Accounts
+              </a>
+            )}
+          </div>
           <a href={`/corporation-tax/${id}/ct600`}
             className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
             View CT600 Summary →
@@ -592,6 +660,23 @@ export default async function CorporationTaxDetailPage({
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Edit Computation</h2>
+
+            {comp.job_id ? (
+              <form action={syncWithId} className="mt-4">
+                <button type="submit"
+                  className="w-full rounded-xl bg-blue-50 border border-blue-200 px-4 py-2.5 text-sm font-semibold text-blue-700 hover:bg-blue-100 transition-colors">
+                  ↻ Pull Latest Figures from Trial Balance
+                </button>
+                <p className="text-xs text-slate-400 mt-1.5 text-center">
+                  Updates the Accounting Period, Accounting Profit, and Depreciation Add-back below to match the linked job — use this after posting a journal or changing the job's period, then Save &amp; Recalculate.
+                </p>
+              </form>
+            ) : (
+              <p className="text-xs text-slate-400 mt-4">
+                No job linked to this computation, so figures can't be pulled automatically — link a job above, or keep entering them manually below.
+              </p>
+            )}
+
             <form action={updateWithId} className="mt-4 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Period Start</label>

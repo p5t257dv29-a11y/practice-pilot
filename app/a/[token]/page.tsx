@@ -51,7 +51,7 @@ export default async function PublicAccountsPage({
 
   const firmName = practiceSettings?.firm_name || "Your Accountant";
 
-  const result = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups);
+  const result = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups, tb.job_id);
 
   // Direct category totals — same pattern used on the internal draft accounts page —
   // so we can show individual balance sheet lines and an admin expense breakdown,
@@ -93,6 +93,9 @@ export default async function PublicAccountsPage({
   const periodEndFormatted = new Date(tb.period_end).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const standardLabel = tb.accounts_type === "FRS102" ? "FRS 102 Section 1A" : "FRS 105 Micro-Entity";
 
+  const fmtDateTime = (iso: string) =>
+    `${new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+
   return (
     <div className="min-h-screen bg-slate-50 print:bg-white">
 
@@ -116,18 +119,15 @@ export default async function PublicAccountsPage({
           <PrintButton />
         </div>
 
-        {/* Status Banner */}
+        {/* Status Banner — screen-only celebratory messaging. The actual approval RECORD
+            (who / when) is rendered separately below as a permanent, always-visible line,
+            so it survives printing and PDF export rather than disappearing with this banner. */}
         {isApproved && (
           <div className="mb-6 rounded-2xl bg-green-50 border border-green-200 p-4 text-center print:hidden">
             <p className="text-green-700 font-bold text-lg">✓ Accounts Approved</p>
             <p className="text-green-600 text-sm mt-1">
               Thank you! We'll proceed to finalise and file your accounts.
             </p>
-            {tb.approved_at && (
-              <p className="text-green-500 text-xs mt-2">
-                Approved on {new Date(tb.approved_at).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at {new Date(tb.approved_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
-              </p>
-            )}
           </div>
         )}
 
@@ -137,11 +137,6 @@ export default async function PublicAccountsPage({
             <p className="text-yellow-600 text-sm mt-1">
               Thanks for letting us know. We'll be in touch to go through it with you.
             </p>
-            {tb.queried_at && (
-              <p className="text-yellow-500 text-xs mt-2">
-                Raised on {new Date(tb.queried_at).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at {new Date(tb.queried_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
-              </p>
-            )}
           </div>
         )}
 
@@ -156,6 +151,19 @@ export default async function PublicAccountsPage({
             <p className="text-sm text-slate-500 mt-1">
               Period: {periodStartFormatted} to {periodEndFormatted} · {standardLabel} accounts
             </p>
+
+            {/* Permanent approval/query record — intentionally NOT print:hidden, so this
+                remains part of the document whether viewed on screen, printed, or saved as PDF. */}
+            {isApproved && tb.approved_at && (
+              <p className="text-sm font-semibold text-green-700 mt-3 pt-3 border-t border-slate-100">
+                ✓ Approved{tb.approval_client_email ? ` by ${tb.approval_client_email}` : ""} on {fmtDateTime(tb.approved_at)}
+              </p>
+            )}
+            {isQueried && tb.queried_at && (
+              <p className="text-sm font-semibold text-yellow-700 mt-3 pt-3 border-t border-slate-100">
+                Query raised{tb.approval_client_email ? ` by ${tb.approval_client_email}` : ""} on {fmtDateTime(tb.queried_at)}
+              </p>
+            )}
           </div>
 
           {/* Profit & Loss */}

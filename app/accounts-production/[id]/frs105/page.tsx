@@ -4,6 +4,9 @@ import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { calculateNBV } from "../../../fixed-assets/page";
 import { calculateProfitAndLoss, CREDIT_NORMAL, FIXED_ASSET_CLASSES, FIXED_ASSET_MOVEMENT, DLA_MOVEMENT_CATEGORIES, getCustomPLCategories, PL_CATEGORY_GROUPS, type PLGroup } from "../../page";
+import { calculateCorporationTax, applyLossRelief } from "../../../corporation-tax/page";
+import { calculateCapitalAllowances } from "../../../fixed-assets/capital-allowances/page";
+import { calculateS455 } from "../../../directors-loan-account/page";
 import SendAccountsButton from "../../../send-accounts-button";
 import PrintButton from "../../../print-button";
 export const dynamic = "force-dynamic";
@@ -30,7 +33,56 @@ async function updateEmployeeCount(trialBalanceId: string, formData: FormData) {
   revalidatePath(`/accounts-production/${trialBalanceId}/frs105`);
 }
 
-export async function computeBalanceSheet(clientId: string, periodEnd: string, lines: any[], customPLGroups: Record<string, PLGroup> = {}) {
+// Calculates the Corporation Tax liability for the job's most recent CT computation,
+// mirroring exactly the same calculation used when that computation is sent to the
+// client for approval (capital allowances, loss relief, CT rate/marginal relief, plus
+// any S455 due on linked director's loan accounts). Returns 0 if no computation exists
+// yet for this job, so accounts can still be prepared before CT is done.
+async function getComputedCTLiability(clientId: string, jobId?: string | null): Promise<number> {
+  if (!jobId) return 0;
+
+  const { data: comp } = await supabase
+    .from("corporation_tax_computations")
+    .select("*")
+    .eq("job_id", jobId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!comp) return 0;
+
+  const { data: caAssets } = await supabase.from("fixed_assets").select("*").eq("client_id", clientId);
+  const ca = calculateCapitalAllowances({
+    assets: caAssets || [],
+    periodStart: comp.period_start,
+    periodEnd: comp.period_end,
+    mainPoolBfwd: Number(comp.main_pool_bfwd),
+    specialRatePoolBfwd: Number(comp.special_rate_pool_bfwd),
+    jobId: comp.job_id,
+  });
+  const taxableProfitBeforeLosses =
+    Number(comp.accounting_profit) + Number(comp.depreciation_addback) + Number(comp.disallowable_expenses) -
+    ca.totalCapitalAllowances - Number(comp.other_allowable_deductions);
+  const lossResult = applyLossRelief(taxableProfitBeforeLosses, Number(comp.brought_forward_losses));
+  const ct = calculateCorporationTax({
+    taxableProfit: lossResult.taxableProfitAfterLosses,
+    periodStart: comp.period_start,
+    periodEnd: comp.period_end,
+    associatedCompanies: comp.associated_companies,
+  });
+
+  const { data: linkedDLAs } = await supabase.from("directors_loan_accounts").select("*").eq("corporation_tax_id", comp.id);
+  const totalS455 = (linkedDLAs || []).reduce((s, dla) => s + calculateS455({
+    closingBalance: Number(dla.closing_balance),
+    periodEnd: dla.period_end,
+    repaidByDueDate: dla.repaid_by_due_date,
+    s455Rate: Number(dla.s455_rate),
+  }).s455Due, 0);
+
+  return ct.corporationTax + totalS455;
+}
+
+export async function computeBalanceSheet(clientId: string, periodEnd: string, lines: any[], customPLGroups: Record<string, PLGroup> = {}, jobId?: string | null) {
   const totals = new Map<string, number>();
   lines.forEach((l) => {
     if (!l.category) return;
@@ -75,9 +127,17 @@ export async function computeBalanceSheet(clientId: string, periodEnd: string, l
   const dlaIsAsset = dla > 0;
   const currentAssets = stock + debtors + prepayments + cash + (dlaIsAsset ? dla : 0);
 
+  // Corporation Tax liability — calculated live from the linked CT computation rather
+  // than requiring a manual journal. If a figure has already been posted directly to
+  // the trial balance's own "Corporation Tax Liability" category, that manual figure
+  // takes precedence (assumed to be a deliberate override, e.g. the actual filed figure).
+  const bookedCTLiability = get("Corporation Tax Liability");
+  const computedCTLiability = await getComputedCTLiability(clientId, jobId);
+  const ctLiability = bookedCTLiability !== 0 ? bookedCTLiability : computedCTLiability;
+
   const creditors1yr =
     get("Trade Creditors") + get("Accruals and Deferred Income") + get("VAT Liability") +
-    get("PAYE/NI Liability") + get("Corporation Tax Liability") + get("Bank Loans - Due Within One Year") +
+    get("PAYE/NI Liability") + ctLiability + get("Bank Loans - Due Within One Year") +
     (dlaIsAsset ? 0 : -dla);
 
   const netCurrentAssets = currentAssets - creditors1yr;
@@ -86,10 +146,12 @@ export async function computeBalanceSheet(clientId: string, periodEnd: string, l
   const netAssets = totalAssetsLessCurrentLiabilities - creditorsAfter1yr;
 
   const shareCapital = get("Called Up Share Capital");
-  const plReserveCfwd = get("Profit and Loss Reserve") + pl.profitBeforeTax;
+  // Now post-tax: prior period's reserve, plus this period's profit, less the Corporation
+  // Tax charge for the period — so retained earnings reflects the true closing position.
+  const plReserveCfwd = get("Profit and Loss Reserve") + pl.profitBeforeTax - ctLiability;
   const shareholdersFunds = shareCapital + plReserveCfwd;
 
-  return { fixedAssetsNBV, intangibleAssetsNBV, totalFixedAssets, currentAssets, creditors1yr, netCurrentAssets, totalAssetsLessCurrentLiabilities, creditorsAfter1yr, netAssets, shareCapital, plReserveCfwd, shareholdersFunds, pl, dla };
+  return { fixedAssetsNBV, intangibleAssetsNBV, totalFixedAssets, currentAssets, creditors1yr, netCurrentAssets, totalAssetsLessCurrentLiabilities, creditorsAfter1yr, netAssets, shareCapital, plReserveCfwd, shareholdersFunds, pl, dla, ctLiability };
 }
 
 export default async function FRS105AccountsPage({
@@ -128,7 +190,7 @@ export default async function FRS105AccountsPage({
 
   const customPL = await getCustomPLCategories(supabase);
 
-  const current = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups);
+  const current = await computeBalanceSheet(tb.client_id, tb.period_end, lines || [], customPL.groups, tb.job_id);
 
   const { data: priorTb } = await supabase
     .from("trial_balances")
@@ -142,7 +204,7 @@ export default async function FRS105AccountsPage({
   let prior: Awaited<ReturnType<typeof computeBalanceSheet>> | null = null;
   if (priorTb) {
     const { data: priorLines } = await supabase.from("trial_balance_lines").select("*").eq("trial_balance_id", priorTb.id);
-    prior = await computeBalanceSheet(tb.client_id, priorTb.period_end, priorLines || [], customPL.groups);
+    prior = await computeBalanceSheet(tb.client_id, priorTb.period_end, priorLines || [], customPL.groups, priorTb.job_id);
   }
 
   const isBalanced = Math.abs(current.netAssets - current.shareholdersFunds) < 1;
@@ -243,6 +305,14 @@ export default async function FRS105AccountsPage({
         {!isBalanced && (
           <div className="rounded-2xl bg-red-50 border border-red-100 p-4 print:hidden">
             <p className="text-sm font-bold text-red-700">⚠ Balance Sheet does not balance — check mappings before preparing accounts</p>
+          </div>
+        )}
+
+        {current.ctLiability > 0 && (
+          <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4 print:hidden">
+            <p className="text-sm font-bold text-blue-700">
+              ℹ Corporation Tax of £{fmt(current.ctLiability)} has been brought into these accounts automatically from the linked Corporation Tax computation — no journal needed.
+            </p>
           </div>
         )}
 
@@ -360,6 +430,12 @@ export default async function FRS105AccountsPage({
               <BSRow label="Gross Profit" value={current.pl.grossProfit} priorValue={prior?.pl.grossProfit} bold />
               <BSRow label="Administrative Expenses" value={-current.pl.adminExpenses} priorValue={prior ? -prior.pl.adminExpenses : null} />
               <BSRow label="Profit Before Taxation" value={current.pl.profitBeforeTax} priorValue={prior?.pl.profitBeforeTax} bold />
+              {(current.ctLiability !== 0 || (prior && prior.ctLiability !== 0)) && (
+                <>
+                  <BSRow label="Taxation" value={-current.ctLiability} priorValue={prior ? -prior.ctLiability : null} />
+                  <BSRow label="Profit After Taxation" value={current.pl.profitBeforeTax - current.ctLiability} priorValue={prior ? prior.pl.profitBeforeTax - prior.ctLiability : null} bold />
+                </>
+              )}
             </tbody>
           </table>
         </div>
@@ -514,7 +590,7 @@ export default async function FRS105AccountsPage({
 
         <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4 print:hidden">
           <p className="text-xs text-yellow-800">
-            <strong>Draft accounts for review — not a filable document.</strong> Formatted to closely match the layout and statutory wording of real filed FRS 105 micro-entity accounts, generated from your mapped trial balance. It has not been reviewed by a qualified accountant, does not include iXBRL tagging, and cannot be submitted to Companies House or HMRC directly. Verify all figures, the registered office address, and director details before use, and file through recognised software or your existing filing route.
+            <strong>Draft accounts for review — not a filable document.</strong> Formatted to closely match the layout and statutory wording of real filed FRS 105 micro-entity accounts, generated from your mapped trial balance. Corporation Tax shown is calculated live from the linked Corporation Tax computation — review that computation for accuracy, since any change there will automatically flow through here. It has not been reviewed by a qualified accountant, does not include iXBRL tagging, and cannot be submitted to Companies House or HMRC directly. Verify all figures, the registered office address, and director details before use, and file through recognised software or your existing filing route.
           </p>
         </div>
       </div>

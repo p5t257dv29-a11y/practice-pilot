@@ -64,6 +64,42 @@ async function uploadClientPortalDocument(clientId: string, formData: FormData) 
 
   revalidatePath("/portal/dashboard");
 }
+
+// Uploads a document against a specific outstanding checklist item and immediately
+// marks that item as received — the same "client_documents" table and storage bucket
+// used for general portal uploads, so it appears in one unified document list, with the
+// originating checklist item recorded in the description for traceability.
+async function uploadChecklistItemDocument(clientId: string, itemId: string, itemLabel: string, formData: FormData) {
+  "use server";
+  const file = formData.get("document") as File | null;
+  if (!file || file.size === 0) return;
+
+  const storagePath = `${clientId}/checklist/${itemId}/${Date.now()}-${file.name}`;
+  const fileBuffer = await file.arrayBuffer();
+
+  const { error: uploadError } = await supabase.storage
+    .from("client-portal-documents")
+    .upload(storagePath, fileBuffer, { contentType: file.type });
+
+  if (uploadError) {
+    console.error("Could not upload checklist document:", uploadError.message);
+    return;
+  }
+
+  await supabase.from("client_documents").insert({
+    client_id: clientId,
+    uploaded_by: "client",
+    file_name: file.name,
+    storage_path: storagePath,
+    file_size: file.size,
+    description: `Checklist item: ${itemLabel}`,
+  });
+
+  await supabase.from("job_checklist_items").update({ is_received: true }).eq("id", itemId);
+
+  revalidatePath("/portal/dashboard");
+}
+
 export default async function PortalDashboardPage() {
   const cookieStore = await cookies();
   const supabaseAuth = createServerClient(
@@ -94,6 +130,7 @@ export default async function PortalDashboardPage() {
     { data: trialBalances },
     { data: documents },
     { data: messages },
+    { data: clientJobs },
   ] = await Promise.all([
     supabase.from("clients").select("client_name").eq("id", clientId).single(),
     supabase.from("tax_computations").select("id, tax_year, status").eq("client_id", clientId).eq("status", "Sent"),
@@ -102,12 +139,37 @@ export default async function PortalDashboardPage() {
     supabase.from("trial_balances").select("id, period_start, period_end, accounts_type, approval_token, approval_status").eq("client_id", clientId).eq("approval_status", "Sent"),
     supabase.from("client_documents").select("*").eq("client_id", clientId).order("created_at", { ascending: false }),
     supabase.from("client_messages").select("*").eq("client_id", clientId).order("created_at", { ascending: true }),
+    supabase.from("jobs").select("id, job_name, status").eq("client_id", clientId),
   ]);
 
   const unreadFromStaff = (messages || []).filter((m) => m.sender === "staff" && !m.read_by_client).length;
   if (unreadFromStaff > 0) {
     await markMessagesReadByClient(clientId);
   }
+
+  // Outstanding checklist items across every active job for this client, so the
+  // client sees one combined "what do you still need from me" list rather than
+  // having to check each job separately.
+  const activeJobIds = (clientJobs || [])
+    .filter((j) => j.status !== "Completed" && j.status !== "Cancelled")
+    .map((j) => j.id);
+  const jobNameById = new Map((clientJobs || []).map((j) => [j.id, j.job_name]));
+
+  const { data: outstandingItems } = activeJobIds.length > 0
+    ? await supabase
+        .from("job_checklist_items")
+        .select("*")
+        .in("job_id", activeJobIds)
+        .eq("is_received", false)
+        .order("sort_order", { ascending: true })
+    : { data: [] as any[] };
+
+  const checklistByJob = new Map<string, any[]>();
+  (outstandingItems || []).forEach((item) => {
+    const list = checklistByJob.get(item.job_id) || [];
+    list.push(item);
+    checklistByJob.set(item.job_id, list);
+  });
 
   const sendMessageWithId = sendPortalMessage.bind(null, clientId, client?.client_name || "");
 const uploadDocWithId = uploadClientPortalDocument.bind(null, clientId);
@@ -175,6 +237,43 @@ const uploadDocWithId = uploadClientPortalDocument.bind(null, clientId);
             ))}
             {pendingApprovals.length === 0 && (
               <p className="text-sm text-slate-500 text-center py-8">Nothing awaiting your approval right now.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <h2 className="text-lg font-bold text-slate-900">Checklist</h2>
+          <p className="text-sm text-slate-500 mt-0.5">Information we still need from you — upload a file against each item below.</p>
+
+          <div className="mt-4 space-y-6">
+            {Array.from(checklistByJob.entries()).map(([jobId, items]) => (
+              <div key={jobId}>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                  {jobNameById.get(jobId) || "Job"}
+                </p>
+                <div className="space-y-2">
+                  {items.map((item) => {
+                    const itemLabel = `${item.item_text} (${jobNameById.get(jobId) || "Job"})`;
+                    const uploadItemWithIds = uploadChecklistItemDocument.bind(null, clientId, item.id, itemLabel);
+                    return (
+                      <div key={item.id} className="rounded-xl border border-slate-100 p-3">
+                        <p className="text-sm font-medium text-slate-900">{item.item_text}</p>
+                        <form action={uploadItemWithIds} className="mt-2 flex flex-wrap gap-2 items-center">
+                          <input name="document" type="file" required
+                            className="flex-1 min-w-[180px] rounded-lg border border-slate-200 p-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                          <button type="submit"
+                            className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 transition-colors whitespace-nowrap">
+                            Upload
+                          </button>
+                        </form>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            {checklistByJob.size === 0 && (
+              <p className="text-sm text-slate-500 text-center py-8">Nothing outstanding right now — thank you!</p>
             )}
           </div>
         </div>

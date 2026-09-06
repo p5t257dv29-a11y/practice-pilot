@@ -79,6 +79,86 @@ async function updateLine(trialBalanceId: string, clientId: string, lineId: stri
   revalidatePath("/accounts-production");
 }
 
+// Recalculates each asset class's depreciation charge for this trial balance's period,
+// straight from the Fixed Asset Register, and posts it as the correct double-entry:
+// debit the overall P&L "Depreciation" line, credit each class's own "Depreciation
+// Charge for Year" line. Only depreciation is touched — asset cost/additions are left
+// alone, since the funding side of a purchase (bank, loan, creditor) can't be inferred
+// safely. Safe to re-run any time an asset is added, edited, or disposed of: old
+// postings for these categories are replaced cleanly rather than stacked on top.
+async function syncDepreciationFromRegister(trialBalanceId: string, clientId: string) {
+  "use server";
+
+  const { data: tb } = await supabase
+    .from("trial_balances")
+    .select("period_start, period_end")
+    .eq("id", trialBalanceId)
+    .single();
+  if (!tb) return;
+
+  const { data: assets } = await supabase.from("fixed_assets").select("*").eq("client_id", clientId);
+  const pStart = new Date(tb.period_start);
+  const pEnd = new Date(tb.period_end);
+
+  let totalCharge = 0;
+  const perClassCharge: { category: string; assetClass: string; charge: number }[] = [];
+
+  for (const { assetClass } of FIXED_ASSET_CLASSES) {
+    const classAssets = (assets || []).filter((a) => a.category === assetClass);
+    if (classAssets.length === 0) continue;
+
+    const charge = classAssets.reduce((sum, a) => {
+      const acq = new Date(a.acquisition_date);
+      if (acq > pEnd) return sum; // not yet acquired as of this period end
+      const disposedInPeriod = a.disposal_date && new Date(a.disposal_date) >= pStart && new Date(a.disposal_date) <= pEnd;
+      const endDate = disposedInPeriod ? new Date(a.disposal_date) : pEnd;
+      const atEnd = calculateNBV(a, endDate).accumulatedDepreciation;
+      const atStart = acq < pStart ? calculateNBV(a, pStart).accumulatedDepreciation : 0;
+      return sum + Math.max(atEnd - atStart, 0);
+    }, 0);
+
+    if (charge <= 0) continue;
+    const rounded = Math.round(charge * 100) / 100;
+    totalCharge += rounded;
+    perClassCharge.push({ category: FIXED_ASSET_MOVEMENT[assetClass].depCharge, assetClass, charge: rounded });
+  }
+
+  const categoriesTouched = [...perClassCharge.map((c) => c.category), "Depreciation"];
+  await supabase
+    .from("trial_balance_lines")
+    .delete()
+    .eq("trial_balance_id", trialBalanceId)
+    .in("category", categoriesTouched);
+
+  for (const { category, assetClass, charge } of perClassCharge) {
+    await supabase.from("trial_balance_lines").insert({
+      trial_balance_id: trialBalanceId,
+      nominal_code: null,
+      description: `${assetClass} — Depreciation Charge for Year (synced from register)`,
+      category,
+      debit: 0,
+      credit: charge,
+    });
+  }
+
+  if (totalCharge > 0) {
+    await supabase.from("trial_balance_lines").insert({
+      trial_balance_id: trialBalanceId,
+      nominal_code: null,
+      description: "Depreciation (synced from Fixed Asset Register)",
+      category: "Depreciation",
+      debit: totalCharge,
+      credit: 0,
+    });
+  }
+
+  revalidatePath(`/accounts-production/${trialBalanceId}`);
+  revalidatePath(`/accounts-production/${trialBalanceId}/accounts`);
+  revalidatePath(`/accounts-production/${trialBalanceId}/frs105`);
+  revalidatePath(`/accounts-production/${trialBalanceId}/frs102`);
+  revalidatePath("/accounts-production");
+}
+
 // --- Register-side movement schedule for one asset class ---
 // Derives Cost B/F, Additions, Disposals, Depreciation B/F, Charge, and
 // Depreciation on Disposals purely from each asset's own dates — nothing
@@ -229,8 +309,23 @@ const [{ data: lines }, { data: journals }, { data: assets }, customPL, { data: 
     categoryTotals.set(l.category, existing);
   });
 
+  // Linked Corporation Tax computation for this job, if one exists — so staff can jump
+  // straight to it instead of navigating via the sidebar.
+  let ctComputationId: string | null = null;
+  if (tb.job_id) {
+    const { data: ct } = await supabase
+      .from("corporation_tax_computations")
+      .select("id")
+      .eq("job_id", tb.job_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (ct) ctComputationId = ct.id;
+  }
+
   const saveMappingsWithIds = saveMappings.bind(null, id, tb.client_id);
   const updateLineWithIds = updateLine.bind(null, id, tb.client_id);
+  const syncDepreciationWithIds = syncDepreciationFromRegister.bind(null, id, tb.client_id);
 
   const ReconRowView = ({ r }: { r: ReconRow }) => {
     const diff = r.register - r.tb;
@@ -289,6 +384,12 @@ const [{ data: lines }, { data: journals }, { data: assets }, customPL, { data: 
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               FRS 102 Accounts →
             </a>
+            {ctComputationId && (
+              <a href={`/corporation-tax/${ctComputationId}`}
+                className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                Corporation Tax →
+              </a>
+            )}
             <a href={`/accounts-production/${id}/companies-house`}
               className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
               Companies House Accounts →
@@ -324,11 +425,24 @@ const [{ data: lines }, { data: journals }, { data: assets }, customPL, { data: 
         {/* Fixed Asset Register reconciliation */}
         {hasReconData && (
           <div className={`mt-6 rounded-2xl p-6 border ${reconMismatchCount > 0 ? "bg-red-50 border-red-100" : "bg-green-50 border-green-100"}`}>
-            <h2 className="text-lg font-bold text-slate-900">Fixed Asset Register Reconciliation</h2>
-            <p className={`text-sm mt-0.5 ${reconMismatchCount > 0 ? "text-red-700" : "text-green-700"}`}>
-              {reconMismatchCount > 0
-                ? `⚠ ${reconMismatchCount} item${reconMismatchCount > 1 ? "s" : ""} in the register ${reconMismatchCount > 1 ? "don't" : "doesn't"} agree with the trial balance.`
-                : "✓ The Fixed Asset Register agrees with the trial balance for this period."}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Fixed Asset Register Reconciliation</h2>
+                <p className={`text-sm mt-0.5 ${reconMismatchCount > 0 ? "text-red-700" : "text-green-700"}`}>
+                  {reconMismatchCount > 0
+                    ? `⚠ ${reconMismatchCount} item${reconMismatchCount > 1 ? "s" : ""} in the register ${reconMismatchCount > 1 ? "don't" : "doesn't"} agree with the trial balance.`
+                    : "✓ The Fixed Asset Register agrees with the trial balance for this period."}
+                </p>
+              </div>
+              <form action={syncDepreciationWithIds} className="flex-shrink-0">
+                <button type="submit"
+                  className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-slate-700 transition-colors whitespace-nowrap">
+                  ↻ Sync Depreciation from Register
+                </button>
+              </form>
+            </div>
+            <p className="text-xs text-slate-500 mt-3">
+              Posts the depreciation charge shown in the "Register" column below directly onto the trial balance — safe to re-run any time an asset is added, edited, or disposed of. Only depreciation is posted; asset cost/additions still need a manual journal since the funding side (bank, loan, creditor) can't be inferred automatically.
             </p>
 
             {overallRows.length > 0 && (
