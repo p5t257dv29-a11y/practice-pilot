@@ -14,11 +14,12 @@ export async function GET() {
     return NextResponse.json({ count: 0 });
   }
 
-const [{ data: taxComps }, { data: accounts }, { data: ctComps }, { data: quotes }, { count: unreadMessages }] = await Promise.all([
+const [{ data: taxComps }, { data: accounts }, { data: ctComps }, { data: quotes }, { data: clientDocs }, { count: unreadMessages }] = await Promise.all([
     supabase.from("tax_computations").select("approved_at, queried_at").not("status", "is", null).neq("status", "Draft"),
     supabase.from("trial_balances").select("approved_at, queried_at").not("approval_status", "is", null),
     supabase.from("corporation_tax_computations").select("approved_at, queried_at").not("status", "is", null).neq("status", "Draft"),
     supabase.from("quotes").select("accepted_at, declined_at").not("status", "is", null).neq("status", "Draft"),
+    supabase.from("client_documents").select("created_at").eq("uploaded_by", "client"),
     supabase.from("client_messages").select("*", { count: "exact", head: true }).eq("sender", "client").eq("read_by_staff", false),
   ]);
 
@@ -27,6 +28,7 @@ const [{ data: taxComps }, { data: accounts }, { data: ctComps }, { data: quotes
     ...(accounts || []).map((a) => a.approved_at || a.queried_at),
     ...(ctComps || []).map((c) => c.approved_at || c.queried_at),
     ...(quotes || []).map((q) => q.accepted_at || q.declined_at),
+    ...(clientDocs || []).map((d) => d.created_at),
   ].filter(Boolean);
 
   const respondedCount = respondedDates.filter((d) => d! > lastViewedAt).length;

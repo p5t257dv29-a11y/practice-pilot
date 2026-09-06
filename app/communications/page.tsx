@@ -9,7 +9,7 @@ const supabase = createClient(
 
 type CommEntry = {
   key: string;
-  type: "Personal Tax" | "Accounts" | "Corporation Tax" | "Quote";
+  type: "Personal Tax" | "Accounts" | "Corporation Tax" | "Quote" | "Document";
   label: string;
   client_name: string;
   status: string;
@@ -30,7 +30,7 @@ export default async function CommunicationsPage({
   const { data: settings } = await supabase.from("app_settings").select("*").eq("id", 1).maybeSingle();
   const lastViewedAt = settings?.communications_last_viewed_at || null;
 
-  const [{ data: taxComps }, { data: accounts }, { data: ctComps }, { data: quotes }] = await Promise.all([
+  const [{ data: taxComps }, { data: accounts }, { data: ctComps }, { data: quotes }, { data: clientDocs }] = await Promise.all([
     supabase
       .from("tax_computations")
       .select("id, tax_year, status, client_email, approved_at, queried_at, created_at, clients(client_name)")
@@ -50,6 +50,10 @@ export default async function CommunicationsPage({
       .select("id, quote_number, status, accepted_at, declined_at, created_at, clients(client_name)")
       .not("status", "is", null)
       .neq("status", "Draft"),
+    supabase
+      .from("client_documents")
+      .select("id, client_id, file_name, description, created_at, clients(client_name)")
+      .eq("uploaded_by", "client"),
   ]);const { data: unreadMessages } = await supabase
     .from("client_messages")
     .select("id, client_id, message_text, created_at, clients(client_name)")
@@ -112,6 +116,21 @@ export default async function CommunicationsPage({
       href: `/quotes/${q.id}`,
       daysSinceSent: q.status === "Sent" ? getDaysSince(q.created_at) : null,
     })),
+    // Client document uploads — no "sent/response" cycle like the approval items above,
+    // but still worth surfacing and highlighting as "New" the same way, since it's
+    // something a client has just done that staff should notice.
+    ...(clientDocs || []).map((d) => ({
+      key: `doc-${d.id}`,
+      type: "Document" as const,
+      label: d.description ? `${d.file_name} — ${d.description}` : d.file_name,
+      client_name: (d.clients as any)?.client_name || "No client",
+      status: "Uploaded",
+      client_email: null,
+      sentDate: null,
+      respondedDate: d.created_at,
+      href: `/clients/${d.client_id}?tab=documents`,
+      daysSinceSent: null,
+    })),
   ];
 
   const filtered = entries.filter((e) => {
@@ -130,6 +149,7 @@ export default async function CommunicationsPage({
   const sentCount = entries.filter((e) => e.status === "Sent").length;
   const approvedCount = entries.filter((e) => e.status === "Approved" || e.status === "Accepted").length;
   const queriedCount = entries.filter((e) => e.status === "Queried" || e.status === "Declined").length;
+  const uploadedCount = entries.filter((e) => e.status === "Uploaded").length;
   const needsChasing = entries.filter((e) => e.status === "Sent" && e.daysSinceSent !== null && e.daysSinceSent >= 7);
 const unreadMessageCount = (unreadMessages || []).length;
   const newCount = filtered.filter((e) => e.respondedDate && lastViewedAt && e.respondedDate > lastViewedAt).length;
@@ -151,9 +171,10 @@ await supabase.from("app_settings").update({ communications_last_viewed_at: new 
     { label: "Queried", value: "Queried" },
     { label: "Accepted", value: "Accepted" },
     { label: "Declined", value: "Declined" },
+    { label: "Uploaded", value: "Uploaded" },
   ];
 
-  const typePills = ["Personal Tax", "Accounts", "Corporation Tax", "Quote"];
+  const typePills = ["Personal Tax", "Accounts", "Corporation Tax", "Quote", "Document"];
 
   const buildHref = (nextStatus?: string, nextType?: string) => {
     const params = new URLSearchParams();
@@ -168,13 +189,14 @@ await supabase.from("app_settings").update({ communications_last_viewed_at: new 
       <div className="bg-white border-b border-slate-200 px-8 py-6">
         <h1 className="text-2xl font-bold text-slate-900">Communications</h1>
         <p className="text-sm text-slate-500 mt-0.5">
-          Every Personal Tax, Accounts, and Corporation Tax item ever sent for client approval.
+          Every Personal Tax, Accounts, Corporation Tax, Quote item sent for client approval, and every document a client has uploaded.
         </p>
 
         <div className="mt-4 flex gap-6">
           <span className="text-sm text-slate-600"><span className="font-bold text-blue-600">{sentCount}</span> awaiting response</span>
           <span className="text-sm text-slate-600"><span className="font-bold text-green-600">{approvedCount}</span> approved/accepted</span>
           <span className="text-sm text-slate-600"><span className="font-bold text-yellow-600">{queriedCount}</span> queried/declined</span>
+          <span className="text-sm text-slate-600"><span className="font-bold text-purple-600">{uploadedCount}</span> documents uploaded</span>
         </div>
       </div>
 
@@ -279,7 +301,7 @@ await supabase.from("app_settings").update({ communications_last_viewed_at: new 
                   </div>
                   <div className="text-right">
                     <span className={`rounded-full px-3 py-1 text-xs font-bold ${
-                      e.status === "Approved" || e.status === "Accepted" ? "bg-green-100 text-green-700"
+                      e.status === "Approved" || e.status === "Accepted" || e.status === "Uploaded" ? "bg-green-100 text-green-700"
                       : e.status === "Queried" ? "bg-yellow-100 text-yellow-700"
                       : e.status === "Declined" ? "bg-red-100 text-red-700"
                       : "bg-blue-100 text-blue-700"

@@ -16,14 +16,15 @@ function guessJobType(description: string): string | null {
   if (d.includes("corporation tax") || d.includes("ct600")) return "Corporation Tax Return";
   if (d.includes("confirmation statement") || d.includes("companies house")) return "Companies House Filing";
   if (d.includes("management account")) return "Management Accounts";
-  if (d.includes("bookkeeping") || d.includes("book-keeping")) return "Bookkeeping";
+  if (d.includes("bookkeeping")) return "Bookkeeping";
   if (d.includes("year end") || d.includes("annual account") || d.includes("statutory account")) return "Year End Accounts";
   return null;
 }
 
 export async function POST(request: NextRequest) {
   const {
-    quoteId, clientId, lineJobAssignments, createJobs, dueDate, subtotal, vat, total,
+    quoteId, clientId, lineJobAssignments, createJobs, dueDate,
+    subtotal, vat, total,
     splitRecurring, numInstalments, frequency, firstDueDate,
   } = await request.json();
 
@@ -61,6 +62,10 @@ export async function POST(request: NextRequest) {
           status: "Draft",
           workflow_stage: "Not Started",
           due_date: dueDate || firstDueDate || null,
+          // Budget the job from the quote line's own price — a one-time copy at
+          // creation time, so estimated-vs-actual on Reports has a real figure to
+          // compare against from day one, rather than starting blank.
+          budgeted_fee: Number(line.line_total) || Number(line.price) || null,
         }))
       )
       .select();
@@ -82,7 +87,6 @@ export async function POST(request: NextRequest) {
   if (splitRecurring && numInstalments && numInstalments >= 2) {
     const { count } = await supabase.from("invoices").select("*", { count: "exact", head: true });
     let nextNumber = (count || 0) + 1;
-
     const rawInstalment = Math.round((total / numInstalments) * 100) / 100;
     const rawSubtotal = Math.round((subtotal / numInstalments) * 100) / 100;
     const rawVat = Math.round((vat / numInstalments) * 100) / 100;
@@ -97,9 +101,8 @@ export async function POST(request: NextRequest) {
       const instalmentSubtotal = isLast ? Math.round((subtotal - rawSubtotal * (numInstalments - 1)) * 100) / 100 : rawSubtotal;
       const instalmentVat = isLast ? Math.round((vat - rawVat * (numInstalments - 1)) * 100) / 100 : rawVat;
 
-let instalmentInvoiceDate: Date;
+      let instalmentInvoiceDate: Date;
       let instalmentDueDate: Date;
-
       if (frequency === "Weekly") {
         instalmentDueDate = new Date(startDate);
         instalmentDueDate.setDate(instalmentDueDate.getDate() + i * 7);
@@ -117,34 +120,37 @@ let instalmentInvoiceDate: Date;
         instalmentDueDate = new Date(instalmentInvoiceDate);
         instalmentDueDate.setDate(instalmentDueDate.getDate() + 7);
       }
+
       const invoiceNumber = `INV-${String(nextNumber).padStart(4, "0")}`;
       nextNumber++;
 
       const { data: invoice, error } = await supabase
         .from("invoices")
-.insert({
-  invoice_number: invoiceNumber,
-  client_id: clientId,
-  job_id: createdJobId,
-  quote_id: quoteId,
-  status: "Draft",
-  invoice_date: instalmentInvoiceDate.toISOString().split("T")[0],
-  due_date: instalmentDueDate.toISOString().split("T")[0],
-  subtotal: instalmentSubtotal,
-  vat: instalmentVat,
-  total: instalmentTotal,
-})        .select()
+        .insert({
+          invoice_number: invoiceNumber,
+          client_id: clientId,
+          job_id: createdJobId,
+          quote_id: quoteId,
+          status: "Draft",
+          invoice_date: instalmentInvoiceDate.toISOString().split("T")[0],
+          due_date: instalmentDueDate.toISOString().split("T")[0],
+          subtotal: instalmentSubtotal,
+          vat: instalmentVat,
+          total: instalmentTotal,
+        })
+        .select()
         .single();
 
       if (error || !invoice) {
         return NextResponse.json({ error: error?.message || "Failed to create instalment invoices" }, { status: 500 });
       }
 
-const workDescription = quoteLines?.[0]?.description || quote?.quote_number || "Instalment";
+      const workDescription = quoteLines?.[0]?.description || quote?.quote_number || "Instalment";
       await supabase.from("invoice_lines").insert({
         invoice_id: invoice.id,
         description: `${workDescription} — Instalment ${i + 1} of ${numInstalments}`,
-        qty: 1,        price: instalmentTotal - instalmentVat,
+        qty: 1,
+        price: instalmentTotal - instalmentVat,
         vat_rate: instalmentSubtotal > 0 ? Math.round((instalmentVat / instalmentSubtotal) * 100) : 0,
         line_total: instalmentSubtotal,
       });

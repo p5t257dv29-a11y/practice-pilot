@@ -8,7 +8,7 @@ const supabase = createClient(
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { clientId, lines, subtotal, vat, total, quoteDate, validUntil, notes } = body;
+  const { clientId, lines, subtotal, vat, total, quoteDate, validUntil, notes, isRecurring } = body;
 
   if (!clientId || !Array.isArray(lines) || lines.length === 0) {
     return NextResponse.json({ error: "Client and at least one line item are required." }, { status: 400 });
@@ -38,6 +38,7 @@ export async function POST(request: Request) {
       subtotal,
       vat,
       total,
+      is_recurring: !!isRecurring,
     })
     .select()
     .single();

@@ -15,6 +15,7 @@ interface ServiceOption {
 export default function NewQuoteForm({ clients, services }: { clients: Client[]; services: ServiceOption[] }) {
   const router = useRouter();
   const [clientId, setClientId] = useState("");
+  const [isRecurring, setIsRecurring] = useState(false);
 
   const [lines, setLines] = useState(
     Array(6).fill(null).map(() => ({ service_id: "", description: "", qty: "1", price: "0", vat_rate: "20" }))
@@ -67,6 +68,7 @@ export default function NewQuoteForm({ clients, services }: { clients: Client[];
           quoteDate,
           validUntil,
           notes,
+          isRecurring,
         }),
       });
       const data = await res.json();
@@ -161,6 +163,25 @@ export default function NewQuoteForm({ clients, services }: { clients: Client[];
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
           placeholder="Any notes to include on the quote"
           className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+      </div>
+
+      <div className="mt-6 max-w-2xl rounded-xl border border-purple-100 bg-purple-50/50 p-4">
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isRecurring}
+            onChange={(e) => setIsRecurring(e.target.checked)}
+            className="mt-0.5 w-4 h-4 rounded"
+          />
+          <span>
+            <span className="block text-sm font-medium text-slate-900">Recur annually</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              Once this quote is accepted, a draft copy of it — and its engagement letter — will be created automatically
+              ahead of the client's next financial year (or the next UK tax year, for personal clients), ready for you to
+              review and adjust the fee before sending as a combined renewal.
+            </span>
+          </span>
+        </label>
       </div>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}

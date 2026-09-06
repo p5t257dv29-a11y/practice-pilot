@@ -24,6 +24,144 @@ const formatCurrency = (amount: number | string) => {
 
 const STATUS_OPTIONS = ["Draft", "Sent", "Accepted", "Declined", "Expired"];
 
+// Works out the next annual anchor date for a recurring quote — the day the
+// following year's draft should exist by. For companies, this follows the
+// month/day of the client's year_end (never mutated, just read fresh each
+// time so it works indefinitely without manual upkeep). For everyone else
+// (sole traders, individuals, payroll), it follows the fixed UK tax year
+// boundary of 6 April. Returns the first such date strictly after `fromDate`.
+export function getNextAnchorDate(entityType: string | null, clientYearEnd: string | null, fromDate: Date): Date {
+  const isCompany = entityType === "Limited Company";
+
+  let month: number;
+  let day: number;
+  if (isCompany && clientYearEnd) {
+    const yearEnd = new Date(clientYearEnd);
+    month = yearEnd.getMonth();
+    day = yearEnd.getDate();
+  } else {
+    // UK tax year ends 5 April, new year starts 6 April
+    month = 3; // April (0-indexed)
+    day = 5;
+  }
+
+  let candidate = new Date(fromDate.getFullYear(), month, day);
+  while (candidate <= fromDate) {
+    candidate = new Date(candidate.getFullYear() + 1, month, day);
+  }
+  return candidate;
+}
+
+// Checks every accepted, recurring quote for whether its next-year draft is due
+// yet (i.e. we're now past the day after its anchor date), and if so, creates
+// that draft — copying the quote's lines and its linked engagement letter,
+// ready for staff to review and adjust before sending as a combined renewal.
+// Runs on every Quotes page load; since it only ever acts on genuinely new
+// anniversaries, repeated runs are harmless.
+async function spawnDueRecurringQuotes() {
+  const { data: recurringQuotes } = await supabase
+    .from("quotes")
+    .select("*, clients(entity_type, year_end)")
+    .eq("is_recurring", true)
+    .eq("status", "Accepted");
+
+  if (!recurringQuotes || recurringQuotes.length === 0) return;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  for (const quote of recurringQuotes) {
+    // Skip if a child has already been spawned from this quote
+    const { data: existingChild } = await supabase
+      .from("quotes")
+      .select("id")
+      .eq("recurrence_parent_id", quote.id)
+      .maybeSingle();
+    if (existingChild) continue;
+
+    const client = quote.clients as any;
+    const anchorDate = getNextAnchorDate(client?.entity_type || null, client?.year_end || null, new Date(quote.quote_date || quote.created_at));
+
+    // The draft should exist from the day after the anchor date onward
+    const dueDate = new Date(anchorDate);
+    dueDate.setDate(dueDate.getDate() + 1);
+    if (today < dueDate) continue;
+
+    // Copy the quote itself
+    const { data: allQuotes } = await supabase.from("quotes").select("quote_number");
+    let highest = 4;
+    for (const q of allQuotes || []) {
+      const match = q.quote_number?.match(/Q-(\d+)/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (match[1].length <= 4 && num > highest) highest = num;
+      }
+    }
+    const newQuoteNumber = `Q-${String(highest + 1).padStart(4, "0")}`;
+
+    const { data: newQuote, error: newQuoteError } = await supabase
+      .from("quotes")
+      .insert({
+        quote_number: newQuoteNumber,
+        client_id: quote.client_id,
+        quote_date: dueDate.toISOString().split("T")[0],
+        valid_until: null,
+        status: "Draft",
+        notes: quote.notes,
+        subtotal: quote.subtotal,
+        vat: quote.vat,
+        total: quote.total,
+        is_recurring: true,
+        recurrence_parent_id: quote.id,
+      })
+      .select()
+      .single();
+
+    if (newQuoteError || !newQuote) {
+      console.error("Could not spawn recurring quote:", newQuoteError?.message);
+      continue;
+    }
+
+    // Copy the quote lines
+    const { data: lines } = await supabase.from("quote_lines").select("*").eq("quote_id", quote.id);
+    if (lines && lines.length > 0) {
+      await supabase.from("quote_lines").insert(
+        lines.map((l) => ({
+          quote_id: newQuote.id,
+          service_id: l.service_id,
+          description: l.description,
+          qty: l.qty,
+          price: l.price,
+          vat_rate: l.vat_rate,
+          line_total: l.line_total,
+        }))
+      );
+    }
+
+    // Copy the linked engagement letter, if one exists, as a fresh draft
+    const { data: existingLetter } = await supabase
+      .from("engagement_letters")
+      .select("*")
+      .eq("quote_id", quote.id)
+      .maybeSingle();
+
+    if (existingLetter) {
+      await supabase.from("engagement_letters").insert({
+        client_id: existingLetter.client_id,
+        quote_id: newQuote.id,
+        client_email: existingLetter.client_email,
+        status: "Draft",
+        services_description: existingLetter.services_description,
+        fee_description: existingLetter.fee_description,
+        start_date: dueDate.toISOString().split("T")[0],
+        partner_name: existingLetter.partner_name,
+        custom_terms: existingLetter.custom_terms,
+        notes: "Auto-generated renewal draft — review services and fee before sending.",
+      });
+    }
+  }
+}
+
 async function deleteQuote(id: string) {
   "use server";
 
@@ -38,6 +176,8 @@ export default async function QuotesPage({
 }) {
   const { q, status: statusFilter } = await searchParams;
   const query = (q || "").trim().toLowerCase();
+
+  await spawnDueRecurringQuotes();
 
   const [{ data: quotes, error }, { data: clients }] = await Promise.all([
     supabase
@@ -175,9 +315,21 @@ export default async function QuotesPage({
                       📋
                     </div>
                     <div>
-                      <p className="font-semibold text-slate-900">
-                        {quote.quote_number} — {quote.clients?.client_name || "No client"}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-slate-900">
+                          {quote.quote_number} — {quote.clients?.client_name || "No client"}
+                        </p>
+                        {quote.is_recurring && (
+                          <span className="rounded-full bg-purple-50 px-2 py-0.5 text-xs font-semibold text-purple-600">
+                            Recurring
+                          </span>
+                        )}
+                        {quote.recurrence_parent_id && (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                            Renewal
+                          </span>
+                        )}
+                      </div>
                       <p className="text-sm text-slate-500">
                         {quote.quote_date
                           ? new Date(quote.quote_date).toLocaleDateString("en-GB")
