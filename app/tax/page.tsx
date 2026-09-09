@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,7 @@ export const TAX_RATES: Record<string, any> = {
     hicbcThreshold: 60000, // High Income Child Benefit Charge starts here (adjusted net income)
     hicbcFullClawbackAt: 80000, // Child Benefit fully clawed back at this adjusted net income
     marriageAllowanceTransfer: 1260, // 10% of Personal Allowance, rounded up to nearest £10
+    blindPersonsAllowance: 3130, // TR4 — flat addition to Personal Allowance
     studentLoanPlan1Threshold: 26900,
     studentLoanPlan2Threshold: 29385,
     studentLoanPlan4Threshold: 33795,
@@ -80,6 +82,8 @@ type TaxInput = {
   giftAidDonations?: number; // amount actually paid (net)
   childBenefitReceived?: number; // annual Child Benefit received this tax year, if any
   marriageAllowanceTransferredOut?: boolean; // this person is giving up £1,260 of their own PA to their spouse
+  blindPersonsAllowanceClaimed?: boolean; // this person's own claim
+  blindAllowanceTransferredIn?: boolean; // spouse's unused Blind Person's Allowance transferred to this person
   marriageAllowanceReceived?: boolean; // this person is receiving the 20% tax reducer from their spouse
   studentLoanPlan?: string; // "Plan1" | "Plan2" | "Plan4" | "Plan5" | undefined/empty for none
   hasPostgraduateLoan?: boolean;
@@ -141,6 +145,16 @@ function computeCore(input: TaxInput, rates?: any) {
   // separately below rather than adding to personalAllowance here.
   if (input.marriageAllowanceTransferredOut) {
     personalAllowance = Math.max(0, personalAllowance - r.marriageAllowanceTransfer);
+  }
+
+  // Blind Person's Allowance (TR4): unlike Marriage Allowance, this is a
+  // genuine addition to Personal Allowance, applied after any taper — a
+  // taxpayer with income over the taper threshold still gets the full BPA on
+  // top of whatever PA (even £0) survived the taper. If a spouse/civil
+  // partner's own BPA went unused and was transferred in, the full amount is
+  // doubled, matching HMRC's actual transfer mechanism.
+  if (input.blindPersonsAllowanceClaimed) {
+    personalAllowance += input.blindAllowanceTransferredIn ? r.blindPersonsAllowance * 2 : r.blindPersonsAllowance;
   }
 
   const paUsedAgainstNonSavings = Math.min(personalAllowance, nonSavingsIncome);
@@ -386,33 +400,64 @@ async function createComputation(formData: FormData) {
   const get = (key: string) => String(formData.get(key) || "").trim();
   const num = (key: string) => parseFloat(get(key)) || 0;
 
-const client_id = get("client_id");
+  const client_id = get("client_id");
   const job_id = get("job_id") || null;
   const tax_year = get("tax_year") || "2026/27";
   if (!client_id) return;
+
+  // TR3 boxes 8–21 — State Pension, other UK pensions, taxable benefits, and
+  // "other UK income" all share the same tax treatment as pension income for
+  // band purposes, so they're combined into one total passed to calculateTax.
+  // Each is still stored on its own column, matching the real SA100 boxes.
+  const statePensionIncome = num("state_pension_income");
+  const statePensionLumpSum = num("state_pension_lump_sum");
+  const taxTakenOffStatePensionLumpSum = num("tax_taken_off_state_pension_lump_sum");
+  const otherUkPensionsIncome = num("other_uk_pensions_income");
+  const taxTakenOffOtherPensions = num("tax_taken_off_other_pensions");
+  const taxableIncapacityBenefit = num("taxable_incapacity_benefit");
+  const taxTakenOffIncapacityBenefit = num("tax_taken_off_incapacity_benefit");
+  const jobseekersAllowance = num("jobseekers_allowance");
+  const otherStateBenefits = num("other_state_benefits");
+  const otherUkIncome = num("other_uk_income");
+  const otherUkIncomeExpenses = num("other_uk_income_expenses");
+  const taxTakenOffOtherUkIncome = num("tax_taken_off_other_uk_income");
+  const preOwnedAssetsBenefit = num("pre_owned_assets_benefit");
+  const otherIncomeDescription = get("other_income_description");
+
+  const combinedPensionAndOtherIncome =
+    statePensionIncome + statePensionLumpSum + otherUkPensionsIncome +
+    taxableIncapacityBenefit + jobseekersAllowance + otherStateBenefits +
+    Math.max(0, otherUkIncome - otherUkIncomeExpenses) + preOwnedAssetsBenefit;
+
+  // Employment, self-employment, dividend, property, and foreign income all
+  // start at zero here — they're added afterward on the computation's own
+  // page as itemised sources (one row per employer, company, business,
+  // property, or foreign source), not as a single lump figure at creation.
   const input = {
-    employmentIncome: num("employment_income"),
-    selfEmploymentIncome: num("self_employment_income"),
-    rentalIncome: num("rental_income"),
-    propertyExpenses: num("property_expenses"),
-    propertyFinanceCosts: num("property_finance_costs"),
+    employmentIncome: 0,
+    selfEmploymentIncome: 0,
+    rentalIncome: 0,
+    propertyExpenses: 0,
+    propertyFinanceCosts: 0,
     financeCostsBf: num("finance_costs_bf"),
-    pensionIncome: num("pension_income"),
+    pensionIncome: combinedPensionAndOtherIncome,
     interestIncome: num("interest_income"),
-    dividendIncome: num("dividend_income"),
-    foreignEmploymentIncome: num("foreign_employment_income"),
-    foreignInterestIncome: num("foreign_interest_income"),
-    foreignDividendIncome: num("foreign_dividend_income"),
-    foreignRentalIncome: num("foreign_rental_income"),
-    foreignPropertyExpenses: num("foreign_property_expenses"),
-    foreignPropertyFinanceCosts: num("foreign_property_finance_costs"),
+    dividendIncome: 0,
+    foreignEmploymentIncome: 0,
+    foreignInterestIncome: 0,
+    foreignDividendIncome: 0,
+    foreignRentalIncome: 0,
+    foreignPropertyExpenses: 0,
+    foreignPropertyFinanceCosts: 0,
     foreignFinanceCostsBf: num("foreign_finance_costs_bf"),
-    foreignTaxPaid: num("foreign_tax_paid"),
+    foreignTaxPaid: 0,
     personalPensionContributions: num("personal_pension_contributions"),
     giftAidDonations: num("gift_aid_donations"),
     childBenefitReceived: num("child_benefit_received"),
     marriageAllowanceTransferredOut: formData.get("marriage_allowance_transferred_out") === "on",
     marriageAllowanceReceived: formData.get("marriage_allowance_received") === "on",
+    blindPersonsAllowanceClaimed: formData.get("blind_persons_allowance") === "on",
+    blindAllowanceTransferredIn: formData.get("blind_allowance_transferred_in") === "on",
     studentLoanPlan: get("student_loan_plan") || undefined,
     hasPostgraduateLoan: formData.get("has_postgraduate_loan") === "on",
     taxYear: tax_year,
@@ -421,7 +466,7 @@ const client_id = get("client_id");
   const rates = await getTaxRates(tax_year);
   const result = calculateTax(input, rates);
 
-  const { error: insertError } = await supabase.from("tax_computations").insert({
+  const { data: newComp, error: insertError } = await supabase.from("tax_computations").insert({
     client_id,
     job_id,
     tax_year,
@@ -432,7 +477,20 @@ const client_id = get("client_id");
     property_finance_costs: input.propertyFinanceCosts,
     finance_costs_bf: input.financeCostsBf,
     finance_costs_cf: result.unusedFinanceCostsCf,
-    pension_income: input.pensionIncome,
+    state_pension_income: statePensionIncome,
+    state_pension_lump_sum: statePensionLumpSum,
+    tax_taken_off_state_pension_lump_sum: taxTakenOffStatePensionLumpSum,
+    other_uk_pensions_income: otherUkPensionsIncome,
+    tax_taken_off_other_pensions: taxTakenOffOtherPensions,
+    taxable_incapacity_benefit: taxableIncapacityBenefit,
+    tax_taken_off_incapacity_benefit: taxTakenOffIncapacityBenefit,
+    jobseekers_allowance: jobseekersAllowance,
+    other_state_benefits: otherStateBenefits,
+    other_uk_income: otherUkIncome,
+    other_uk_income_expenses: otherUkIncomeExpenses,
+    tax_taken_off_other_uk_income: taxTakenOffOtherUkIncome,
+    pre_owned_assets_benefit: preOwnedAssetsBenefit,
+    other_income_description: otherIncomeDescription || null,
     interest_income: input.interestIncome,
     dividend_income: input.dividendIncome,
     foreign_employment_income: input.foreignEmploymentIncome,
@@ -449,17 +507,24 @@ const client_id = get("client_id");
     child_benefit_received: input.childBenefitReceived,
     marriage_allowance_transferred_out: input.marriageAllowanceTransferredOut,
     marriage_allowance_received: input.marriageAllowanceReceived,
+    marriage_allowance_spouse_name: get("marriage_allowance_spouse_name") || null,
+    marriage_allowance_spouse_nino: get("marriage_allowance_spouse_nino") || null,
+    marriage_allowance_spouse_dob: get("marriage_allowance_spouse_dob") || null,
+    blind_persons_allowance: input.blindPersonsAllowanceClaimed,
+    blind_person_local_authority: get("blind_person_local_authority") || null,
+    blind_allowance_transferred_in: input.blindAllowanceTransferredIn,
     student_loan_plan: input.studentLoanPlan || null,
     has_postgraduate_loan: input.hasPostgraduateLoan,
     tax_paid_at_source: num("tax_paid_at_source"),
     notes: get("notes"),
-  });
+  }).select().single();
 
-  if (insertError) {
-    throw new Error(`Failed to save Personal Tax computation: ${insertError.message}`);
+  if (insertError || !newComp) {
+    throw new Error(`Failed to save Personal Tax computation: ${insertError?.message}`);
   }
 
   revalidatePath("/tax");
+  redirect(`/tax/${newComp.id}`);
 }
 
 async function deleteComputation(id: string) {
@@ -704,11 +769,9 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
               {(clients || []).find((c) => c.id === selectedClient)?.client_name} · {taxYear}. All bands, allowances, and Class 4 NI are calculated automatically using {taxYear} rates.
             </p>
 
-            {prefillSelfEmployment && (
-              <div className="mt-4 rounded-xl bg-green-50 border border-green-100 p-3 text-sm text-green-800">
-                Self-Employment Profit has been pre-filled with £{parseFloat(prefillSelfEmployment).toLocaleString("en-GB", { minimumFractionDigits: 2 })} from a linked Partnership Tax profit share.
-              </div>
-            )}
+            <div className="mt-4 rounded-xl bg-indigo-50 border border-indigo-100 p-3 text-sm text-indigo-800">
+              Employment, self-employment, dividends, UK property, and foreign income are entered after saving — as individual sources (one entry per employer, business, property, etc.) on the computation's own page. This keeps proper per-source detail for each employment or property, matching SA102/SA103/SA105/SA106.
+            </div>
 
             {financeCostsBfDefault > 0 && (
               <div className="mt-4 rounded-xl bg-blue-50 border border-blue-100 p-3 text-sm text-blue-800">
@@ -722,54 +785,128 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
               <input type="hidden" name="tax_year" value={taxYear} />
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Employment Income (£)</label>
-                  <input name="employment_income" type="number" step="0.01" min="0" defaultValue="0"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    placeholder="P60 gross pay" />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Self-Employment Profit (£) {prefillSelfEmployment && <span className="text-green-600 font-normal">(auto-filled)</span>}
-                  </label>
-                  <input name="self_employment_income" type="number" step="0.01" min="0"
-                    defaultValue={prefillSelfEmployment || "0"}
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    placeholder="Net profit after expenses" />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Pension Income (£)</label>
-                  <input name="pension_income" type="number" step="0.01" min="0" defaultValue="0"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    placeholder="State + private pension received" />
-                </div>
-
-                <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Interest Received (£)</label>
                   <input name="interest_income" type="number" step="0.01" min="0" defaultValue="0"
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                     placeholder="Bank/savings interest" />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Dividend Income (£)</label>
-                  <input name="dividend_income" type="number" step="0.01" min="0" defaultValue="0"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                </div>
-
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-slate-700 mb-1">Tax Already Paid at Source / PAYE (£)</label>
                   <input name="tax_paid_at_source" type="number" step="0.01" min="0" defaultValue="0"
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    placeholder="From P60, if employed" />
+                    placeholder="If not entered per-employer below" />
+                  <p className="text-xs text-slate-400 mt-1">
+                    If you'll be entering tax deducted per employer on the computation's own page, you can leave this at £0 and enter it there instead — just don't do both, to avoid double-counting.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-900">State Pension, Other Pensions & Benefits (TR3)</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Matches SA100 boxes 8–16.</p>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">State Pension (£)</label>
+                    <input name="state_pension_income" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 8" />
+                  </div>
+                  <div></div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">State Pension Lump Sum (£)</label>
+                    <input name="state_pension_lump_sum" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 9 — gross amount" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Tax Taken Off Lump Sum (£)</label>
+                    <input name="tax_taken_off_state_pension_lump_sum" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 10" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Other UK Pensions & Annuities (£)</label>
+                    <input name="other_uk_pensions_income" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 11 — gross amount" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Tax Taken Off (£)</label>
+                    <input name="tax_taken_off_other_pensions" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 12" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Taxable Incapacity Benefit / ESA (£)</label>
+                    <input name="taxable_incapacity_benefit" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 13" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Tax Taken Off (£)</label>
+                    <input name="tax_taken_off_incapacity_benefit" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 14" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Jobseeker's Allowance (£)</label>
+                    <input name="jobseekers_allowance" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 15" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Other Taxable State Pensions/Benefits (£)</label>
+                    <input name="other_state_benefits" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 16" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-900">Other UK Income Not on Supplementary Pages (TR3)</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Matches SA100 boxes 17–21. Don't use this for income that belongs on supplementary pages (share schemes, gilts, stock dividends, life insurance gains) — those go on the Additional Information pages, not modelled here yet.
+                </p>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Other Taxable Income, Before Expenses (£)</label>
+                    <input name="other_uk_income" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 17" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Allowable Expenses (£)</label>
+                    <input name="other_uk_income_expenses" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 18" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Tax Taken Off (£)</label>
+                    <input name="tax_taken_off_other_uk_income" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 19" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Benefit from Pre-Owned Assets (£)</label>
+                    <input name="pre_owned_assets_benefit" type="number" step="0.01" min="0" defaultValue="0"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 20" />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Description of Income (Boxes 17 & 20)</label>
+                    <input name="other_income_description"
+                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      placeholder="Box 21" />
+                  </div>
                 </div>
               </div>
 
               <div className="mt-6 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
                 <h3 className="text-sm font-bold text-slate-900">Pension Contributions & Gift Aid</h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Enter the net amount actually paid for relief-at-source personal pension contributions (e.g. to a SIPP or personal pension — not workplace contributions already deducted from Employment Income above) and Gift Aid donations. Both are grossed up automatically and extend the basic and higher-rate bands, and reduce adjusted net income for the Personal Allowance taper — this is how higher/additional-rate relief is actually given.
+                  Enter the net amount actually paid for relief-at-source personal pension contributions (e.g. to a SIPP or personal pension — not workplace contributions already deducted from Employment Income) and Gift Aid donations. Both are grossed up automatically and extend the basic and higher-rate bands, and reduce adjusted net income for the Personal Allowance taper — this is how higher/additional-rate relief is actually given.
                 </p>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div>
@@ -828,6 +965,38 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
                     <span className="text-sm font-medium text-slate-700">Receiving Marriage Allowance from spouse/civil partner</span>
                   </label>
                 </div>
+                <p className="text-xs text-slate-400 mt-3">
+                  If either applies, HMRC's claim process needs the spouse/civil partner's details — kept here for reference alongside the computation, not used in the calculation itself.
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <input name="marriage_allowance_spouse_name" placeholder="Spouse/civil partner's name"
+                    className="rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  <input name="marriage_allowance_spouse_nino" placeholder="Spouse/civil partner's NINO"
+                    className="rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                  <input name="marriage_allowance_spouse_dob" type="date"
+                    className="rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                <h3 className="text-sm font-bold text-slate-900">Blind Person's Allowance (TR4)</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  A flat addition to Personal Allowance, unlike Marriage Allowance — applied even if income exceeds the Personal Allowance taper threshold.
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="blind_persons_allowance" type="checkbox" className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Claiming Blind Person's Allowance</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input name="blind_allowance_transferred_in" type="checkbox" className="w-4 h-4 rounded" />
+                    <span className="text-sm font-medium text-slate-700">Spouse/civil partner's unused Blind Person's Allowance transferred in (doubles the amount)</span>
+                  </label>
+                </div>
+                <div className="mt-3">
+                  <input name="blind_person_local_authority" placeholder="Local authority/register where certified (if claiming)"
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                </div>
               </div>
 
               <div className="mt-6 rounded-xl border border-slate-200 p-4">
@@ -844,96 +1013,27 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
               </div>
 
               <div className="mt-6 rounded-xl border border-slate-200 p-4">
-                <h3 className="text-sm font-bold text-slate-900">Rental Property Income</h3>
+                <h3 className="text-sm font-bold text-slate-900">Property & Foreign — Finance Costs Brought Forward</h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Finance costs (mortgage interest) no longer reduce property profit directly — they generate a 20% tax reducer instead, capped by profit and income, with any unused amount carried forward.
+                  These pooled carry-forward figures are entered here since they relate to the prior year overall, not to any specific property being added now. Current-year property and foreign finance costs are entered per source on the computation's own page.
                 </p>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Gross Rental Income (£)</label>
-                    <input name="rental_income" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Allowable Property Expenses (£)</label>
-                    <input name="property_expenses" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      placeholder="Excluding finance costs" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Finance Costs for the Year (£)</label>
-                    <input name="property_finance_costs" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      placeholder="Mortgage interest etc." />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Unused Finance Costs B/F (£)</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Unused UK Finance Costs B/F (£)</label>
                     <input name="finance_costs_bf" type="number" step="0.01" min="0" defaultValue={financeCostsBfDefault || "0"}
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
-                </div>
-              </div>
-
-              <div className="mt-6 rounded-xl border border-slate-200 p-4">
-                <h3 className="text-sm font-bold text-slate-900">Foreign Income</h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Foreign employment, interest and dividends are taxed together with the equivalent UK income. Foreign rental property is kept as its own pool, with the same finance cost restriction and carry-forward as UK property. Foreign tax already paid is relieved via a tax credit, capped at the UK tax due on that income.
-                </p>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Foreign Employment Income (£)</label>
-                    <input name="foreign_employment_income" type="number" step="0.01" min="0" defaultValue="0"
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Unused Foreign Finance Costs B/F (£)</label>
+                    <input name="foreign_finance_costs_bf" type="number" step="0.01" min="0" defaultValue={foreignFinanceCostsBfDefault || "0"}
                       className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Foreign Interest (£)</label>
-                    <input name="foreign_interest_income" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Foreign Dividends (£)</label>
-                    <input name="foreign_dividend_income" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Foreign Tax Paid (£)</label>
-                    <input name="foreign_tax_paid" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      placeholder="Total foreign tax suffered, all sources" />
-                  </div>
                 </div>
-
-                <div className="mt-4 pt-4 border-t border-slate-100">
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Foreign Rental Property</p>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Gross Foreign Rental Income (£)</label>
-                      <input name="foreign_rental_income" type="number" step="0.01" min="0" defaultValue="0"
-                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Allowable Property Expenses (£)</label>
-                      <input name="foreign_property_expenses" type="number" step="0.01" min="0" defaultValue="0"
-                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                        placeholder="Excluding finance costs" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Finance Costs for the Year (£)</label>
-                      <input name="foreign_property_finance_costs" type="number" step="0.01" min="0" defaultValue="0"
-                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Unused Finance Costs B/F (£)</label>
-                      <input name="foreign_finance_costs_bf" type="number" step="0.01" min="0" defaultValue={foreignFinanceCostsBfDefault || "0"}
-                        className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-                  </div>
-                  {foreignFinanceCostsBfDefault > 0 && (
-                    <p className="text-xs text-blue-700 mt-2">
-                      Found £{foreignFinanceCostsBfDefault.toLocaleString("en-GB", { minimumFractionDigits: 2 })} of unused foreign finance costs carried forward from {previousTaxYear(taxYear)} — pre-filled above.
-                    </p>
-                  )}
-                </div>
+                {foreignFinanceCostsBfDefault > 0 && (
+                  <p className="text-xs text-blue-700 mt-2">
+                    Found £{foreignFinanceCostsBfDefault.toLocaleString("en-GB", { minimumFractionDigits: 2 })} of unused foreign finance costs carried forward from {previousTaxYear(taxYear)} — pre-filled above.
+                  </p>
+                )}
               </div>
 
               <div className="mt-4">
@@ -944,8 +1044,9 @@ searchParams: Promise<{ mode?: string; client?: string; self_employment?: string
 
               <button type="submit"
                 className="mt-6 rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                Calculate & Save
+                Create Computation →
               </button>
+              <p className="text-xs text-slate-400 mt-2">You'll be taken straight to the computation's page to add employment, dividend, self-employment, property, and foreign income sources.</p>
             </form>
           </div>
         )}

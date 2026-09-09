@@ -120,12 +120,12 @@ export default function SendAccountsButton({
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
           <p className="text-xs text-slate-500 mb-1">Previously sent — client link:</p>
           <a
-            href={`/a/${approvalToken}`}
+            href={accountsUrl || `/a/${approvalToken}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-blue-600 hover:underline break-all"
           >
-            {typeof window !== "undefined" ? `${window.location.origin}/a/${approvalToken}` : `/a/${approvalToken}`}
+            {accountsUrl || `/a/${approvalToken}`}
           </a>
         </div>
       )}
