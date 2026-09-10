@@ -8,102 +8,118 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-export const P11D_RATES_BY_YEAR: Record<string, any> = {
-  "2026/27": {
-    class1ANicRate: 0.15,
-    defaultFuelMultiplier: 29200,
-    defaultOfficialRateOfInterest: 3.75,
-    loanDeMinimis: 10000,
-    carContributionCap: 5000,
-  },
+// ============================================================
+// Car, van & fuel benefit calculation library — all rates and bands are
+// pulled live from tax_rates.p11d (Practice Settings → Tax Rates), the same
+// pattern already used by getTaxRates()/getCtRates() for Personal Tax and
+// Corporation Tax. Editing a rate there updates every computation that uses
+// it — nothing here is hardcoded into the app itself.
+// ============================================================
+
+export type CarFuelType = "Petrol" | "Diesel (RDE2 compliant)" | "Diesel (not RDE2 compliant)" | "Hybrid" | "Electric";
+
+const P11D_RATES_FALLBACK = {
+  loanDeMinimis: 10000,
+  class1ANicRate: 0.15,
+  carContributionCap: 5000,
+  defaultFuelMultiplier: 29200,
+  defaultOfficialRateOfInterest: 3.75,
+  vanBenefitFlat: 4170,
+  vanFuelBenefitFlat: 798,
+  dieselSurcharge: 4,
+  capPercentage: 37,
+  zeroEmissionVanBenefit: true,
+  lowEmissionBands: [
+    { minRangeMiles: 130, percentage: 4 },
+    { minRangeMiles: 70, percentage: 7 },
+    { minRangeMiles: 40, percentage: 10 },
+    { minRangeMiles: 30, percentage: 14 },
+    { minRangeMiles: 0, percentage: 16 },
+  ],
+  standardBands: [
+    { maxCo2: 54, percentage: 17 }, { maxCo2: 59, percentage: 18 }, { maxCo2: 64, percentage: 19 },
+    { maxCo2: 69, percentage: 20 }, { maxCo2: 74, percentage: 21 }, { maxCo2: 79, percentage: 21 },
+    { maxCo2: 84, percentage: 22 }, { maxCo2: 89, percentage: 23 }, { maxCo2: 94, percentage: 24 },
+    { maxCo2: 99, percentage: 25 }, { maxCo2: 104, percentage: 26 }, { maxCo2: 109, percentage: 27 },
+    { maxCo2: 114, percentage: 28 }, { maxCo2: 119, percentage: 29 }, { maxCo2: 124, percentage: 30 },
+    { maxCo2: 129, percentage: 31 }, { maxCo2: 134, percentage: 32 }, { maxCo2: 139, percentage: 33 },
+    { maxCo2: 144, percentage: 34 }, { maxCo2: 149, percentage: 35 }, { maxCo2: 154, percentage: 36 },
+    { maxCo2: 159, percentage: 37 },
+  ],
 };
 
-// Kept as a direct export too, defaulting to the current tax year, so existing
-// code referencing P11D_RATES.xyz directly (rather than going through a tax
-// year lookup) continues to work unchanged.
-export const P11D_RATES = P11D_RATES_BY_YEAR["2026/27"];
+export type P11DRates = typeof P11D_RATES_FALLBACK;
 
-// Fetches live rates from the tax_rates table (editable via Practice Settings →
-// Tax Rates), falling back to the hardcoded defaults above if no row exists
-// for that year yet. This is the single point every P11D calculation should
-// go through, so rate updates take effect without a code change.
-export async function getP11dRates(taxYear: string) {
+export async function getP11dRates(taxYear: string): Promise<P11DRates> {
   const { data } = await supabase.from("tax_rates").select("p11d").eq("tax_year", taxYear).maybeSingle();
-  return data?.p11d || P11D_RATES_BY_YEAR[taxYear] || P11D_RATES_BY_YEAR["2026/27"];
+  return { ...P11D_RATES_FALLBACK, ...(data?.p11d || {}) };
 }
 
-export function calculateP11D(input: {
-  carListPrice: number;
-  carBenefitPercentage: number;
-  carCapitalContribution: number;
-  carAvailableDays: number;
-  fuelProvided: boolean;
-  fuelBenefitMultiplier: number;
-  medicalPremium: number;
-  medicalEmployeeContribution: number;
-  loanBalance: number;
-  loanInterestPaid: number;
-  officialRateOfInterest: number;
-  otherBenefitsAmount: number;
-}, liveRates?: any) {
-  const rates = liveRates || P11D_RATES;
-  const proration = Math.min(1, Math.max(0, input.carAvailableDays / 365));
-
-  const adjustedListPrice = Math.max(0, input.carListPrice - Math.min(input.carCapitalContribution, rates.carContributionCap));
-  const carBenefit = input.carListPrice > 0
-    ? adjustedListPrice * (input.carBenefitPercentage / 100) * proration
-    : 0;
-
-  const fuelBenefit = input.fuelProvided && carBenefit > 0
-    ? input.fuelBenefitMultiplier * (input.carBenefitPercentage / 100) * proration
-    : 0;
-
-  const medicalBenefit = Math.max(0, input.medicalPremium - input.medicalEmployeeContribution);
-
-  const loanBenefit = input.loanBalance > rates.loanDeMinimis
-    ? Math.max(0, input.loanBalance * (input.officialRateOfInterest / 100) - input.loanInterestPaid)
-    : 0;
-
-  const otherBenefit = input.otherBenefitsAmount;
-
-  const totalBenefits = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefit;
-  const class1ANIC = totalBenefits * rates.class1ANicRate;
-
-  return { carBenefit, fuelBenefit, medicalBenefit, loanBenefit, otherBenefit, totalBenefits, class1ANIC };
+function getLowEmissionPercentage(rates: P11DRates, electricRangeMiles: number): number {
+  const sorted = [...rates.lowEmissionBands].sort((a, b) => b.minRangeMiles - a.minRangeMiles);
+  const match = sorted.find((b) => electricRangeMiles >= b.minRangeMiles);
+  return match ? match.percentage : sorted[sorted.length - 1].percentage;
 }
 
-async function createComputation(formData: FormData) {
-  "use server";
-  const get = (key: string) => String(formData.get(key) || "").trim();
-  const num = (key: string) => parseFloat(get(key)) || 0;
+export function getCarBenefitPercentage(rates: P11DRates, fuelType: CarFuelType, co2: number, electricRangeMiles?: number): number {
+  const co2Rounded = Math.floor(co2 / 5) * 5; // HMRC rounds CO2 down to the nearest 5g/km
 
-  const client_id = get("client_id");
-  const employee_name = get("employee_name");
-  if (!client_id || !employee_name) return;
+  let base: number;
+  if (co2Rounded <= 0) {
+    base = getLowEmissionPercentage(rates, electricRangeMiles || 999); // pure electric — top band
+  } else if (co2Rounded <= 50) {
+    base = getLowEmissionPercentage(rates, electricRangeMiles || 0);
+  } else {
+    const sorted = [...rates.standardBands].sort((a, b) => a.maxCo2 - b.maxCo2);
+    const band = sorted.find((b) => co2Rounded <= b.maxCo2);
+    base = band ? band.percentage : rates.capPercentage;
+  }
 
-  await supabase.from("p11d_computations").insert({
-    client_id,
-    employee_name,
-    employee_client_id: get("employee_client_id") || null,
-    tax_year: get("tax_year") || "2026/27",
-    car_list_price: num("car_list_price"),
-    car_benefit_percentage: num("car_benefit_percentage"),
-    car_capital_contribution: num("car_capital_contribution"),
-    car_available_days: parseInt(get("car_available_days")) || 365,
-    fuel_provided: formData.get("fuel_provided") === "on",
-    fuel_benefit_multiplier: num("fuel_benefit_multiplier") || P11D_RATES.defaultFuelMultiplier,
-    medical_premium: num("medical_premium"),
-    medical_employee_contribution: num("medical_employee_contribution"),
-    loan_balance: num("loan_balance"),
-    loan_interest_paid: num("loan_interest_paid"),
-    official_rate_of_interest: num("official_rate_of_interest") || P11D_RATES.defaultOfficialRateOfInterest,
-    other_benefits_description: get("other_benefits_description"),
-    other_benefits_amount: num("other_benefits_amount"),
-    notes: get("notes"),
-  });
+  if (fuelType === "Diesel (not RDE2 compliant)") {
+    base = Math.min(rates.capPercentage, base + rates.dieselSurcharge);
+  }
 
-  revalidatePath("/p11d");
+  return base;
 }
+
+// Car and fuel benefit both apportion by days the car was actually available
+// in the tax year — a full year is treated as 365 days, matching HMRC's own
+// day-apportionment method (not calendar-exact leap year adjustment).
+export function calculateCarBenefit(rates: P11DRates, {
+  listPrice, capitalContribution, percentage, availableDays, fuelProvided,
+}: {
+  listPrice: number; capitalContribution: number; percentage: number; availableDays: number; fuelProvided: boolean;
+}) {
+  const cappedContribution = Math.min(capitalContribution, rates.carContributionCap);
+  const carBenefit = ((listPrice - cappedContribution) * (percentage / 100)) * (availableDays / 365);
+  // Fuel benefit is NOT apportioned by actual private mileage — only by the
+  // same days-available ratio as the car itself. Providing free fuel for
+  // even one mile of private use triggers the full charge for the period.
+  const fuelBenefit = fuelProvided ? rates.defaultFuelMultiplier * (percentage / 100) * (availableDays / 365) : 0;
+  return { carBenefit, fuelBenefit, cappedContribution };
+}
+
+export function calculateVanBenefit(rates: P11DRates, {
+  provided, isZeroEmission, availableDays, employeeContribution, fuelProvided,
+}: {
+  provided: boolean; isZeroEmission: boolean; availableDays: number; employeeContribution: number; fuelProvided: boolean;
+}) {
+  if (!provided) return { vanBenefit: 0, vanFuelBenefit: 0 };
+  // Zero-emission vans currently attract a nil benefit charge — the
+  // "zeroEmissionVanBenefit" flag in Tax Rates controls this, in case that
+  // changes in a future year.
+  const vanBenefit = (isZeroEmission && rates.zeroEmissionVanBenefit)
+    ? 0
+    : Math.max(0, (rates.vanBenefitFlat * (availableDays / 365)) - employeeContribution);
+  const vanFuelBenefit = fuelProvided && !(isZeroEmission && rates.zeroEmissionVanBenefit)
+    ? rates.vanFuelBenefitFlat * (availableDays / 365)
+    : 0;
+  return { vanBenefit, vanFuelBenefit };
+}
+
+// ============================================================
+// List page
+// ============================================================
 
 async function deleteComputation(id: string) {
   "use server";
@@ -111,303 +127,87 @@ async function deleteComputation(id: string) {
   revalidatePath("/p11d");
 }
 
-export default async function P11DPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ mode?: string }>;
-}) {
-  const { mode } = await searchParams;
+export default async function P11DPage() {
+  const { data: computations, error } = await supabase
+    .from("p11d_computations")
+    .select("*, clients(client_name)")
+    .order("created_at", { ascending: false });
 
-  const [{ data: computations, error }, { data: clients }] = await Promise.all([
-    supabase
-      .from("p11d_computations")
-      .select("*, clients:client_id(client_name)")
-      .order("created_at", { ascending: false }),
-    supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
-  ]);
+  const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  // Rates are fetched once per distinct tax year present among the loaded
-  // computations, then reused — avoids one database round trip per row.
-  const ratesCache = new Map<string, any>();
+  // Rates are fetched once per distinct tax year present, then reused
+  const ratesCache = new Map<string, P11DRates>();
   const getCachedRates = async (taxYear: string) => {
     if (!ratesCache.has(taxYear)) {
       ratesCache.set(taxYear, await getP11dRates(taxYear));
     }
-    return ratesCache.get(taxYear);
+    return ratesCache.get(taxYear)!;
   };
 
-  const rows = await Promise.all(
-    (computations || []).map(async (comp) => {
-      const rates = await getCachedRates(comp.tax_year);
-      const result = calculateP11D({
-        carListPrice: Number(comp.car_list_price),
-        carBenefitPercentage: Number(comp.car_benefit_percentage),
-        carCapitalContribution: Number(comp.car_capital_contribution),
-        carAvailableDays: Number(comp.car_available_days),
-        fuelProvided: comp.fuel_provided,
-        fuelBenefitMultiplier: Number(comp.fuel_benefit_multiplier),
-        medicalPremium: Number(comp.medical_premium),
-        medicalEmployeeContribution: Number(comp.medical_employee_contribution),
-        loanBalance: Number(comp.loan_balance),
-        loanInterestPaid: Number(comp.loan_interest_paid),
-        officialRateOfInterest: Number(comp.official_rate_of_interest),
-        otherBenefitsAmount: Number(comp.other_benefits_amount),
-      }, rates);
-      return { comp, result };
-    })
-  );
-
-  const openRows = rows.filter((r) => r.comp.status !== "Approved");
-  const completedRows = rows.filter((r) => r.comp.status === "Approved");
-
-  const statusBadge = (status: string | null | undefined) => {
-    const s = status || "Draft";
-    const style =
-      s === "Sent" ? "bg-yellow-100 text-yellow-700"
-      : s === "Queried" ? "bg-orange-100 text-orange-700"
-      : s === "Approved" ? "bg-green-100 text-green-700"
-      : "bg-slate-100 text-slate-600";
-    return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style}`}>{s}</span>;
+  const rowTotal = async (c: any) => {
+    const rates = await getCachedRates(c.tax_year);
+    const { carBenefit, fuelBenefit } = calculateCarBenefit(rates, {
+      listPrice: Number(c.car_list_price), capitalContribution: Number(c.car_capital_contribution),
+      percentage: Number(c.car_benefit_percentage), availableDays: Number(c.car_available_days),
+      fuelProvided: c.fuel_provided,
+    });
+    const { vanBenefit, vanFuelBenefit } = calculateVanBenefit(rates, {
+      provided: c.van_provided, isZeroEmission: c.van_is_zero_emission, availableDays: Number(c.van_available_days),
+      employeeContribution: Number(c.van_employee_contribution), fuelProvided: c.van_fuel_provided,
+    });
+    const medicalBenefit = Math.max(0, Number(c.medical_premium) - Number(c.medical_employee_contribution));
+    const loanBenefit = Number(c.loan_balance) > rates.loanDeMinimis
+      ? Math.max(0, (Number(c.loan_balance) * (Number(c.official_rate_of_interest) / 100)) - Number(c.loan_interest_paid))
+      : 0;
+    return carBenefit + fuelBenefit + vanBenefit + vanFuelBenefit + medicalBenefit + loanBenefit + Number(c.other_benefits_amount);
   };
 
-  const renderRow = ({ comp, result }: (typeof rows)[number]) => (
-    <div key={comp.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
-      <a href={`/p11d/${comp.id}`} className="flex-1">
-        <div className="flex items-center gap-2">
-          <p className="font-semibold text-slate-900">
-            {comp.employee_name} — {(comp.clients as any)?.client_name || "No employer"}
-          </p>
-          {statusBadge(comp.status)}
-        </div>
-        <p className="text-sm text-slate-500">
-          {comp.tax_year} · Total benefits: £{result.totalBenefits.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Class 1A NIC: £{result.class1ANIC.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        </p>
-      </a>
-      <form action={deleteComputation.bind(null, comp.id)}>
-        <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-          Delete
-        </button>
-      </form>
-    </div>
-  );
+  const rowTotals = await Promise.all((computations || []).map((c) => rowTotal(c)));
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <h1 className="text-2xl font-bold text-slate-900">P11D — Benefits in Kind</h1>
-        <p className="text-sm text-slate-500 mt-0.5">
-          Computes taxable benefit values per employee and the employer's Class 1A NIC, using 2026/27 rates.
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">P11D — Benefits in Kind</h1>
+            <p className="text-sm text-slate-500 mt-0.5">Car, van, fuel, medical, loan and other benefits per employee.</p>
+          </div>
+          <a href="/p11d/new"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+            + New Computation
+          </a>
+        </div>
       </div>
 
       <div className="p-8">
         {error && (
-          <div className="mb-6 rounded-xl bg-red-100 p-3 text-sm text-red-700">
-            Could not load computations: {error.message}
-          </div>
+          <div className="mb-6 rounded-xl bg-red-100 p-3 text-sm text-red-700">Could not load: {error.message}</div>
         )}
-
-        <div className="grid gap-4 md:grid-cols-3 mb-6">
-          <a href="/p11d?mode=open"
-            className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "open" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
-            }`}>
-            <p className={`font-bold text-lg ${mode === "open" ? "text-white" : "text-slate-900"}`}>Open</p>
-            <p className={`text-sm mt-1 ${mode === "open" ? "text-slate-300" : "text-slate-500"}`}>{openRows.length} not yet completed</p>
-          </a>
-          <a href="/p11d?mode=completed"
-            className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "completed" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
-            }`}>
-            <p className={`font-bold text-lg ${mode === "completed" ? "text-white" : "text-slate-900"}`}>Completed</p>
-            <p className={`text-sm mt-1 ${mode === "completed" ? "text-slate-300" : "text-slate-500"}`}>{completedRows.length} approved</p>
-          </a>
-          <a href="/p11d?mode=new"
-            className={`rounded-2xl p-6 shadow-sm border transition-all ${
-              mode === "new" ? "bg-slate-900 border-slate-900" : "bg-white border-slate-100 hover:shadow-md hover:border-slate-200"
-            }`}>
-            <p className={`font-bold text-lg ${mode === "new" ? "text-white" : "text-slate-900"}`}>+ New Computation</p>
-            <p className={`text-sm mt-1 ${mode === "new" ? "text-slate-300" : "text-slate-500"}`}>One per employee/director per tax year</p>
-          </a>
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <h2 className="text-lg font-bold text-slate-900">All Computations ({computations?.length ?? 0})</h2>
+          <div className="mt-4 space-y-3">
+            {(computations || []).map((c, i) => (
+              <div key={c.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
+                <a href={`/p11d/${c.id}`} className="flex-1">
+                  <p className="font-semibold text-slate-900">{c.employee_name} — {(c.clients as any)?.client_name || "No client"}</p>
+                  <p className="text-sm text-slate-500">{c.tax_year}</p>
+                </a>
+                <div className="flex items-center gap-4">
+                  <p className="font-bold text-slate-900">{fmt(rowTotals[i])}</p>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                    c.status === "Approved" ? "bg-green-100 text-green-700" : c.status === "Sent" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"
+                  }`}>{c.status || "Draft"}</span>
+                  <form action={deleteComputation.bind(null, c.id)}>
+                    <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">Delete</button>
+                  </form>
+                </div>
+              </div>
+            ))}
+            {(!computations || computations.length === 0) && (
+              <p className="text-sm text-slate-500 text-center py-8">No P11D computations yet.</p>
+            )}
+          </div>
         </div>
-
-        {mode === "open" && (
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Open Computations</h2>
-            {openRows.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-8">No open computations — everything's approved.</p>
-            ) : (
-              <div className="mt-4 space-y-3">
-                {openRows.map(renderRow)}
-              </div>
-            )}
-          </div>
-        )}
-
-        {mode === "completed" && (
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Completed Computations</h2>
-            {completedRows.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-8">Nothing approved yet.</p>
-            ) : (
-              <div className="mt-4 space-y-3">
-                {completedRows.map(renderRow)}
-              </div>
-            )}
-          </div>
-        )}
-
-        {mode === "new" && (
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">New P11D Computation</h2>
-            <p className="text-sm text-slate-500 mt-0.5">One per employee/director per tax year. Leave any benefit blank if it doesn't apply.</p>
-
-            <form action={createComputation} className="mt-6 space-y-6">
-              <div className="grid gap-4 md:grid-cols-3">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Employer (Client) *</label>
-                  <select name="client_id" required
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                    <option value="">Select the employer</option>
-                    {(clients || []).map((c) => (
-                      <option key={c.id} value={c.id}>{c.client_name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Employee/Director Name *</label>
-                  <input name="employee_name" required
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Link to Client (optional)</label>
-                  <select name="employee_client_id"
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                    <option value="">No linked client</option>
-                    {(clients || []).map((c) => (
-                      <option key={c.id} value={c.id}>{c.client_name}</option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-slate-400 mt-1">If they're also a Personal Tax client, this lets you push the benefit total across.</p>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1 max-w-xs">Tax Year</label>
-                <select name="tax_year" defaultValue="2026/27"
-                  className="w-full max-w-xs rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                  <option value="2026/27">2026/27</option>
-                </select>
-              </div>
-
-              <div className="border-t border-slate-100 pt-4">
-                <h3 className="text-sm font-bold text-slate-900 mb-1">Company Car</h3>
-                <p className="text-xs text-slate-400 mb-3">Look up the correct benefit % for the car's CO2 emissions/fuel type from HMRC's published table.</p>
-                <div className="grid gap-4 md:grid-cols-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">List Price (£)</label>
-                    <input name="car_list_price" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Benefit %</label>
-                    <input name="car_benefit_percentage" type="number" step="0.01" min="0" max="37" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      placeholder="e.g. 4 for EV" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Capital Contribution (£)</label>
-                    <input name="car_capital_contribution" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      placeholder="Max £5,000 reduces list price" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Days Available</label>
-                    <input name="car_available_days" type="number" min="0" max="365" defaultValue="365"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer mt-3">
-                  <input name="fuel_provided" type="checkbox" className="w-4 h-4 rounded" />
-                  <span className="text-sm font-medium text-slate-700">Employer also provides private fuel</span>
-                </label>
-                <div className="mt-2 max-w-xs">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Fuel Benefit Multiplier (£)</label>
-                  <input name="fuel_benefit_multiplier" type="number" step="0.01" min="0" defaultValue={P11D_RATES.defaultFuelMultiplier}
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  <p className="text-xs text-slate-400 mt-1">Confirm current figure against GOV.UK before relying on this default.</p>
-                </div>
-              </div>
-
-              <div className="border-t border-slate-100 pt-4">
-                <h3 className="text-sm font-bold text-slate-900 mb-3">Private Medical Insurance</h3>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Premium Paid by Employer (£)</label>
-                    <input name="medical_premium" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Employee Contribution (£)</label>
-                    <input name="medical_employee_contribution" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-t border-slate-100 pt-4">
-                <h3 className="text-sm font-bold text-slate-900 mb-1">Beneficial Loan</h3>
-                <p className="text-xs text-slate-400 mb-3">No benefit arises if the balance never exceeds £10,000 in the year — often relevant for an overdrawn director's loan account.</p>
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Loan Balance (£)</label>
-                    <input name="loan_balance" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Interest Actually Paid (£)</label>
-                    <input name="loan_interest_paid" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Official Rate of Interest (%)</label>
-                    <input name="official_rate_of_interest" type="number" step="0.01" min="0" defaultValue={P11D_RATES.defaultOfficialRateOfInterest}
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    <p className="text-xs text-slate-400 mt-1">Confirm current figure against GOV.UK.</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-t border-slate-100 pt-4">
-                <h3 className="text-sm font-bold text-slate-900 mb-3">Other Benefits</h3>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
-                    <input name="other_benefits_description"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                      placeholder="e.g. Gym membership, assets provided" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Cash Equivalent (£)</label>
-                    <input name="other_benefits_amount" type="number" step="0.01" min="0" defaultValue="0"
-                      className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                <textarea name="notes" rows={2}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-              </div>
-
-              <button type="submit"
-                className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                Calculate & Save
-              </button>
-            </form>
-          </div>
-        )}
       </div>
     </div>
   );
