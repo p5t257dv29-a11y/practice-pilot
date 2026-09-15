@@ -162,12 +162,12 @@ export function calculateP11D(input: {
 
   const otherBenefits = Number(input.otherBenefitsAmount) || 0;
 
-  const totalBenefitsValue = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefits;
-  const class1ANIC = totalBenefitsValue * P11D_RATES.class1ANicRate;
+  const totalBenefits = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefits;
+  const class1ANIC = totalBenefits * P11D_RATES.class1ANicRate;
 
   return {
     carBenefit, fuelBenefit, medicalBenefit, loanBenefit, otherBenefits,
-    totalBenefitsValue, class1ANIC,
+    totalBenefits, class1ANIC,
   };
 }
 
