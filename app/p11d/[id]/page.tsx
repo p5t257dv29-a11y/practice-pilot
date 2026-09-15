@@ -65,6 +65,48 @@ async function applyFuelMultiplier(id: string, multiplier: number) {
   revalidatePath(`/p11d/${id}`);
 }
 
+// Pushes this computation's total taxable benefit value into the matching
+// SA102 employment source on the employee's own Personal Tax computation —
+// found by matching employer name (this client) and tax year. If no such
+// source exists yet, one is created; if it does (e.g. already populated by
+// Payroll's own sync), only the benefits_in_kind figure is updated, leaving
+// pay/tax_deducted exactly as Payroll set them.
+async function syncP11DToPersonalTax(id: string, employeeClientId: string, employerName: string, taxYear: string, totalBenefitsValue: number) {
+  "use server";
+  if (!employeeClientId) return;
+
+  const { data: personalTaxComp } = await supabase
+    .from("tax_computations")
+    .select("id")
+    .eq("client_id", employeeClientId)
+    .eq("tax_year", taxYear)
+    .maybeSingle();
+
+  if (!personalTaxComp) return;
+
+  const { data: existingSource } = await supabase
+    .from("sa_employment_sources")
+    .select("id")
+    .eq("tax_computation_id", personalTaxComp.id)
+    .eq("employer_name", employerName)
+    .maybeSingle();
+
+  if (existingSource) {
+    await supabase.from("sa_employment_sources").update({ benefits_in_kind: totalBenefitsValue }).eq("id", existingSource.id);
+  } else {
+    await supabase.from("sa_employment_sources").insert({
+      tax_computation_id: personalTaxComp.id,
+      employer_name: employerName,
+      pay: 0,
+      tax_deducted: 0,
+      benefits_in_kind: totalBenefitsValue,
+    });
+  }
+
+  revalidatePath(`/tax/${personalTaxComp.id}`);
+  revalidatePath(`/p11d/${id}`);
+}
+
 export default async function P11DDetailPage({
   params,
   searchParams,
@@ -77,7 +119,7 @@ export default async function P11DDetailPage({
 
   const { data: comp, error } = await supabase
     .from("p11d_computations")
-    .select("*, clients(client_name, email)")
+    .select("*, clients!client_id(client_name, email)")
     .eq("id", id)
     .single();
 
@@ -129,6 +171,7 @@ export default async function P11DDetailPage({
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const applyPercentageWithId = applyCarPercentage.bind(null, id, checkerPercentage);
   const applyMultiplierWithId = applyFuelMultiplier.bind(null, id, rates.defaultFuelMultiplier);
+  const syncToPersonalTaxWithId = syncP11DToPersonalTax.bind(null, id, comp.employee_client_id, client?.client_name || "", comp.tax_year, totalBenefitsValue);
 
   const buildCheckerHref = (patch: Partial<{ fuel_type: string; co2: string; ev_range: string }>) => {
     const params = new URLSearchParams({
@@ -338,6 +381,27 @@ export default async function P11DDetailPage({
             <p className="text-xs text-yellow-800">
               Company cars, van benefits, and private medical are due to move to mandatory payrolling from 6 April 2027 (Phase 1) — check whether this client should be payrolling this benefit instead of filing a P11D for it.
             </p>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <h2 className="text-lg font-bold text-slate-900">Sync to Personal Tax</h2>
+            {comp.employee_client_id ? (
+              <>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Pushes {fmt(totalBenefitsValue)} of taxable benefits into this employee's own {comp.tax_year} Personal Tax return, against their employment with {client?.client_name}.
+                </p>
+                <form action={syncToPersonalTaxWithId} className="mt-4">
+                  <button type="submit"
+                    className="w-full rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 transition-colors">
+                    Sync Benefits to Personal Tax →
+                  </button>
+                </form>
+              </>
+            ) : (
+              <p className="text-sm text-amber-700 mt-2">
+                This employee isn't linked to a Personal Tax client yet — sync them from Payroll first (via "Sync to Personal Tax" on their payroll record), then come back here.
+              </p>
+            )}
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">

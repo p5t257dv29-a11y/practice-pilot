@@ -578,7 +578,43 @@ async function syncEmployeeToPersonalTax(employeeId: string, taxYear: string) {
 
   const totalGross = (runs || []).reduce((sum, r) => sum + Number(r.gross_pay), 0);
   const totalTax = (runs || []).reduce((sum, r) => sum + Number(r.tax_deducted), 0);
+// Push this employee's total pay and tax deducted into the matching SA102
+  // employment source on their own Personal Tax return — found by matching
+  // employer name (this client) and tax year. If P11D has already created
+  // this same source (for benefits_in_kind), only pay/tax_deducted are
+  // updated here, leaving whatever benefits figure P11D set untouched.
+  const { data: client } = await supabase.from("clients").select("client_name").eq("id", employee.client_id).single();
+  const employerName = client?.client_name || "Unknown Employer";
 
+  const { data: personalTaxComp } = await supabase
+    .from("tax_computations")
+    .select("id")
+    .eq("client_id", employee.linked_client_id)
+    .eq("tax_year", taxYear)
+    .maybeSingle();
+
+  if (personalTaxComp) {
+    const { data: existingSource } = await supabase
+      .from("sa_employment_sources")
+      .select("id")
+      .eq("tax_computation_id", personalTaxComp.id)
+      .eq("employer_name", employerName)
+      .maybeSingle();
+
+    if (existingSource) {
+      await supabase.from("sa_employment_sources").update({ pay: totalGross, tax_deducted: totalTax }).eq("id", existingSource.id);
+    } else {
+      await supabase.from("sa_employment_sources").insert({
+        tax_computation_id: personalTaxComp.id,
+        employer_name: employerName,
+        pay: totalGross,
+        tax_deducted: totalTax,
+        benefits_in_kind: 0,
+      });
+    }
+
+    revalidatePath(`/tax/${personalTaxComp.id}`);
+  }
   const deltaGross = totalGross - Number(employee.synced_gross || 0);
   const deltaTax = totalTax - Number(employee.synced_tax || 0);
 

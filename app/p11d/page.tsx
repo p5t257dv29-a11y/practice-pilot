@@ -130,7 +130,7 @@ async function deleteComputation(id: string) {
 export default async function P11DPage() {
   const { data: computations, error } = await supabase
     .from("p11d_computations")
-    .select("*, clients(client_name)")
+    .select("*, clients!client_id(client_name)")
     .order("created_at", { ascending: false });
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

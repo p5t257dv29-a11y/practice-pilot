@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
-import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
-import { createPayRun, deletePayRun, updatePayRun, calculatePayrolledBenefitPerPeriod } from "../page";
+import { redirect, notFound } from "next/navigation";
+import { createPayRun } from "../page";
+
 export const dynamic = "force-dynamic";
 
 const supabase = createClient(
@@ -9,409 +9,264 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-async function startBatch(clientId: string, formData: FormData) {
+// Wraps the existing, already-working createPayRun rather than duplicating
+// its calculation logic. If this employee already has an entry for this
+// period (because we're reviewing/amending, not entering fresh), that row
+// is removed first so createPayRun's insert recalculates everything
+// cleanly from the resubmitted figures — never leaves a stale duplicate.
+// Then explicitly advances to the next employee in the review sequence,
+// or back to Pay Run History once the last one is done.
+async function reviewPayRunStep(
+  employeeId: string, clientId: string, batchId: string | null,
+  periodStart: string, periodEnd: string,
+  nextUrl: string,
+  formData: FormData
+) {
+  "use server";
+
+  await supabase.from("payroll_runs")
+    .delete()
+    .eq("employee_id", employeeId)
+    .eq("pay_period_start", periodStart)
+    .eq("pay_period_end", periodEnd);
+
+  await createPayRun(employeeId, clientId, batchId, formData);
+
+  redirect(nextUrl);
+}
+
+// Changes the pay period for the whole batch at once — updating the batch
+// record itself and every employee's already-saved run within it, so the
+// period never drifts out of sync between employees partway through review.
+async function updateBatchPeriod(batchId: string, clientId: string, formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
+  const newStart = get("edit_period_start");
+  const newEnd = get("edit_period_end");
+  const newPaymentDate = get("edit_payment_date");
 
-  const { data: batch } = await supabase.from("payroll_batches").insert({
-    client_id: clientId,
-    period_start: get("period_start"),
-    period_end: get("period_end"),
-    payment_date: get("payment_date"),
-    status: "draft",
-  }).select().single();
+  if (!newStart || !newEnd || !newPaymentDate) return;
 
-  redirect(`/payroll/run?browseClient=${clientId}&batchId=${batch?.id}`);
+  await supabase.from("payroll_batches").update({
+    period_start: newStart,
+    period_end: newEnd,
+    payment_date: newPaymentDate,
+  }).eq("id", batchId);
+
+  await supabase.from("payroll_runs").update({
+    pay_period_start: newStart,
+    pay_period_end: newEnd,
+    payment_date: newPaymentDate,
+  }).eq("batch_id", batchId);
+
+  redirect(`/payroll/run?browseClient=${clientId}&period_start=${newStart}&period_end=${newEnd}&payment_date=${newPaymentDate}`);
 }
 
-async function addToRunAndAdvance(employeeId: string, clientId: string, batchId: string, formData: FormData) {
-  "use server";
-  await createPayRun(employeeId, clientId, batchId, formData);
-  redirect(`/payroll/run?browseClient=${clientId}&batchId=${batchId}`);
-}
-
-async function finalizeBatch(batchId: string, clientId: string) {
-  "use server";
-  await supabase.from("payroll_batches").update({ status: "finalized", finalized_at: new Date().toISOString() }).eq("id", batchId);
-  revalidatePath("/payroll/run");
-  revalidatePath("/payroll/runs");
-  redirect(`/payroll/runs?browseClient=${clientId}`);
-}
-
-async function saveEditAndAdvance(runId: string, employeeId: string, clientId: string, batchIdVal: string, nextRunId: string | null, formData: FormData) {
-  "use server";
-  await updatePayRun(runId, employeeId, formData);
-  if (nextRunId) {
-    redirect(`/payroll/run?browseClient=${clientId}&batchId=${batchIdVal}&editRun=${nextRunId}`);
-  } else {
-    redirect(`/payroll/runs?browseClient=${clientId}`);
-  }
-}
-
-async function deleteBatch(batchId: string) {
-"use server";
-  await supabase.from("payroll_batches").delete().eq("id", batchId);
-  revalidatePath("/payroll/run");
-}
-
-export default async function NewPayRunPage({
+export default async function PayRunPage({
   searchParams,
 }: {
-  searchParams: Promise<{ browseClient?: string; batchId?: string; editRun?: string }>;
+  searchParams: Promise<{ browseClient?: string; period_start?: string; period_end?: string; payment_date?: string; employee_index?: string }>;
 }) {
-  const { browseClient: browseClientId, batchId, editRun: editRunId } = await searchParams;
-  if (!browseClientId) {
-    return (
-      <div className="min-h-screen bg-slate-50 p-8">
-        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 max-w-lg mx-auto text-center">
-          <p className="text-sm text-slate-500">No client selected.</p>
-          <a href="/payroll" className="text-sm font-semibold text-blue-600 hover:underline mt-2 inline-block">← Back to Payroll</a>
-        </div>
-      </div>
-    );
+  const { browseClient: clientId, period_start, period_end, payment_date, employee_index } = await searchParams;
+  if (!clientId) notFound();
+
+  const { data: client } = await supabase.from("clients").select("client_name").eq("id", clientId).single();
+  const { data: employees } = await supabase.from("payroll_employees").select("*").eq("client_id", clientId).eq("is_active", true).order("name", { ascending: true });
+
+  const periodStart = period_start || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0];
+  const periodEnd = period_end || new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().split("T")[0];
+  const paymentDate = payment_date || periodEnd;
+
+  let { data: batch } = await supabase
+    .from("payroll_batches")
+    .select("*")
+    .eq("client_id", clientId)
+    .eq("period_start", periodStart)
+    .eq("period_end", periodEnd)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!batch) {
+    const { data: newBatch } = await supabase
+      .from("payroll_batches")
+      .insert({
+        client_id: clientId,
+        period_start: periodStart,
+        period_end: periodEnd,
+        payment_date: paymentDate,
+        status: "draft",
+      })
+      .select()
+      .single();
+    batch = newBatch;
   }
 
-  const [{ data: client }, { data: draftBatch }] = await Promise.all([
-    supabase.from("clients").select("id, client_name").eq("id", browseClientId).single(),
-    !batchId
-      ? supabase.from("payroll_batches").select("*").eq("client_id", browseClientId).eq("status", "draft").order("created_at", { ascending: false }).limit(1).maybeSingle()
-      : Promise.resolve({ data: null }),
-  ]);
-
-  const activeBatchId = batchId || draftBatch?.id;
-
-  const { data: batch } = activeBatchId
-    ? await supabase.from("payroll_batches").select("*").eq("id", activeBatchId).single()
-    : { data: null };
-
-  const { data: activeEmployees } = await supabase
-    .from("payroll_employees")
+  const { data: existingRuns } = await supabase
+    .from("payroll_runs")
     .select("*")
-    .eq("client_id", browseClientId)
-    .eq("is_active", true)
-    .order("name", { ascending: true });
+    .in("employee_id", (employees || []).map((e) => e.id))
+    .eq("pay_period_start", periodStart)
+    .eq("pay_period_end", periodEnd);
 
-const { data: batchRuns } = activeBatchId
-    ? await supabase.from("payroll_runs").select("*, payroll_employees(*)").eq("batch_id", activeBatchId).order("created_at", { ascending: true })
-    : { data: [] };
+  const runsByEmployee = new Map((existingRuns || []).map((r) => [r.employee_id, r]));
 
-  const editingRun = editRunId ? (batchRuns || []).find((r: any) => r.id === editRunId) : null;
-  const editingIndex = editingRun ? (batchRuns || []).findIndex((r: any) => r.id === editRunId) : -1;
-  const nextRunToEdit = editingIndex >= 0 && editingIndex < (batchRuns || []).length - 1 ? batchRuns![editingIndex + 1] : null;
-  const paidEmployeeIds = new Set((batchRuns || []).map((r: any) => r.employee_id));
-  const nextEmployee = (activeEmployees || []).find((e: any) => !paidEmployeeIds.has(e.id));
-  const remainingCount = (activeEmployees || []).filter((e: any) => !paidEmployeeIds.has(e.id)).length;
+  // Every active employee, in a fixed order — this is the full review
+  // sequence, not just whoever hasn't been entered yet.
+  const orderedEmployees = employees || [];
+  const currentIndex = Math.min(Math.max(0, parseInt(employee_index || "0", 10) || 0), orderedEmployees.length);
+  const currentEmployee = orderedEmployees[currentIndex];
+  const existingRun = currentEmployee ? runsByEmployee.get(currentEmployee.id) : null;
+  const isLastEmployee = currentIndex === orderedEmployees.length - 1;
 
-  const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const baseUrl = `/payroll/run?browseClient=${clientId}&period_start=${periodStart}&period_end=${periodEnd}&payment_date=${paymentDate}`;
+  const nextUrl = isLastEmployee ? `/payroll/runs?browseClient=${clientId}` : `${baseUrl}&employee_index=${currentIndex + 1}`;
 
-  const totals = (batchRuns || []).reduce((acc: any, r: any) => ({
-    gross: acc.gross + Number(r.gross_pay),
-    tax: acc.tax + Number(r.tax_deducted),
-    employeeNI: acc.employeeNI + Number(r.employee_ni),
-    employerNI: acc.employerNI + Number(r.employer_ni),
-    net: acc.net + Number(r.net_pay),
-  }), { gross: 0, tax: 0, employeeNI: 0, employerNI: 0, net: 0 });
-
-  const startBatchWithClient = startBatch.bind(null, browseClientId);
+  const fmt = (n: number) => `£${Number(n).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const val = (field: string, fallback = "0") => existingRun ? String(existingRun[field] ?? fallback) : fallback;
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
-        <a href={`/payroll?browseClient=${browseClientId}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
-          ← Back to Payroll
-        </a>
-        <h1 className="text-2xl font-bold text-slate-900 mt-4">New Pay Run</h1>
+        <a href={`/payroll?browseClient=${clientId}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">← Back to Payroll</a>
+        <h1 className="text-2xl font-bold text-slate-900 mt-4">Pay Run</h1>
         <p className="text-sm text-slate-500 mt-0.5">{client?.client_name}</p>
       </div>
 
-      <div className="p-8">
-        {!batch ? (
-          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 max-w-2xl">
-            <h2 className="text-lg font-bold text-slate-900">Set Pay Period</h2>
-            <p className="text-sm text-slate-500 mt-0.5">These dates apply to everyone paid in this run.</p>
-            <form action={startBatchWithClient} className="mt-4 grid gap-4 md:grid-cols-3">
+      <div className="p-8 max-w-3xl">
+        <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 mb-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Pay Period</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                {new Date(periodStart).toLocaleDateString("en-GB")} to {new Date(periodEnd).toLocaleDateString("en-GB")} · Paid {new Date(paymentDate).toLocaleDateString("en-GB")}
+              </p>
+            </div>
+          </div>
+          <details className="mt-3">
+            <summary className="text-xs font-semibold text-blue-600 cursor-pointer">Edit period dates</summary>
+            <form action={updateBatchPeriod.bind(null, batch?.id || "", clientId)} className="mt-3 grid gap-3 md:grid-cols-4 items-end">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Period Start *</label>
-                <input name="period_start" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <label className="block text-xs font-medium text-slate-700 mb-1">Period Start</label>
+                <input name="edit_period_start" type="date" defaultValue={periodStart} className="w-full rounded-xl border border-slate-200 p-2.5 text-sm" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Period End *</label>
-                <input name="period_end" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <label className="block text-xs font-medium text-slate-700 mb-1">Period End</label>
+                <input name="edit_period_end" type="date" defaultValue={periodEnd} className="w-full rounded-xl border border-slate-200 p-2.5 text-sm" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Payment Date *</label>
-                <input name="payment_date" type="date" required className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+                <label className="block text-xs font-medium text-slate-700 mb-1">Payment Date</label>
+                <input name="edit_payment_date" type="date" defaultValue={paymentDate} className="w-full rounded-xl border border-slate-200 p-2.5 text-sm" />
               </div>
-              <div className="md:col-span-3">
-                <button type="submit" className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                  Start Pay Run
-                </button>
+              <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                Update Period
+              </button>
+            </form>
+            <p className="text-xs text-slate-400 mt-2">Updates this batch and every employee already saved within it, so the period stays consistent throughout.</p>
+          </details>
+        </div>
+
+        {currentEmployee ? (
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">{currentEmployee.name}</h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  {currentEmployee.tax_code} · NI Category {currentEmployee.ni_category} · {currentEmployee.pay_frequency}
+                  {currentEmployee.pay_type === "Hourly" && ` · Hourly (£${Number(currentEmployee.hourly_rate).toFixed(2)}/hr)`}
+                  {existingRun && " · Already entered — reviewing"}
+                </p>
               </div>
+              <div className="flex items-center gap-3">
+                {currentIndex > 0 && (
+                  <a href={`${baseUrl}&employee_index=${currentIndex - 1}`} className="text-sm text-slate-500 hover:text-slate-900 transition-colors">← Previous</a>
+                )}
+                <p className="text-sm text-slate-400">Employee {currentIndex + 1} of {orderedEmployees.length}</p>
+              </div>
+            </div>
+
+            <form action={reviewPayRunStep.bind(null, currentEmployee.id, clientId, batch?.id || null, periodStart, periodEnd, nextUrl)} className="mt-6 space-y-6">
+              <input type="hidden" name="pay_period_start" value={periodStart} />
+              <input type="hidden" name="pay_period_end" value={periodEnd} />
+              <input type="hidden" name="payment_date" value={paymentDate} />
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Taxable Pay</p>
+                <div className="grid gap-4 md:grid-cols-3">
+                  {currentEmployee.pay_type === "Hourly" ? (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Hours Worked</label>
+                        <input name="hours_worked" type="number" step="0.25" min="0" defaultValue={val("hours_worked")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                        <p className="text-xs text-slate-400 mt-1">At £{Number(currentEmployee.hourly_rate).toFixed(2)}/hour</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Overtime Hours</label>
+                        <input name="overtime_hours" type="number" step="0.25" min="0" defaultValue={val("overtime_hours")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                        <p className="text-xs text-slate-400 mt-1">At £{Number(currentEmployee.overtime_rate).toFixed(2)}/hour</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Basic Pay (£)</label>
+                        <input name="basic_pay" type="number" step="0.01" defaultValue={val("basic_pay")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Overtime (£)</label>
+                        <input name="overtime" type="number" step="0.01" defaultValue={val("overtime")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                      </div>
+                    </>
+                  )}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Bonus (£)</label>
+                    <input name="bonus" type="number" step="0.01" defaultValue={val("bonus")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Holiday Pay (£)</label>
+                    <input name="holiday_pay" type="number" step="0.01" defaultValue={val("holiday_pay")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Sick Pay (£)</label>
+                    <input name="sick_pay" type="number" step="0.01" defaultValue={val("sick_pay")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">SMP Weeks This Period</label>
+                    <input name="smp_weeks_this_period" type="number" step="0.5" min="0" defaultValue={val("smp_weeks_this_period")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">SPP Weeks This Period</label>
+                    <input name="spp_weeks_this_period" type="number" step="0.5" min="0" defaultValue={val("spp_weeks_this_period")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                    <p className="text-xs text-slate-400 mt-1">{Math.max(0, 2 - (currentEmployee.spp_weeks_paid || 0))} weeks remaining of 2-week allowance.</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Payrolled Benefits (£)</label>
+                    <input name="payrolled_benefits" type="number" step="0.01" defaultValue={val("payrolled_benefits")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-6">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Non-Taxable Items</p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Expenses Reimbursed (£)</label>
+                    <input name="expenses" type="number" step="0.01" defaultValue={val("expenses")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Other Deduction (£)</label>
+                    <input name="other_deductions" type="number" step="0.01" defaultValue={val("other_deductions")} className="w-full rounded-xl border border-slate-200 p-3 text-sm" />
+                  </div>
+                </div>
+              </div>
+
+              <button type="submit" className="w-full rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                {isLastEmployee ? "Save & Finish" : "Save & Next →"}
+              </button>
             </form>
           </div>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="lg:col-span-2 space-y-6">
-
-              <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-900">Pay Period</h2>
-                    <p className="text-sm text-slate-500 mt-0.5">
-                      {new Date(batch.period_start).toLocaleDateString("en-GB")} to {new Date(batch.period_end).toLocaleDateString("en-GB")} · Paid {new Date(batch.payment_date).toLocaleDateString("en-GB")}
-                    </p>
-                  </div>
-                  <form action={deleteBatch.bind(null, batch.id)}>
-                    <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                      Cancel Pay Run
-                    </button>
-                  </form>
-                </div>
-              </div>
-
-{editingRun ? (
-                <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-bold text-slate-900">Reviewing: {editingRun.payroll_employees?.name}</h2>
-                    <span className="text-xs text-slate-400">{editingIndex + 1} of {(batchRuns || []).length}</span>
-                  </div>
-                  <p className="text-sm text-slate-500 mt-0.5">
-                    {editingRun.tax_code_used} · NI Category {editingRun.ni_category_used}
-                  </p>
-
-                  <form action={saveEditAndAdvance.bind(null, editingRun.id, editingRun.employee_id, browseClientId, batch.id, nextRunToEdit?.id || null)} className="mt-6 space-y-5">
-                    <div>
-                      <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Taxable Pay</p>
-                      <div className="grid gap-4 md:grid-cols-3">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Basic Pay (£)</label>
-                          <input name="basic_pay" type="number" step="0.01" min="0" defaultValue={editingRun.basic_pay || editingRun.gross_pay} required
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Bonus (£)</label>
-                          <input name="bonus" type="number" step="0.01" min="0" defaultValue={editingRun.bonus || 0}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Overtime (£)</label>
-                          <input name="overtime" type="number" step="0.01" min="0" defaultValue={editingRun.overtime || 0}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Holiday Pay (£)</label>
-                          <input name="holiday_pay" type="number" step="0.01" min="0" defaultValue={editingRun.holiday_pay || 0}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Sick Pay (£)</label>
-                          <input name="sick_pay" type="number" step="0.01" min="0" defaultValue={editingRun.sick_pay || 0}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="border-t border-slate-100 pt-4">
-                      <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Non-Taxable Items</p>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Expenses Reimbursed (£)</label>
-                          <input name="expenses" type="number" step="0.01" min="0" defaultValue={editingRun.expenses || 0}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Other Deduction (£)</label>
-                          <input name="other_deductions" type="number" step="0.01" min="0" defaultValue={editingRun.other_deductions || 0}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div className="md:col-span-2">
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Deduction Description</label>
-                          <input name="other_deductions_description" defaultValue={editingRun.other_deductions_description || ""}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                      <input name="notes" defaultValue={editingRun.notes || ""} className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-
-                    <div className="flex gap-3">
-                      <button type="submit" className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                        Save & {nextRunToEdit ? `Next: ${nextRunToEdit.payroll_employees?.name} →` : "Finish Review"}
-                      </button>
-                      <a href={`/payroll/runs?browseClient=${browseClientId}`}
-                        className="rounded-xl bg-white border border-slate-200 px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-                        Exit Review
-                      </a>
-                    </div>
-                  </form>
-                </div>
-              ) : nextEmployee ? (
-                <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-bold text-slate-900">{nextEmployee.name}</h2>
-                    <span className="text-xs text-slate-400">{remainingCount} of {(activeEmployees || []).length} remaining</span>
-                  </div>
-                  <p className="text-sm text-slate-500 mt-0.5">
-                    {nextEmployee.tax_code} · NI Category {nextEmployee.ni_category} · {nextEmployee.pay_frequency}
-                  </p>
-
-                  <form action={addToRunAndAdvance.bind(null, nextEmployee.id, browseClientId, batch.id)} className="mt-6 space-y-5">
-                    <input type="hidden" name="pay_period_start" value={batch.period_start} />
-                    <input type="hidden" name="pay_period_end" value={batch.period_end} />
-                    <input type="hidden" name="payment_date" value={batch.payment_date} />
-
-                    <div>
-                      <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Taxable Pay</p>
-                      <div className="grid gap-4 md:grid-cols-3">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Basic Pay (£)</label>
-                          <input name="basic_pay" type="number" step="0.01" min="0" defaultValue="0" required
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Bonus (£)</label>
-                          <input name="bonus" type="number" step="0.01" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Overtime (£)</label>
-                          <input name="overtime" type="number" step="0.01" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Holiday Pay (£)</label>
-                          <input name="holiday_pay" type="number" step="0.01" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-<div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Sick Pay (£)</label>
-                          <input name="sick_pay" type="number" step="0.01" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                        </div>
-<div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">SMP Weeks This Period</label>
-                          <input name="smp_weeks_this_period" type="number" step="0.5" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                            placeholder="0 unless on maternity leave" />
-                        </div>
-<div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Payrolled Benefits This Period (£)</label>
-                          <input name="payrolled_benefits" type="number" step="0.01" min="0" defaultValue={calculatePayrolledBenefitPerPeriod({
-                              annualBenefit: Number(nextEmployee.annual_payrolled_benefits) || 0,
-                              benefitStartDate: nextEmployee.payrolled_benefits_start_date,
-                              paymentDate: batch.payment_date,
-                              payFrequency: nextEmployee.pay_frequency,
-                              taxYear: "2026/27",
-                            }).toFixed(2)}
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                            placeholder="From 2027: taxed here instead of P11D" />
-                          {nextEmployee.payrolled_benefits_start_date && (
-                            <p className="text-xs text-slate-400 mt-1">
-                              Prorated from {new Date(nextEmployee.payrolled_benefits_start_date).toLocaleDateString("en-GB")} across remaining periods in the tax year.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <p className="text-xs text-slate-400 mt-2">These are all combined and taxed together — this is what PAYE, NI, and pension are calculated on. SMP is calculated automatically from the employee's Average Weekly Earnings and weeks already paid.</p>
-                    </div>
-                    <div className="border-t border-slate-100 pt-4">
-                      <p className="text-xs font-bold text-slate-900 uppercase tracking-wide mb-2">Non-Taxable Items</p>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Expenses Reimbursed (£)</label>
-                          <input name="expenses" type="number" step="0.01" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                            placeholder="e.g. mileage, receipts" />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Other Deduction (£)</label>
-                          <input name="other_deductions" type="number" step="0.01" min="0" defaultValue="0"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                            placeholder="e.g. court order, advance repayment" />
-                        </div>
-                        <div className="md:col-span-2">
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Deduction Description</label>
-                          <input name="other_deductions_description"
-                            className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
-                            placeholder="Only needed if there's a deduction above" />
-                        </div>
-                      </div>
-                      <p className="text-xs text-slate-400 mt-2">Expenses and other deductions apply directly to net pay — they're not taxed and don't affect NI or pension.</p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Notes</label>
-                      <input name="notes" className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
-                    </div>
-
-                    <button type="submit" className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                      Save & {remainingCount > 1 ? "Next Employee →" : "Finish"}
-                    </button>
-                  </form>
-                </div>
-              ) : (
-                <div className="rounded-2xl bg-green-50 border border-green-100 p-6 text-center">
-                  <p className="font-bold text-green-800">All active employees have been added to this pay run.</p>
-                  <p className="text-sm text-green-700 mt-1">Review the totals on the right, then finalize when ready.</p>
-                </div>
-              )}
-
-              {(batchRuns || []).length > 0 && (
-                <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-                  <h2 className="text-lg font-bold text-slate-900">Completed So Far ({(batchRuns || []).length})</h2>
-                  <div className="mt-4 space-y-2">
-                    {(batchRuns || []).map((run: any) => (
-                      <div key={run.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-3">
-                        <div>
-                          <p className="font-semibold text-slate-900 text-sm">{run.payroll_employees?.name}</p>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            Gross {fmt(Number(run.gross_pay))} · Tax {fmt(Number(run.tax_deducted))} · NI {fmt(Number(run.employee_ni))} · Net {fmt(Number(run.net_pay))}
-                          </p>
-                        </div>
-                        <form action={deletePayRun.bind(null, run.id)}>
-                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100 transition-colors">
-                            Remove
-                          </button>
-                        </form>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-6">
-              <div className="rounded-2xl bg-slate-900 p-6 shadow-sm text-white sticky top-6">
-                <h2 className="text-lg font-bold">Pay Run Totals</h2>
-                <div className="mt-4 space-y-2 text-sm">
-                  <div className="flex justify-between"><span className="text-slate-300">Gross Pay</span><span>{fmt(totals.gross)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-300">PAYE Tax</span><span>{fmt(totals.tax)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-300">Employee NI</span><span>{fmt(totals.employeeNI)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-300">Employer NI</span><span>{fmt(totals.employerNI)}</span></div>
-                  <div className="border-t border-slate-700 pt-2 flex justify-between font-bold text-base">
-                    <span>Total Net Pay</span>
-                    <span>{fmt(totals.net)}</span>
-                  </div>
-                </div>
-
-                {(batchRuns || []).length > 0 && (
-                  <form action={finalizeBatch.bind(null, batch.id, browseClientId)} className="mt-6">
-                    <button type="submit" className="w-full rounded-xl bg-white px-5 py-3 text-sm font-bold text-slate-900 hover:bg-slate-100 transition-colors">
-                      Finalize Pay Run
-                    </button>
-                  </form>
-                )}
-              </div>
-
-              <div className="rounded-2xl bg-yellow-50 border border-yellow-100 p-4">
-                <p className="text-xs text-yellow-800">
-                  Finalizing marks this pay run as complete. Payslips can be viewed and emailed from "View Pay Runs" once finalized.
-                </p>
-              </div>
-            </div>
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 text-center py-12">
+            <p className="text-slate-500 text-sm">No employees found for this client.</p>
           </div>
         )}
       </div>
