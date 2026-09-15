@@ -127,6 +127,50 @@ async function deleteComputation(id: string) {
   revalidatePath("/p11d");
 }
 
+// ============================================================
+// Original P11D totals calculation — used by the P11D(b) summary,
+// approval page, and send-email route. Kept exactly as a separate,
+// self-contained calculation from the car/van checker above, since other
+// files import this specific function and constant by name.
+// ============================================================
+
+export const P11D_RATES = {
+  class1ANicRate: 0.15,
+  carContributionCap: 5000,
+  loanDeMinimis: 10000,
+};
+
+export function calculateP11D(comp: {
+  car_list_price: number; car_capital_contribution: number; car_benefit_percentage: number; car_available_days: number;
+  fuel_provided: boolean; fuel_benefit_multiplier: number;
+  van_provided?: boolean; van_is_zero_emission?: boolean; van_available_days?: number; van_employee_contribution?: number; van_fuel_provided?: boolean;
+  medical_premium: number; medical_employee_contribution: number;
+  loan_balance: number; loan_interest_paid: number; official_rate_of_interest: number;
+  other_benefits_amount: number;
+}) {
+  const cappedContribution = Math.min(Number(comp.car_capital_contribution) || 0, P11D_RATES.carContributionCap);
+  const carBenefit = ((Number(comp.car_list_price) || 0) - cappedContribution) * ((Number(comp.car_benefit_percentage) || 0) / 100) * ((Number(comp.car_available_days) || 0) / 365);
+  const fuelBenefit = comp.fuel_provided
+    ? (Number(comp.fuel_benefit_multiplier) || 0) * ((Number(comp.car_benefit_percentage) || 0) / 100) * ((Number(comp.car_available_days) || 0) / 365)
+    : 0;
+
+  const medicalBenefit = Math.max(0, (Number(comp.medical_premium) || 0) - (Number(comp.medical_employee_contribution) || 0));
+
+  const loanBenefit = (Number(comp.loan_balance) || 0) > P11D_RATES.loanDeMinimis
+    ? Math.max(0, ((Number(comp.loan_balance) || 0) * ((Number(comp.official_rate_of_interest) || 0) / 100)) - (Number(comp.loan_interest_paid) || 0))
+    : 0;
+
+  const otherBenefits = Number(comp.other_benefits_amount) || 0;
+
+  const totalBenefitsValue = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefits;
+  const class1ANIC = totalBenefitsValue * P11D_RATES.class1ANicRate;
+
+  return {
+    carBenefit, fuelBenefit, medicalBenefit, loanBenefit, otherBenefits,
+    totalBenefitsValue, class1ANIC,
+  };
+}
+
 export default async function P11DPage() {
   const { data: computations, error } = await supabase
     .from("p11d_computations")
