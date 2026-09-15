@@ -140,27 +140,27 @@ export const P11D_RATES = {
   loanDeMinimis: 10000,
 };
 
-export function calculateP11D(comp: {
-  car_list_price: number; car_capital_contribution: number; car_benefit_percentage: number; car_available_days: number;
-  fuel_provided: boolean; fuel_benefit_multiplier: number;
-  van_provided?: boolean; van_is_zero_emission?: boolean; van_available_days?: number; van_employee_contribution?: number; van_fuel_provided?: boolean;
-  medical_premium: number; medical_employee_contribution: number;
-  loan_balance: number; loan_interest_paid: number; official_rate_of_interest: number;
-  other_benefits_amount: number;
+export function calculateP11D(input: {
+  carListPrice: number; carCapitalContribution: number; carBenefitPercentage: number; carAvailableDays: number;
+  fuelProvided: boolean; fuelBenefitMultiplier: number;
+  vanProvided?: boolean; vanIsZeroEmission?: boolean; vanAvailableDays?: number; vanEmployeeContribution?: number; vanFuelProvided?: boolean;
+  medicalPremium: number; medicalEmployeeContribution: number;
+  loanBalance: number; loanInterestPaid: number; officialRateOfInterest: number;
+  otherBenefitsAmount: number;
 }) {
-  const cappedContribution = Math.min(Number(comp.car_capital_contribution) || 0, P11D_RATES.carContributionCap);
-  const carBenefit = ((Number(comp.car_list_price) || 0) - cappedContribution) * ((Number(comp.car_benefit_percentage) || 0) / 100) * ((Number(comp.car_available_days) || 0) / 365);
-  const fuelBenefit = comp.fuel_provided
-    ? (Number(comp.fuel_benefit_multiplier) || 0) * ((Number(comp.car_benefit_percentage) || 0) / 100) * ((Number(comp.car_available_days) || 0) / 365)
+  const cappedContribution = Math.min(Number(input.carCapitalContribution) || 0, P11D_RATES.carContributionCap);
+  const carBenefit = ((Number(input.carListPrice) || 0) - cappedContribution) * ((Number(input.carBenefitPercentage) || 0) / 100) * ((Number(input.carAvailableDays) || 0) / 365);
+  const fuelBenefit = input.fuelProvided
+    ? (Number(input.fuelBenefitMultiplier) || 0) * ((Number(input.carBenefitPercentage) || 0) / 100) * ((Number(input.carAvailableDays) || 0) / 365)
     : 0;
 
-  const medicalBenefit = Math.max(0, (Number(comp.medical_premium) || 0) - (Number(comp.medical_employee_contribution) || 0));
+  const medicalBenefit = Math.max(0, (Number(input.medicalPremium) || 0) - (Number(input.medicalEmployeeContribution) || 0));
 
-  const loanBenefit = (Number(comp.loan_balance) || 0) > P11D_RATES.loanDeMinimis
-    ? Math.max(0, ((Number(comp.loan_balance) || 0) * ((Number(comp.official_rate_of_interest) || 0) / 100)) - (Number(comp.loan_interest_paid) || 0))
+  const loanBenefit = (Number(input.loanBalance) || 0) > P11D_RATES.loanDeMinimis
+    ? Math.max(0, ((Number(input.loanBalance) || 0) * ((Number(input.officialRateOfInterest) || 0) / 100)) - (Number(input.loanInterestPaid) || 0))
     : 0;
 
-  const otherBenefits = Number(comp.other_benefits_amount) || 0;
+  const otherBenefits = Number(input.otherBenefitsAmount) || 0;
 
   const totalBenefitsValue = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefits;
   const class1ANIC = totalBenefitsValue * P11D_RATES.class1ANicRate;
