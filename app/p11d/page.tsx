@@ -147,8 +147,12 @@ export function calculateP11D(input: {
   medicalPremium: number; medicalEmployeeContribution: number;
   loanBalance: number; loanInterestPaid: number; officialRateOfInterest: number;
   otherBenefitsAmount: number;
-}) {
-  const cappedContribution = Math.min(Number(input.carCapitalContribution) || 0, P11D_RATES.carContributionCap);
+}, rates?: { carContributionCap?: number; loanDeMinimis?: number; class1ANicRate?: number }) {
+  const carContributionCap = rates?.carContributionCap ?? P11D_RATES.carContributionCap;
+  const loanDeMinimis = rates?.loanDeMinimis ?? P11D_RATES.loanDeMinimis;
+  const class1ANicRate = rates?.class1ANicRate ?? P11D_RATES.class1ANicRate;
+
+  const cappedContribution = Math.min(Number(input.carCapitalContribution) || 0, carContributionCap);
   const carBenefit = ((Number(input.carListPrice) || 0) - cappedContribution) * ((Number(input.carBenefitPercentage) || 0) / 100) * ((Number(input.carAvailableDays) || 0) / 365);
   const fuelBenefit = input.fuelProvided
     ? (Number(input.fuelBenefitMultiplier) || 0) * ((Number(input.carBenefitPercentage) || 0) / 100) * ((Number(input.carAvailableDays) || 0) / 365)
@@ -156,14 +160,14 @@ export function calculateP11D(input: {
 
   const medicalBenefit = Math.max(0, (Number(input.medicalPremium) || 0) - (Number(input.medicalEmployeeContribution) || 0));
 
-  const loanBenefit = (Number(input.loanBalance) || 0) > P11D_RATES.loanDeMinimis
+  const loanBenefit = (Number(input.loanBalance) || 0) > loanDeMinimis
     ? Math.max(0, ((Number(input.loanBalance) || 0) * ((Number(input.officialRateOfInterest) || 0) / 100)) - (Number(input.loanInterestPaid) || 0))
     : 0;
 
   const otherBenefits = Number(input.otherBenefitsAmount) || 0;
 
   const totalBenefits = carBenefit + fuelBenefit + medicalBenefit + loanBenefit + otherBenefits;
-  const class1ANIC = totalBenefits * P11D_RATES.class1ANicRate;
+  const class1ANIC = totalBenefits * class1ANicRate;
 
   return {
     carBenefit, fuelBenefit, medicalBenefit, loanBenefit, otherBenefits,
