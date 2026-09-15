@@ -167,6 +167,7 @@ export function calculateP11D(input: {
 
   return {
     carBenefit, fuelBenefit, medicalBenefit, loanBenefit, otherBenefits,
+    otherBenefit: otherBenefits,
     totalBenefits, class1ANIC,
   };
 }
