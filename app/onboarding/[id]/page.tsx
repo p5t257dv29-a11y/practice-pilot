@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
 import { notFound } from "next/navigation";
+import { Resend } from "resend";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import OnboardingSendButton from "../onboarding-send-button";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +11,8 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function updateChecklist(id: string, formData: FormData) {
   "use server";
@@ -17,11 +22,9 @@ async function updateChecklist(id: string, formData: FormData) {
     prev_accounts_received: formData.get("prev_accounts_received") === "on",
     signed_engagement_received: formData.get("signed_engagement_received") === "on",
     clearance_received: formData.get("clearance_received") === "on",
-    status: formData.get("status") as string,
     prev_accountant_name: String(formData.get("prev_accountant_name") || ""),
     prev_accountant_firm: String(formData.get("prev_accountant_firm") || ""),
     prev_accountant_email: String(formData.get("prev_accountant_email") || ""),
-    prev_accountant_address: String(formData.get("prev_accountant_address") || ""),
     notes: String(formData.get("notes") || ""),
   }).eq("id", id);
 
@@ -31,6 +34,46 @@ async function updateChecklist(id: string, formData: FormData) {
 async function markClientFormSent(id: string) {
   "use server";
 
+  const { data: request } = await supabase
+    .from("onboarding_requests")
+    .select("token, clients(client_name, email)")
+    .eq("id", id)
+    .single();
+
+  const client = request?.clients as any;
+  const recipientEmail = client?.email;
+
+  if (recipientEmail && request?.token) {
+    const { data: settings } = await supabase.from("practice_settings").select("firm_name").limit(1).maybeSingle();
+    const firmName = settings?.firm_name || "Your Accountant";
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+    const formUrl = `${baseUrl}/onboard/${request.token}`;
+
+    await resend.emails.send({
+      from: `${firmName} <onboarding@resend.dev>`,
+      to: recipientEmail,
+      subject: `Welcome — please complete your details for ${firmName}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #0f172a;">Welcome, ${client?.client_name || "there"}!</h2>
+          <p>To get started, please complete your details using the secure link below.</p>
+          <a href="${formUrl}"
+             style="display: inline-block; background: #0f172a; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; margin: 20px 0;">
+            Complete Your Details
+          </a>
+          <p style="color: #64748b; font-size: 14px;">
+            If the button doesn't work, copy and paste this link into your browser:<br>
+            ${formUrl}
+          </p>
+          <p style="color: #64748b; font-size: 14px;">
+            Kind regards,<br>
+            ${firmName}
+          </p>
+        </div>
+      `,
+    });
+  }
+
   await supabase.from("onboarding_requests").update({
     sent_at: new Date().toISOString(),
     status: "In Progress",
@@ -38,12 +81,164 @@ async function markClientFormSent(id: string) {
 
   revalidatePath(`/onboarding/${id}`);
 }
+// Generates the actual Professional Clearance Letter as a PDF, using the
+// real content already shown on this page — not a shortened version.
+// Wraps long lines manually since pdf-lib has no built-in text wrapping.
+async function generateClearanceLetterPDF(data: {
+  prevAccountantName: string;
+  prevAccountantFirm: string;
+  prevAccountantEmail: string;
+  clientName: string;
+  companyNumber: string | null;
+  letterDate: string;
+}) {
+  const pdfDoc = await PDFDocument.create();
+  let page = pdfDoc.addPage([595, 842]); // A4
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const margin = 50;
+  const pageWidth = 595;
+  const maxWidth = pageWidth - margin * 2;
+  let y = 792;
+
+  const wrapText = (text: string, fontToUse: typeof font, size: number) => {
+    const words = text.split(" ");
+    const lines: string[] = [];
+    let current = "";
+    for (const word of words) {
+      const test = current ? `${current} ${word}` : word;
+      if (fontToUse.widthOfTextAtSize(test, size) > maxWidth) {
+        if (current) lines.push(current);
+        current = word;
+      } else {
+        current = test;
+      }
+    }
+    if (current) lines.push(current);
+    return lines;
+  };
+
+  const addLine = (text: string, opts: { size?: number; font?: typeof font; gapAfter?: number } = {}) => {
+    const size = opts.size || 11;
+    const useFont = opts.font || font;
+    if (y < margin + 30) {
+      page = pdfDoc.addPage([595, 842]);
+      y = 792;
+    }
+    for (const line of wrapText(text, useFont, size)) {
+      if (y < margin + 30) {
+        page = pdfDoc.addPage([595, 842]);
+        y = 792;
+      }
+      page.drawText(line, { x: margin, y, size, font: useFont, color: rgb(0.1, 0.1, 0.1) });
+      y -= size * 1.4;
+    }
+    y -= opts.gapAfter ?? 6;
+  };
+
+  addLine("Professional Clearance Letter", { size: 16, font: boldFont, gapAfter: 16 });
+  addLine(`To: ${data.prevAccountantName} — ${data.prevAccountantFirm}`);
+  addLine(`Email: ${data.prevAccountantEmail}`, { gapAfter: 16 });
+  addLine(data.letterDate, { gapAfter: 12 });
+  addLine(`Dear ${data.prevAccountantName || "Sir/Madam"},`, { gapAfter: 12 });
+  addLine(`Re: ${data.clientName}${data.companyNumber ? ` (Company No. ${data.companyNumber})` : ""}`, { font: boldFont, gapAfter: 12 });
+  addLine("We have been appointed as accountants for the above client and, in accordance with professional clearance procedures, would be grateful if you could provide the following information at your earliest convenience:", { gapAfter: 16 });
+
+  addLine("1. General handover", { font: boldFont, gapAfter: 4 });
+  addLine("•  Confirmation of any professional reason why we should not accept this appointment.");
+  addLine("•  Copies of the last set of filed accounts and tax computations.", { gapAfter: 12 });
+
+  addLine("2. VAT", { font: boldFont, gapAfter: 4 });
+  addLine("•  Copies of the last four VAT returns filed, and details of the current VAT scheme used.", { gapAfter: 12 });
+
+  addLine("3. Payroll", { font: boldFont, gapAfter: 4 });
+  addLine("•  Copies of the most recent P60s, and any P11Ds/P11D(b) submitted, for all employees and directors.");
+  addLine("•  Auto-enrolment pension details: provider, staging/duties start date, contribution rates, and next re-enrolment date.");
+  addLine("•  If the Client engages subcontractors: CIS scheme details, contractor/subcontractor status, and CIS return history.", { gapAfter: 12 });
+
+  addLine("5. HMRC references and agent authorisation", { font: boldFont, gapAfter: 4 });
+  addLine("•  Unique Taxpayer Reference (UTR) — corporate and, where relevant, personal.");
+  addLine("•  VAT registration number, PAYE reference, and Accounts Office reference (if not already provided above).");
+  addLine("•  Confirmation that you will remove/deauthorise your firm as agent on HMRC's systems (Government Gateway / Agent Services Account) once we are authorised, or confirmation of the taxes/services for which you currently hold authorisation.");
+  addLine("•  Details of any HMRC online services enrolments relevant to the Client that we should be aware of.", { gapAfter: 12 });
+
+  addLine("6. HMRC enquiries, disputes and correspondence", { font: boldFont, gapAfter: 4 });
+  addLine("•  Details of any current or recent HMRC enquiries, compliance checks, or disputes, including correspondence reference numbers.", { gapAfter: 16 });
+
+  addLine("Please let us know if you require any further information from us to action this request.", { gapAfter: 16 });
+  addLine("Yours faithfully,");
+
+  const pdfBytes = await pdfDoc.save();
+  return Buffer.from(pdfBytes).toString("base64");
+}
 
 async function markClearanceSent(id: string) {
   "use server";
 
+  const { data: request } = await supabase
+    .from("onboarding_requests")
+    .select("prev_accountant_name, prev_accountant_firm, prev_accountant_email, clients(client_name, company_number)")
+    .eq("id", id)
+    .single();
+
+  const client = request?.clients as any;
+  let emailError: string | null = null;
+
+  if (request?.prev_accountant_email) {
+    const { data: settings } = await supabase.from("practice_settings").select("firm_name").limit(1).maybeSingle();
+    const firmName = settings?.firm_name || "Your Accountant";
+    const letterDate = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+
+    const pdfBase64 = await generateClearanceLetterPDF({
+      prevAccountantName: request.prev_accountant_name || "",
+      prevAccountantFirm: request.prev_accountant_firm || "",
+      prevAccountantEmail: request.prev_accountant_email || "",
+      clientName: client?.client_name || "Client",
+      companyNumber: client?.company_number || null,
+      letterDate,
+    });
+
+    const { error } = await resend.emails.send({
+      from: `${firmName} <onboarding@resend.dev>`,
+      to: request.prev_accountant_email,
+      subject: `Professional Clearance Request — ${client?.client_name || "Client"}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #0f172a;">Professional Clearance Request</h2>
+          <p>Dear ${request.prev_accountant_name || "Sir/Madam"},</p>
+          <p>
+            Please find attached our professional clearance letter regarding
+            <strong>${client?.client_name || "the above client"}</strong>.
+          </p>
+          <p>
+            Please reply directly to this email with the requested information at your earliest convenience.
+          </p>
+          <p style="color: #64748b; font-size: 14px; margin-top: 30px;">
+            Kind regards,<br>
+            ${firmName}
+          </p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: `Professional-Clearance-Letter-${(client?.client_name || "Client").replace(/[^a-zA-Z0-9]/g, "-")}.pdf`,
+          content: pdfBase64,
+        },
+      ],
+    });
+
+    if (error) {
+      console.error("Failed to send clearance letter email:", error);
+      emailError = error.message || "Unknown error sending email";
+    }
+  } else {
+    emailError = "No email address on file for the previous accountant";
+  }
+
   await supabase.from("onboarding_requests").update({
     clearance_sent_at: new Date().toISOString(),
+    clearance_send_error: emailError,
   }).eq("id", id);
 
   revalidatePath(`/onboarding/${id}`);
@@ -84,6 +279,8 @@ export default async function OnboardingDetailPage({
     request.clearance_received,
   ].filter(Boolean).length;
 
+  const client = request.clients as any;
+
   return (
     <div className="min-h-screen bg-slate-50">
 
@@ -96,29 +293,23 @@ export default async function OnboardingDetailPage({
         <div className="mt-4 flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">
-              {request.clients?.client_name || "Unknown Client"}
+              {client?.client_name || "Client"}
             </h1>
-            <p className="text-sm text-slate-500 mt-0.5">{request.client_email}</p>
+            <p className="text-sm text-slate-500 mt-0.5">{client?.email}</p>
           </div>
-
-          <span className={`rounded-full px-4 py-2 text-sm font-semibold ${
-            request.status === "Complete" ? "bg-green-100 text-green-700"
-            : request.status === "In Progress" ? "bg-blue-100 text-blue-700"
-            : "bg-slate-100 text-slate-600"
-          }`}>
-            {request.status}
+          <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600">
+            {request.status || "Pending"}
           </span>
         </div>
 
-        {/* Progress bar */}
-        <div className="mt-4">
-          <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-            <span>Onboarding progress</span>
-            <span>{completedItems}/4 items complete</span>
+        <div className="mt-6">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-slate-500">Onboarding progress</span>
+            <span className="text-slate-500">{completedItems}/4 items complete</span>
           </div>
-          <div className="w-full bg-slate-100 rounded-full h-2">
+          <div className="mt-2 h-2 rounded-full bg-slate-100 overflow-hidden">
             <div
-              className="bg-green-500 h-2 rounded-full transition-all"
+              className="h-full bg-blue-600 transition-all"
               style={{ width: `${(completedItems / 4) * 100}%` }}
             />
           </div>
@@ -127,44 +318,37 @@ export default async function OnboardingDetailPage({
 
       <div className="p-8 grid gap-6 lg:grid-cols-3">
 
-        {/* Left - Main content */}
+        {/* Left - main content */}
         <div className="lg:col-span-2 space-y-6">
 
-          {/* Client Form Link */}
+          {/* Client Information Form */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Client Information Form</h2>
             <p className="text-sm text-slate-500 mt-0.5">
               Send this link to the client — they fill in all their details online.
             </p>
 
-            <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 p-4">
-              <p className="text-xs font-medium text-slate-500 mb-2">Client form link:</p>
-              <p className="text-sm font-mono text-blue-600 break-all">{clientFormUrl}</p>
+            <div className="mt-4 rounded-xl bg-slate-50 border border-slate-100 p-4">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Client form link:</p>
+              <a href={clientFormUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline break-all">
+                {clientFormUrl}
+              </a>
             </div>
 
-            <div className="mt-4 flex gap-3">
-              <a
-                href={clientFormUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
-              >
+            <div className="mt-4 flex items-center gap-3">
+              <a href={clientFormUrl} target="_blank" rel="noopener noreferrer"
+                className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
                 Preview Form →
               </a>
-
               {!request.sent_at ? (
-                <form action={markClientFormSentWithId}>
-                  <button
-                    type="submit"
-                    className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
-                  >
-                    Mark as Sent
-                  </button>
-                </form>
+                <OnboardingSendButton action={markClientFormSentWithId} alreadySent={false} />
               ) : (
-                <span className="rounded-xl bg-green-50 px-4 py-2 text-sm font-semibold text-green-700">
-                  ✓ Sent {new Date(request.sent_at).toLocaleDateString("en-GB")}
-                </span>
+                <>
+                  <OnboardingSendButton action={markClientFormSentWithId} alreadySent={true} />
+                  <span className="rounded-xl bg-green-50 px-4 py-2 text-sm font-semibold text-green-700">
+                    ✓ Sent {new Date(request.sent_at).toLocaleDateString("en-GB")}
+                  </span>
+                </>
               )}
             </div>
 
@@ -177,173 +361,81 @@ export default async function OnboardingDetailPage({
             )}
           </div>
 
-          {/* Professional Clearance */}
+          {/* Professional Clearance Letter */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Professional Clearance Letter</h2>
             <p className="text-sm text-slate-500 mt-0.5">
               Comprehensive handover request sent to the previous accountant.
             </p>
 
-            {request.prev_accountant_firm ? (
-              <>
-                <div className="mt-4 rounded-xl bg-slate-50 border border-slate-100 p-4 text-sm space-y-1">
-                  <p><span className="font-medium">To:</span> {request.prev_accountant_name} — {request.prev_accountant_firm}</p>
-                  {request.prev_accountant_email && (
-                    <p><span className="font-medium">Email:</span> {request.prev_accountant_email}</p>
-                  )}
-                  {request.prev_accountant_address && (
-                    <p><span className="font-medium">Address:</span> {request.prev_accountant_address}</p>
-                  )}
-                </div>
+            <div className="mt-4 rounded-xl bg-slate-50 border border-slate-100 p-6 text-sm text-slate-700 space-y-3">
+              <p><strong>To:</strong> {request.prev_accountant_name || "—"} — {request.prev_accountant_firm || "—"}</p>
+              <p><strong>Email:</strong> {request.prev_accountant_email || "—"}</p>
+              <p className="pt-2">{letterDate}</p>
+              <p>Dear {request.prev_accountant_name || "Sir/Madam"},</p>
+              <p>
+                Re: <strong>{client?.client_name}</strong>
+                {client?.company_number && ` (Company No. ${client.company_number})`}
+              </p>
+              <p>
+                We have been appointed as accountants for the above client and, in accordance with
+                professional clearance procedures, would be grateful if you could provide the following
+                information at your earliest convenience:
+              </p>
 
-                {/* Letter preview */}
-                <div className="mt-4 rounded-xl border border-slate-200 p-5 text-sm text-slate-700 leading-relaxed bg-white max-h-[600px] overflow-y-auto">
-                  <p className="text-xs text-slate-400 mb-4">{letterDate}</p>
+              <p className="font-semibold pt-2">1. General handover</p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>Confirmation of any professional reason why we should not accept this appointment.</li>
+                <li>Copies of the last set of filed accounts and tax computations.</li>
+              </ul>
 
-                  <p className="font-bold text-slate-900 mb-4">
-                    Professional Clearance and Handover Request — {request.clients?.client_name}
-                  </p>
+              <p className="font-semibold pt-2">2. VAT</p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>Copies of the last four VAT returns filed, and details of the current VAT scheme used.</li>
+              </ul>
 
-                  <p>Dear {request.prev_accountant_name || "Sir/Madam"},</p>
-                  <br />
-                  <p>
-                    We write to inform you that <strong>{request.clients?.client_name}</strong> (&quot;the
-                    Company/Client&quot;) has appointed E&amp;P Accountancy Services Limited as accountants and
-                    tax advisers with effect from the current date. We understand that your firm has acted
-                    as accountants and/or tax advisers to the Client up to this point.
-                  </p>
-                  <br />
-                  <p>
-                    In accordance with our professional body&apos;s ethical guidance, we would be grateful if
-                    you could confirm in writing that there are no professional or other reasons why we
-                    should not accept this appointment. We enclose/attach a copy of the Client&apos;s letter of
-                    authority confirming that you are released from your duty of confidentiality for the
-                    purposes of responding to this letter.
-                  </p>
-                  <br />
-                  <p>
-                    Once clearance is confirmed, and subject to any lien you may hold over the records
-                    pending settlement of outstanding fees (please let us know if this applies, and the
-                    amount outstanding), we would be grateful for the following information and
-                    documentation to enable an orderly handover:
-                  </p>
+              <p className="font-semibold pt-2">3. Payroll</p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>Copies of the most recent P60s, and any P11Ds/P11D(b) submitted, for all employees and directors.</li>
+                <li>Auto-enrolment pension details: provider, staging/duties start date, contribution rates, and next re-enrolment date.</li>
+                <li>If the Client engages subcontractors: CIS scheme details, contractor/subcontractor status, and CIS return history.</li>
+              </ul>
 
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">1. Outstanding fees and lien</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Confirmation of any fees owed by the Client and whether these remain outstanding.</li>
-                    <li>Confirmation of whether you intend to exercise a lien over any of the Client&apos;s books, records, or documents pending payment.</li>
-                  </ul>
+              <p className="font-semibold pt-2">5. HMRC references and agent authorisation</p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>Unique Taxpayer Reference (UTR) — corporate and, where relevant, personal.</li>
+                <li>VAT registration number, PAYE reference, and Accounts Office reference (if not already provided above).</li>
+                <li>Confirmation that you will remove/deauthorise your firm as agent on HMRC's systems (Government Gateway / Agent Services Account) once we are authorised, or confirmation of the taxes/services for which you currently hold authorisation.</li>
+                <li>Details of any HMRC online services enrolments relevant to the Client that we should be aware of.</li>
+              </ul>
 
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">2. Accounts and corporation tax</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Copies of the last three years&apos; filed statutory accounts (or since incorporation/appointment if shorter).</li>
-                    <li>Copies of the last three years&apos; corporation tax computations, CT600 returns, and HMRC iXBRL-tagged accounts as filed.</li>
-                    <li>Working papers, trial balances, and journals supporting the most recently filed accounts and tax computations.</li>
-                    <li>Fixed asset register / capital allowances pools and computations, including any qualifying expenditure not yet claimed.</li>
-                    <li>Details of any losses carried forward and their originating periods.</li>
-                    <li>Details of any deferred tax balances and their calculation basis.</li>
-                    <li>Directors&apos; loan account / DLA balances and movements, including any S455 tax paid or reclaimable.</li>
-                    <li>Dividend vouchers and board minutes for dividends declared in the current and prior accounting periods.</li>
-                  </ul>
+              <p className="font-semibold pt-2">6. HMRC enquiries, disputes and correspondence</p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>Details of any current or recent HMRC enquiries, compliance checks, or disputes, including correspondence reference numbers.</li>
+              </ul>
 
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">3. VAT</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>VAT registration certificate and VAT registration number.</li>
-                    <li>Copies of VAT returns for the last three years, together with supporting workings.</li>
-                    <li>Details of the VAT scheme used (standard, flat rate, cash accounting, annual accounting, etc.).</li>
-                    <li>Confirmation of Making Tax Digital (MTD) compliance status, including software/bridging solution used and digital links in place.</li>
-                    <li>Details of any partial exemption method, capital goods scheme items, or EC/overseas transactions.</li>
-                  </ul>
+              <p className="pt-3">
+                Please let us know if you require any further information from us to action this request.
+              </p>
+              <p className="pt-2">Yours faithfully,</p>
+            </div>
 
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">4. Payroll, CIS and pensions</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Payroll records for the current and prior tax year, including RTI submission history (FPS/EPS).</li>
-                    <li>HMRC payroll (PAYE) reference and Accounts Office reference.</li>
-                    <li>Copies of the most recent P60s, and any P11Ds/P11D(b) submitted, for all employees and directors.</li>
-                    <li>Auto-enrolment pension details: provider, staging/duties start date, contribution rates, and next re-enrolment date.</li>
-                    <li>If the Client engages subcontractors: CIS scheme details, contractor/subcontractor status, and CIS return history.</li>
-                  </ul>
-
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">5. HMRC references and agent authorisation</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Unique Taxpayer Reference (UTR) — corporate and, where relevant, personal.</li>
-                    <li>VAT registration number, PAYE reference, and Accounts Office reference (if not already provided above).</li>
-                    <li>Confirmation that you will remove/deauthorise your firm as agent on HMRC&apos;s systems (Government Gateway / Agent Services Account) once we are authorised, or confirmation of the taxes/services for which you currently hold authorisation.</li>
-                    <li>Details of any HMRC online services enrolments relevant to the Client that we should be aware of.</li>
-                  </ul>
-
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">6. HMRC enquiries, disputes and correspondence</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Details of any current or recent HMRC enquiries, compliance checks, or disputes, including correspondence reference numbers.</li>
-                    <li>Copies of any outstanding or unresolved correspondence with HMRC or Companies House.</li>
-                    <li>Details of any time-to-pay arrangements, penalties, or interest currently outstanding.</li>
-                    <li>Confirmation of any elections, claims, or disclaimers made on the Client&apos;s behalf that remain in effect (e.g. capital allowances disclaimers, R&amp;D claims, group relief elections).</li>
-                  </ul>
-
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">7. Companies House and statutory records</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Companies House authentication code (or confirmation that this has been reset/is held by the Client).</li>
-                    <li>Copies of statutory registers (members, directors, PSC, share allotments/transfers) if maintained by your firm.</li>
-                    <li>Confirmation of the date of the last confirmation statement filed and any outstanding filings.</li>
-                    <li>Details of any charges registered against the Company.</li>
-                  </ul>
-
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">8. Bookkeeping and software access</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Name of bookkeeping/accounting software used and confirmation of how administrator access will be transferred — we would ask that this be actioned via the software provider&apos;s own organisation-transfer process rather than by sharing login credentials directly.</li>
-                    <li>Export or access to the full transaction history and chart of accounts, where the subscription will not be transferred.</li>
-                    <li>Details of any linked apps, bank feeds, or add-ons in use.</li>
-                  </ul>
-
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">9. Anti-money laundering and client due diligence</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Confirmation of the identification and verification documents held on file, so that we can assess whether further due diligence is required.</li>
-                  </ul>
-
-                  <p className="font-semibold text-slate-900 mt-4 mb-1 underline">10. Related parties and other engagements</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>Details of any related entities, group companies, or connected persons for which your firm also acts, where relevant to the Client&apos;s tax affairs.</li>
-                    <li>Confirmation of any other services provided to the Client and the status of those engagements.</li>
-                    <li>Any other information you consider relevant to the proper conduct of the Client&apos;s tax and accounting affairs going forward.</li>
-                  </ul>
-
-                  <br />
-                  <p>
-                    We would be grateful for your professional clearance response and the above
-                    information within 21 days of the date of this letter. If any of the above will take
-                    longer to compile, please let us know so that we can agree a reasonable timetable.
-                  </p>
-                  <br />
-                  <p>
-                    Please do not hesitate to contact us if you require any further information, or if
-                    you would find it helpful to discuss the handover directly.
-                  </p>
-                  <br />
-                  <p>Yours faithfully,</p>
-                  <br />
-                  <p className="font-semibold">E&amp;P Accountancy Services Limited</p>
-                </div>
-
-                <div className="mt-4 flex gap-3">
-                  {!request.clearance_sent_at ? (
-                    <form action={markClearanceSentWithId}>
-                      <button
-                        type="submit"
-                        className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
-                      >
-                        Mark Clearance Letter as Sent
-                      </button>
-                    </form>
-                  ) : (
-                    <span className="rounded-xl bg-green-50 px-4 py-2 text-sm font-semibold text-green-700">
-                      ✓ Sent {new Date(request.clearance_sent_at).toLocaleDateString("en-GB")}
-                    </span>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-                No previous accountant details recorded. Add them in the details panel on the right.
+            <div className="mt-4 flex items-center gap-3">
+              {!request.clearance_sent_at ? (
+                <OnboardingSendButton action={markClearanceSentWithId} alreadySent={false} />
+              ) : (
+                <>
+                  <OnboardingSendButton action={markClearanceSentWithId} alreadySent={true} />
+                  <span className="rounded-xl bg-green-50 px-4 py-2 text-sm font-semibold text-green-700">
+                    ✓ Sent {new Date(request.clearance_sent_at).toLocaleDateString("en-GB")}
+                  </span>
+                </>
+              )}
+            </div>
+            {request.clearance_send_error && (
+              <div className="mt-3 rounded-xl bg-red-50 border border-red-100 p-3">
+                <p className="text-sm font-semibold text-red-700">⚠ Email may not have been delivered</p>
+                <p className="text-xs text-red-600 mt-1">{request.clearance_send_error}</p>
               </div>
             )}
           </div>
@@ -351,73 +443,32 @@ export default async function OnboardingDetailPage({
           {/* Checklist */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Onboarding Checklist</h2>
-
             <form action={updateChecklistWithId} className="mt-4 space-y-3">
-
-              <label className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 cursor-pointer">
-                <input
-                  type="checkbox"
-                  name="id_received"
-                  defaultChecked={request.id_received}
-                  className="w-4 h-4 rounded"
-                />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">ID Received</p>
-                  <p className="text-xs text-slate-500">Passport, driving licence or other photo ID</p>
-                </div>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" name="id_received" defaultChecked={request.id_received} className="w-4 h-4 rounded" />
+                <span className="text-sm text-slate-700">Proof of ID / AML checks received</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" name="prev_accounts_received" defaultChecked={request.prev_accounts_received} className="w-4 h-4 rounded" />
+                <span className="text-sm text-slate-700">Previous accounts received</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" name="signed_engagement_received" defaultChecked={request.signed_engagement_received} className="w-4 h-4 rounded" />
+                <span className="text-sm text-slate-700">Signed engagement letter received</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" name="clearance_received" defaultChecked={request.clearance_received} className="w-4 h-4 rounded" />
+                <span className="text-sm text-slate-700">Professional clearance received</span>
               </label>
 
-              <label className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 cursor-pointer">
-                <input
-                  type="checkbox"
-                  name="prev_accounts_received"
-                  defaultChecked={request.prev_accounts_received}
-                  className="w-4 h-4 rounded"
-                />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">Previous Accounts Received</p>
-                  <p className="text-xs text-slate-500">Last 3 years accounts and tax returns</p>
-                </div>
-              </label>
-
-              <label className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 cursor-pointer">
-                <input
-                  type="checkbox"
-                  name="signed_engagement_received"
-                  defaultChecked={request.signed_engagement_received}
-                  className="w-4 h-4 rounded"
-                />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">Signed Engagement Letter Received</p>
-                  <p className="text-xs text-slate-500">Signed letter of engagement from client</p>
-                </div>
-              </label>
-
-              <label className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-50 cursor-pointer">
-                <input
-                  type="checkbox"
-                  name="clearance_received"
-                  defaultChecked={request.clearance_received}
-                  className="w-4 h-4 rounded"
-                />
-                <div>
-                  <p className="text-sm font-medium text-slate-900">Professional Clearance Received</p>
-                  <p className="text-xs text-slate-500">Response from previous accountant</p>
-                </div>
-              </label>
-
-              <div className="pt-2">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
-                <select name="status" defaultValue={request.status}
-                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                  <option>Pending</option>
-                  <option>In Progress</option>
-                  <option>Complete</option>
-                </select>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1 mt-4">Notes</label>
+                <textarea name="notes" defaultValue={request.notes || ""} rows={3}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
               </div>
 
               <button type="submit"
-                className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
+                className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
                 Save Checklist
               </button>
             </form>
@@ -452,7 +503,7 @@ export default async function OnboardingDetailPage({
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Address</label>
-                <textarea name="prev_accountant_address" defaultValue={request.prev_accountant_address || ""} rows={3}
+                <textarea name="prev_accountant_address" rows={2}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                   placeholder="Full address" />
               </div>
@@ -461,10 +512,6 @@ export default async function OnboardingDetailPage({
                 <textarea name="notes" defaultValue={request.notes || ""} rows={2}
                   className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
               </div>
-
-              {/* Hidden checkboxes to preserve values when saving from this form */}
-              <input type="hidden" name="status" value={request.status} />
-
               <button type="submit"
                 className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
                 Save Details
@@ -475,24 +522,12 @@ export default async function OnboardingDetailPage({
           {/* Client Info */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Client Info</h2>
-            <div className="mt-3 space-y-2 text-sm">
-              <p><span className="text-slate-500">Company:</span> <span className="font-medium">{request.clients?.client_name}</span></p>
-              {request.clients?.company_number && (
-                <p><span className="text-slate-500">Company No:</span> <span className="font-medium">{request.clients.company_number}</span></p>
-              )}
-              {request.clients?.email && (
-                <p><span className="text-slate-500">Email:</span> <span className="font-medium">{request.clients.email}</span></p>
-              )}
-              {request.clients?.address && (
-                <p><span className="text-slate-500">Address:</span> <span className="font-medium">{request.clients.address}</span></p>
-              )}
+            <div className="mt-4 space-y-2 text-sm">
+              <p><span className="text-slate-500">Company:</span> {client?.client_name}</p>
+              <p><span className="text-slate-500">Company No:</span> {client?.company_number}</p>
+              <p><span className="text-slate-500">Address:</span> {client?.address || "—"}</p>
             </div>
-            <a href={`/clients/${request.client_id}`}
-              className="mt-3 block text-xs text-blue-600 hover:underline">
-              View full client record →
-            </a>
           </div>
-
         </div>
       </div>
     </div>
