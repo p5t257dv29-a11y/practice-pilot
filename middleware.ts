@@ -43,6 +43,7 @@ const isPublicBypass =
   pathname.startsWith("/payslip/") ||
   pathname.startsWith("/tax/approve/") ||
   pathname.startsWith("/a/") ||
+  pathname.startsWith("/ct/") ||
   pathname.startsWith("/portal/set-password") ||
   pathname.startsWith("/api/xero/");
   if (isPublicBypass) {
