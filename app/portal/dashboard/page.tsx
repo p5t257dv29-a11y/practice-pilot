@@ -134,7 +134,7 @@ export default async function PortalDashboardPage() {
   ] = await Promise.all([
     supabase.from("clients").select("client_name").eq("id", clientId).single(),
     supabase.from("tax_computations").select("id, tax_year, status").eq("client_id", clientId).eq("status", "Sent"),
-    supabase.from("corporation_tax_computations").select("id, period_start, period_end, approval_token").eq("client_id", clientId).eq("status", "Sent"),
+    supabase.from("corporation_tax_computations").select("id, period_start, period_end,token").eq("client_id", clientId).eq("status", "Sent"),
     supabase.from("p11d_computations").select("id, tax_year, employee_name, status").eq("client_id", clientId).eq("status", "Sent"),
     supabase.from("trial_balances").select("id, period_start, period_end, accounts_type, approval_token, approval_status").eq("client_id", clientId).eq("approval_status", "Sent"),
     supabase.from("client_documents").select("*").eq("client_id", clientId).order("created_at", { ascending: false }),
@@ -197,6 +197,11 @@ const uploadDocWithId = uploadClientPortalDocument.bind(null, clientId);
       key: `tb-${tb.id}`,
       label: `${tb.accounts_type || "Accounts"} — ${new Date(tb.period_start).toLocaleDateString("en-GB")} to ${new Date(tb.period_end).toLocaleDateString("en-GB")}`,
       href: `/a/${tb.approval_token}`,
+    })),
+     ...(ctComputations || []).map((c) => ({
+      key: `ct-${c.id}`,
+      label: `Corporation Tax — ${new Date(c.period_start).toLocaleDateString("en-GB")} to ${new Date(c.period_end).toLocaleDateString("en-GB")}`,
+      href: `/ct/${c.token}`,
     })),
   ];
 
