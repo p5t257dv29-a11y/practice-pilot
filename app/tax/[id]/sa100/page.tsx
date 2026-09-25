@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import { calculateTax, getPaymentSchedule, getTaxRates } from "../../page";
+import { calculateCapitalGain, getCgtRates, ukTaxYearOf } from "../../../capital-gains/page";
 import PrintButton from "../../../print-button";
 
 export const dynamic = "force-dynamic";
@@ -23,10 +24,16 @@ export default async function SA100SummaryPage({
     .eq("id", id)
     .single();
 
-if (error || !comp) notFound();
+  if (error || !comp) notFound();
 
   const rates = await getTaxRates(comp.tax_year);
 
+  // Full calculation — previously missing personalPensionContributions,
+  // giftAidDonations, childBenefitReceived, marriage allowance and student/
+  // postgraduate loans, meaning this summary could understate the true
+  // liability for any client with those. Now matches the same complete
+  // calculation used everywhere else (the main tax page and the client
+  // approval page at /t/[token]).
   const result = calculateTax({
     employmentIncome: Number(comp.employment_income),
     selfEmploymentIncome: Number(comp.self_employment_income),
@@ -44,12 +51,85 @@ if (error || !comp) notFound();
     foreignPropertyExpenses: Number(comp.foreign_property_expenses),
     foreignPropertyFinanceCosts: Number(comp.foreign_property_finance_costs),
     foreignFinanceCostsBf: Number(comp.foreign_finance_costs_bf),
-foreignTaxPaid: Number(comp.foreign_tax_paid),
+    foreignTaxPaid: Number(comp.foreign_tax_paid),
+    personalPensionContributions: Number(comp.personal_pension_contributions),
+    giftAidDonations: Number(comp.gift_aid_donations),
+    childBenefitReceived: Number(comp.child_benefit_received),
+    marriageAllowanceTransferredOut: comp.marriage_allowance_transferred_out,
+    marriageAllowanceReceived: comp.marriage_allowance_received,
+    studentLoanPlan: comp.student_loan_plan,
+    hasPostgraduateLoan: comp.has_postgraduate_loan,
     taxYear: comp.tax_year,
   }, rates);
 
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
-    
+
+  // --- Capital Gains Tax linked to this computation (SA108) — previously not covered here at all ---
+  const { data: linkedGains } = await supabase
+    .from("capital_gains_computations")
+    .select("*")
+    .eq("linked_tax_computation_id", comp.id)
+    .neq("entity_type", "Company");
+
+  const cgtRates = await getCgtRates("2026/27");
+
+  const taxableIncomeForGains = Math.max(0,
+    Number(comp.employment_income) + Number(comp.self_employment_income) +
+    Number(comp.rental_income) + Number(comp.pension_income) - 12570
+  );
+
+  const sortedGains = (linkedGains || [])
+    .filter((g) => ukTaxYearOf(g.disposal_date) === comp.tax_year)
+    .sort((a, b) => {
+      const diff = new Date(a.disposal_date).getTime() - new Date(b.disposal_date).getTime();
+      if (diff !== 0) return diff;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+
+  const rawGainOf = (g: any) =>
+    Number(g.disposal_proceeds) - Number(g.acquisition_cost) - Number(g.incidental_costs) - Number(g.improvement_costs);
+
+  let currentYearLossesAvailable = sortedGains
+    .filter((g) => rawGainOf(g) < 0)
+    .reduce((sum, g) => sum + Math.abs(rawGainOf(g)), 0);
+
+  let aeaUsedSoFar = 0;
+  let gainsStackedSoFar = 0;
+  const cgtRows = sortedGains.map((g) => {
+    const gResult = calculateCapitalGain({
+      entityType: g.entity_type,
+      disposalProceeds: Number(g.disposal_proceeds),
+      acquisitionCost: Number(g.acquisition_cost),
+      incidentalCosts: Number(g.incidental_costs),
+      improvementCosts: Number(g.improvement_costs),
+      lossesBroughtForward: Number(g.losses_brought_forward),
+      badrEligible: g.badr_eligible,
+      taxableIncomeForBandStacking: taxableIncomeForGains,
+      aeaAlreadyUsedThisYear: aeaUsedSoFar,
+      gainsStackedAheadThisYear: gainsStackedSoFar,
+      currentYearLossesAvailable,
+      rolloverReliefClaimed: g.rollover_relief_claimed,
+      amountReinvested: Number(g.amount_reinvested),
+      replacementAssetCost: Number(g.replacement_asset_cost),
+      acquisitionDate: g.acquisition_date,
+      disposalDate: g.disposal_date,
+      prrClaimed: g.main_residence_relief_claimed,
+      mainResidenceFrom: g.main_residence_from,
+      mainResidenceTo: g.main_residence_to,
+    }, cgtRates);
+
+    currentYearLossesAvailable -= gResult.currentYearLossOffset;
+    aeaUsedSoFar += gResult.aeaApplied;
+    gainsStackedSoFar += gResult.taxableGain;
+
+    const isProperty = g.asset_category === "Residential Property";
+    return { comp: g, result: gResult, isProperty };
+  });
+
+  const nonPropertyCgtDue = cgtRows.filter((r) => !r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
+  const propertyCgtDue = cgtRows.filter((r) => r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
+  const grandTotalAtBalancingPayment = schedule.dueAtBalancingPayment + nonPropertyCgtDue;
+
   const client = comp.clients as any;
   const fmt = (n: number) => n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
@@ -182,6 +262,28 @@ foreignTaxPaid: Number(comp.foreign_tax_paid),
             <Box number="4" label="UK dividends" value={`£${fmt(Number(comp.dividend_income))}`} />
           </div>
 
+          {/* Reliefs and other adjustments — previously missing from this page entirely */}
+          {(Number(comp.personal_pension_contributions) > 0 || Number(comp.gift_aid_donations) > 0 || Number(comp.child_benefit_received) > 0 || comp.marriage_allowance_transferred_out || comp.marriage_allowance_received) && (
+            <div className="p-6 border-b border-slate-100">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Reliefs and Other Adjustments</p>
+              {Number(comp.personal_pension_contributions) > 0 && (
+                <Box number="1" label="Payments to registered pension schemes (relief at source)" value={`£${fmt(Number(comp.personal_pension_contributions))}`} />
+              )}
+              {Number(comp.gift_aid_donations) > 0 && (
+                <Box number="5" label="Gift Aid payments" value={`£${fmt(Number(comp.gift_aid_donations))}`} />
+              )}
+              {comp.marriage_allowance_transferred_out && (
+                <Box number="—" label="Marriage Allowance transferred to spouse/civil partner" value="Yes" />
+              )}
+              {comp.marriage_allowance_received && (
+                <Box number="—" label="Marriage Allowance received from spouse/civil partner" value="Yes" />
+              )}
+              {Number(comp.child_benefit_received) > 0 && (
+                <Box number="1" label="Child Benefit received (High Income Child Benefit Charge)" value={`£${fmt(Number(comp.child_benefit_received))}`} note="For the High Income Child Benefit Charge calculation" />
+              )}
+            </div>
+          )}
+
           {/* Taxable income summary */}
           <div className="p-6 border-b border-slate-100 bg-slate-50 print:bg-white">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Taxable Income Summary (not official box numbers — see workings)</p>
@@ -214,12 +316,50 @@ foreignTaxPaid: Number(comp.foreign_tax_paid),
               {result.class4NI > 0 && (
                 <div className="flex justify-between"><span className="text-slate-500">Class 4 National Insurance</span><span className="font-medium">£{fmt(result.class4NI)}</span></div>
               )}
+              {result.hicbcCharge > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">High Income Child Benefit Charge</span><span className="font-medium">£{fmt(result.hicbcCharge)}</span></div>
+              )}
+              {result.totalStudentLoanRepayment > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Student Loan Repayment</span><span className="font-medium">£{fmt(result.totalStudentLoanRepayment)}</span></div>
+              )}
               <div className="border-t border-slate-200 pt-2 flex justify-between font-bold text-base">
                 <span>Total Liability</span>
                 <span>£{fmt(result.totalLiability)}</span>
               </div>
             </div>
           </div>
+
+          {/* Capital Gains Tax (SA108) — previously not covered on this page at all */}
+          {cgtRows.length > 0 && (
+            <div className="p-6 border-b border-slate-100">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Capital Gains Summary (SA108)</p>
+              <div className="space-y-3">
+                {cgtRows.map((row) => (
+                  <div key={row.comp.id} className="text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">
+                        {row.comp.asset_description}{row.isProperty && " (residential property)"}
+                        {row.comp.main_residence_relief_claimed && " · PRR applied"}
+                        {row.result.isLoss && " · loss"}
+                      </span>
+                      <span className="font-medium">
+                        {row.result.isLoss ? `(£${fmt(row.result.lossAmount)})` : `£${fmt(row.result.cgtDue)}`}
+                      </span>
+                    </div>
+                    {row.isProperty && !row.result.isLoss && (
+                      <p className="text-xs text-amber-700 mt-0.5">
+                        Reported and paid separately via HMRC's 60-day property service — not included in the 31 January balancing payment below.
+                      </p>
+                    )}
+                  </div>
+                ))}
+                <div className="flex justify-between font-bold border-t border-slate-100 pt-2">
+                  <span>Total Capital Gains Tax</span>
+                  <span>£{fmt(nonPropertyCgtDue + propertyCgtDue)}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Reconciliation and payment schedule */}
           <div className="p-6">
@@ -238,15 +378,21 @@ foreignTaxPaid: Number(comp.foreign_tax_paid),
                     <span className="text-slate-500">Balancing payment ({comp.tax_year})</span>
                     <span className="font-medium">£{fmt(schedule.balanceDue)}</span>
                   </div>
+                  {nonPropertyCgtDue > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Capital Gains Tax (non-property)</span>
+                      <span className="font-medium">£{fmt(nonPropertyCgtDue)}</span>
+                    </div>
+                  )}
                   {schedule.poaRequired && (
                     <div className="flex justify-between">
                       <span className="text-slate-500">1st payment on account ({schedule.nextTaxYear})</span>
                       <span className="font-medium">£{fmt(schedule.poaAmount)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between font-bold border-t border-slate-200 pt-1">
+                  <div className="flex justify-between font-bold border-t border-slate-100 pt-1">
                     <span>Total due</span>
-                    <span>£{fmt(schedule.dueAtBalancingPayment)}</span>
+                    <span>£{fmt(grandTotalAtBalancingPayment)}</span>
                   </div>
                 </div>
               </div>
@@ -260,6 +406,16 @@ foreignTaxPaid: Number(comp.foreign_tax_paid),
                   </div>
                 </div>
               )}
+
+              {propertyCgtDue > 0 && (
+                <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
+                  <p className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Separately reported</p>
+                  <div className="mt-1 flex justify-between text-sm font-bold text-amber-800">
+                    <span>Capital Gains Tax (property, via 60-day service)</span>
+                    <span>£{fmt(propertyCgtDue)}</span>
+                  </div>
+                </div>
+              )}
             </div>
             <p className="text-xs text-slate-400 mt-3">
               Payments on account apply where the balance due exceeds £1,000 and less than 80% of the year's liability was collected at source.
@@ -269,7 +425,7 @@ foreignTaxPaid: Number(comp.foreign_tax_paid),
 
         <div className="mt-6 rounded-2xl bg-yellow-50 border border-yellow-100 p-4 print:hidden">
           <p className="text-xs text-yellow-800">
-            <strong>This is a working-paper summary, not a filable return.</strong> It mirrors the official SA100 form's box numbers for the fields this system tracks, using 2026/27 HMRC rates and bands. It does not support electronic submission to HMRC — actual filing requires HMRC-recognised software. Boxes for capital gains, additional pension reliefs, Gift Aid, and other supplementary pages are not covered. Always verify all figures before filing, and use recognised commercial software or HMRC's own online service to submit.
+            <strong>This is a working-paper summary, not a filable return.</strong> It mirrors the official SA100 form's box numbers for the fields this system tracks, using 2026/27 HMRC rates and bands. It does not support electronic submission to HMRC — actual filing requires HMRC-recognised software. Always verify all figures before filing, and use recognised commercial software or HMRC's own online service to submit.
           </p>
         </div>
       </div>
