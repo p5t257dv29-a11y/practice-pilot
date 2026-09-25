@@ -47,6 +47,8 @@ label: "Work",
       { href: "/p11d", label: "P11D", icon: "🚗" },
       { href: "/payroll", label: "Payroll", icon: "💷" },
       { href: "/tax-planning", label: "Tax Planning", icon: "📈" },
+      { href: "/tax-planning/cash-flow", label: "Projections", icon: "💰" },
+      
     ],  },
   {
     label: "Settings",
