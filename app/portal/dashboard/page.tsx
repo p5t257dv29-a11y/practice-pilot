@@ -133,8 +133,7 @@ export default async function PortalDashboardPage() {
     { data: clientJobs },
   ] = await Promise.all([
     supabase.from("clients").select("client_name").eq("id", clientId).single(),
-    supabase.from("tax_computations").select("id, tax_year, status").eq("client_id", clientId).eq("status", "Sent"),
-    supabase.from("corporation_tax_computations").select("id, period_start, period_end,token").eq("client_id", clientId).eq("status", "Sent"),
+supabase.from("tax_computations").select("id, tax_year, status, token").eq("client_id", clientId).eq("status", "Sent"),    supabase.from("corporation_tax_computations").select("id, period_start, period_end,token").eq("client_id", clientId).eq("status", "Sent"),
     supabase.from("p11d_computations").select("id, tax_year, employee_name, status").eq("client_id", clientId).eq("status", "Sent"),
     supabase.from("trial_balances").select("id, period_start, period_end, accounts_type, approval_token, approval_status").eq("client_id", clientId).eq("approval_status", "Sent"),
     supabase.from("client_documents").select("*").eq("client_id", clientId).order("created_at", { ascending: false }),
@@ -186,8 +185,7 @@ const uploadDocWithId = uploadClientPortalDocument.bind(null, clientId);
     ...(taxComputations || []).map((t) => ({
       key: `tax-${t.id}`,
       label: `Personal Tax ${t.tax_year}`,
-      href: `/tax/approve/${t.id}`,
-    })),
+href: `/t/${t.token}`,    })),
     ...(p11dComputations || []).map((p) => ({
       key: `p11d-${p.id}`,
       label: `P11D — ${p.employee_name} (${p.tax_year})`,

@@ -41,6 +41,7 @@ const isPublicBypass =
   pathname.startsWith("/sign/") ||
   pathname.startsWith("/p11d/approve/") ||
   pathname.startsWith("/payslip/") ||
+  pathname.startsWith("/t/") ||
   pathname.startsWith("/tax/approve/") ||
   pathname.startsWith("/a/") ||
   pathname.startsWith("/ct/") ||
