@@ -5,6 +5,8 @@ import { calculateTax, getPaymentSchedule, getTaxRates } from "../../tax/page";
 import { calculateCapitalGain, getCgtRates, ukTaxYearOf } from "../../capital-gains/page";
 import PrintButton from "../../print-button";
 
+export const dynamic = "force-dynamic";
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -38,7 +40,7 @@ export default async function PublicTaxComputationPage({
   const [{ data: comp, error }, { data: practiceSettings }] = await Promise.all([
     supabase
       .from("tax_computations")
-      .select("*, clients(client_name)")
+      .select("*, clients(client_name, hmrc_utr)")
       .eq("token", token)
       .single(),
     supabase.from("practice_settings").select("firm_name").limit(1).maybeSingle(),
@@ -46,6 +48,7 @@ export default async function PublicTaxComputationPage({
 
   if (error || !comp) notFound();
 
+  const client = comp.clients as any;
   const firmName = practiceSettings?.firm_name || "Your Accountant";
 
   const approveWithToken = approveComputation.bind(null, token);
@@ -57,6 +60,11 @@ export default async function PublicTaxComputationPage({
 
   const rates = await getTaxRates(comp.tax_year);
 
+  // Full calculation — every field the internal tax page tracks, including
+  // pension contributions, Gift Aid, Child Benefit charge, marriage allowance
+  // and student/postgraduate loans. The old internal SA100 summary page omits
+  // several of these; this page deliberately keeps the complete calculation so
+  // the client is never shown a different (understated) figure than the real one.
   const result = calculateTax({
     employmentIncome: Number(comp.employment_income),
     selfEmploymentIncome: Number(comp.self_employment_income),
@@ -84,9 +92,10 @@ export default async function PublicTaxComputationPage({
     hasPostgraduateLoan: comp.has_postgraduate_loan,
     taxYear: comp.tax_year,
   }, rates);
+
   const schedule = getPaymentSchedule(comp.tax_year, result.totalLiability, Number(comp.tax_paid_at_source));
 
-  // --- Capital Gains Tax linked to this computation ---
+  // --- Capital Gains Tax linked to this computation (SA108) ---
   const { data: linkedGains } = await supabase
     .from("capital_gains_computations")
     .select("*")
@@ -150,7 +159,6 @@ export default async function PublicTaxComputationPage({
 
   const nonPropertyCgtDue = cgtRows.filter((r) => !r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
   const propertyCgtDue = cgtRows.filter((r) => r.isProperty).reduce((sum, r) => sum + r.result.cgtDue, 0);
-
   const grandTotalAtBalancingPayment = schedule.dueAtBalancingPayment + nonPropertyCgtDue;
 
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -158,6 +166,19 @@ export default async function PublicTaxComputationPage({
   const fmtDateTime = (d: string) =>
     `${new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })} at ${new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
   const hasPropertyIncome = Number(comp.rental_income) > 0 || Number(comp.finance_costs_bf) > 0;
+
+  const Box = ({ number, label, value, note }: { number: string; label: string; value: string; note?: string }) => (
+    <div className="flex items-start justify-between border-b border-slate-100 py-2.5 gap-4">
+      <div className="flex items-start gap-3 flex-1">
+        <span className="text-xs font-mono font-bold text-slate-400 mt-0.5 w-12 flex-shrink-0">{number}</span>
+        <div>
+          <p className="text-sm text-slate-700">{label}</p>
+          {note && <p className="text-xs text-slate-400 mt-0.5">{note}</p>}
+        </div>
+      </div>
+      <span className="text-sm font-mono font-semibold text-slate-900 flex-shrink-0">{value}</span>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 print:bg-white">
@@ -170,7 +191,7 @@ export default async function PublicTaxComputationPage({
             <p className="text-slate-400 text-sm mt-0.5 print:text-slate-500">Practice Management</p>
           </div>
           <div className="text-right">
-            <p className="text-sm text-slate-400 print:text-slate-500">Tax Computation</p>
+            <p className="text-sm text-slate-400 print:text-slate-500">Self Assessment Tax Return</p>
             <p className="font-bold text-lg">{comp.tax_year}</p>
           </div>
         </div>
@@ -182,136 +203,176 @@ export default async function PublicTaxComputationPage({
           <PrintButton />
         </div>
 
-        {/* Status Banner */}
         {isApproved && (
           <div className="mb-6 rounded-2xl bg-green-50 border border-green-200 p-4 text-center print:hidden">
             <p className="text-green-700 font-bold text-lg">✓ Computation Approved</p>
-            <p className="text-green-600 text-sm mt-1">
-              Thank you! We'll proceed to file your return.
-            </p>
-            {comp.approved_at && (
-              <p className="text-green-500 text-xs mt-2">
-                Approved on {fmtDateTime(comp.approved_at)}
-              </p>
-            )}
+            <p className="text-green-600 text-sm mt-1">Thank you! We'll proceed to file your return.</p>
           </div>
         )}
 
         {isQueried && (
           <div className="mb-6 rounded-2xl bg-yellow-50 border border-yellow-200 p-4 text-center print:hidden">
             <p className="text-yellow-700 font-bold text-lg">Query Raised</p>
-            <p className="text-yellow-600 text-sm mt-1">
-              Thanks for letting us know. We'll be in touch to go through it with you.
-            </p>
-            {comp.queried_at && (
-              <p className="text-yellow-500 text-xs mt-2">
-                Raised on {fmtDateTime(comp.queried_at)}
-              </p>
-            )}
+            <p className="text-yellow-600 text-sm mt-1">Thanks for letting us know. We'll be in touch to go through it with you.</p>
           </div>
         )}
 
         <div className="rounded-2xl bg-white shadow-sm border border-slate-100 overflow-hidden print:border-0 print:shadow-none">
 
-          {/* Client Info */}
+          {/* Taxpayer details */}
           <div className="p-6 border-b border-slate-100">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Prepared for</p>
-            <p className="mt-1 font-bold text-slate-900 text-lg">
-              {comp.clients?.client_name || "Client"}
-            </p>
-          </div>
-
-          {/* Income Summary */}
-          <div className="p-6 border-b border-slate-100">
-            <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Income Summary</h2>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Employment Income</span><span className="font-medium">{fmt(Number(comp.employment_income))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Self-Employment Profit</span><span className="font-medium">{fmt(Number(comp.self_employment_income))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Rental Property Profit</span><span className="font-medium">{fmt(result.propertyProfit)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Pension Income</span><span className="font-medium">{fmt(Number(comp.pension_income))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Interest Received</span><span className="font-medium">{fmt(Number(comp.interest_income))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Dividend Income</span><span className="font-medium">{fmt(Number(comp.dividend_income))}</span></div>
-              {Number(comp.foreign_employment_income) > 0 && (
-                <div className="flex justify-between"><span className="text-slate-500">Foreign Employment Income</span><span className="font-medium">{fmt(Number(comp.foreign_employment_income))}</span></div>
-              )}
-              {result.foreignPropertyProfit > 0 && (
-                <div className="flex justify-between"><span className="text-slate-500">Foreign Rental Property Profit</span><span className="font-medium">{fmt(result.foreignPropertyProfit)}</span></div>
-              )}
-              {Number(comp.foreign_interest_income) > 0 && (
-                <div className="flex justify-between"><span className="text-slate-500">Foreign Interest</span><span className="font-medium">{fmt(Number(comp.foreign_interest_income))}</span></div>
-              )}
-              {Number(comp.foreign_dividend_income) > 0 && (
-                <div className="flex justify-between"><span className="text-slate-500">Foreign Dividends</span><span className="font-medium">{fmt(Number(comp.foreign_dividend_income))}</span></div>
-              )}
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Taxpayer Details</p>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-slate-400 text-xs">Name</p>
+                <p className="font-medium text-slate-900">{client?.client_name || "—"}</p>
+              </div>
+              <div>
+                <p className="text-slate-400 text-xs">Unique Taxpayer Reference (UTR)</p>
+                <p className="font-medium text-slate-900">{client?.hmrc_utr || "Not on file"}</p>
+              </div>
+              <div>
+                <p className="text-slate-400 text-xs">Tax Year</p>
+                <p className="font-medium text-slate-900">{comp.tax_year}</p>
+              </div>
             </div>
+
+            {isApproved && comp.approved_at && (
+              <p className="text-sm font-semibold text-green-700 mt-4 pt-3 border-t border-slate-100">
+                ✓ Approved{comp.client_email ? ` by ${comp.client_email}` : ""} on {fmtDateTime(comp.approved_at)}
+              </p>
+            )}
+            {isQueried && comp.queried_at && (
+              <p className="text-sm font-semibold text-yellow-700 mt-4 pt-3 border-t border-slate-100">
+                Query raised{comp.client_email ? ` by ${comp.client_email}` : ""} on {fmtDateTime(comp.queried_at)}
+              </p>
+            )}
           </div>
 
-          {/* Property finance cost relief, shown for transparency when relevant */}
+          {/* Employment */}
+          {Number(comp.employment_income) > 0 && (
+            <div className="p-6 border-b border-slate-100">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Employment (SA102)</p>
+              <Box number="1" label="Pay from this employment — total from P60" value={fmt(Number(comp.employment_income))} />
+              <Box number="2" label="UK tax taken off pay in box 1" value={fmt(Number(comp.tax_paid_at_source))} />
+            </div>
+          )}
+
+          {/* Self Employment */}
+          {Number(comp.self_employment_income) > 0 && (
+            <div className="p-6 border-b border-slate-100">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Self-Employment (SA103)</p>
+              <Box number="31" label="Net profit" value={fmt(Number(comp.self_employment_income))} />
+            </div>
+          )}
+
+          {/* UK Property */}
           {hasPropertyIncome && (
             <div className="p-6 border-b border-slate-100">
-              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Rental Property Finance Costs</h2>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Finance costs for the year</span><span className="font-medium">{fmt(Number(comp.property_finance_costs))}</span></div>
-                {Number(comp.finance_costs_bf) > 0 && (
-                  <div className="flex justify-between"><span className="text-slate-500">Unused finance costs brought forward</span><span className="font-medium">{fmt(Number(comp.finance_costs_bf))}</span></div>
-                )}
-                <div className="flex justify-between font-medium text-green-600">
-                  <span>Tax reducer applied (20%)</span>
-                  <span>−{fmt(result.financeCostTaxReducer)}</span>
-                </div>
-                {result.unusedFinanceCostsCf > 0 && (
-                  <div className="flex justify-between text-amber-700">
-                    <span>Carried forward to next year</span>
-                    <span>{fmt(result.unusedFinanceCostsCf)}</span>
-                  </div>
-                )}
-              </div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">UK Property (SA105)</p>
+              <Box number="20" label="Total rents and other income from property" value={fmt(Number(comp.rental_income))} />
+              <Box number="24" label="Property expenses" value={fmt(Number(comp.property_expenses))} note="Excludes finance costs" />
+              <Box number="26" label="Net profit" value={fmt(result.propertyProfit)} />
+              <Box number="44" label="Residential property finance costs" value={fmt(Number(comp.property_finance_costs))} />
+              {Number(comp.finance_costs_bf) > 0 && (
+                <Box number="45" label="Unused residential finance costs brought forward" value={fmt(Number(comp.finance_costs_bf))} />
+              )}
+              {result.unusedFinanceCostsCf > 0 && (
+                <Box number="—" label="Unused finance costs carried forward" value={fmt(result.unusedFinanceCostsCf)} />
+              )}
             </div>
           )}
 
-          {/* Foreign property finance costs, shown for transparency when relevant */}
-          {(Number(comp.foreign_rental_income) > 0 || Number(comp.foreign_finance_costs_bf) > 0) && (
+          {/* Foreign */}
+          {(Number(comp.foreign_employment_income) > 0 || Number(comp.foreign_interest_income) > 0 || Number(comp.foreign_dividend_income) > 0 || result.foreignPropertyProfit > 0) && (
             <div className="p-6 border-b border-slate-100">
-              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Foreign Rental Property Finance Costs</h2>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Finance costs for the year</span><span className="font-medium">{fmt(Number(comp.foreign_property_finance_costs))}</span></div>
-                {Number(comp.foreign_finance_costs_bf) > 0 && (
-                  <div className="flex justify-between"><span className="text-slate-500">Unused finance costs brought forward</span><span className="font-medium">{fmt(Number(comp.foreign_finance_costs_bf))}</span></div>
-                )}
-                <div className="flex justify-between font-medium text-green-600">
-                  <span>Tax reducer applied (20%)</span>
-                  <span>−{fmt(result.foreignFinanceCostTaxReducer)}</span>
-                </div>
-                {result.unusedForeignFinanceCostsCf > 0 && (
-                  <div className="flex justify-between text-amber-700">
-                    <span>Carried forward to next year</span>
-                    <span>{fmt(result.unusedForeignFinanceCostsCf)}</span>
-                  </div>
-                )}
-              </div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Foreign (SA106)</p>
+              {Number(comp.foreign_employment_income) > 0 && (
+                <Box number="1" label="Foreign employment income" value={fmt(Number(comp.foreign_employment_income))} />
+              )}
+              {Number(comp.foreign_interest_income) > 0 && (
+                <Box number="3" label="Foreign interest" value={fmt(Number(comp.foreign_interest_income))} />
+              )}
+              {Number(comp.foreign_dividend_income) > 0 && (
+                <Box number="6" label="Foreign dividends" value={fmt(Number(comp.foreign_dividend_income))} />
+              )}
+              {result.foreignPropertyProfit > 0 && (
+                <Box number="7" label="Foreign property net profit" value={fmt(result.foreignPropertyProfit)} />
+              )}
+              {Number(comp.foreign_tax_paid) > 0 && (
+                <Box number="2" label="Foreign tax paid on employment/other income" value={fmt(Number(comp.foreign_tax_paid))} />
+              )}
             </div>
           )}
 
-          {/* Foreign Tax Credit Relief, shown for transparency when relevant */}
-          {Number(comp.foreign_tax_paid) > 0 && (
+          {/* Pension */}
+          {Number(comp.pension_income) > 0 && (
             <div className="p-6 border-b border-slate-100">
-              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Foreign Tax Credit Relief</h2>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Foreign tax paid</span><span className="font-medium">{fmt(Number(comp.foreign_tax_paid))}</span></div>
-                <div className="flex justify-between font-medium text-green-600">
-                  <span>Credit relief given</span>
-                  <span>−{fmt(result.foreignTaxCreditRelief)}</span>
-                </div>
-              </div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Pensions (Main Return)</p>
+              <Box number="8" label="State Pension and other pension income" value={fmt(Number(comp.pension_income))} />
             </div>
           )}
 
-          {/* Tax Breakdown */}
+          {/* Interest and dividends */}
           <div className="p-6 border-b border-slate-100">
-            <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Tax & National Insurance</h2>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Interest and Dividends (Main Return)</p>
+            <Box number="2" label="UK interest — banks, building societies etc." value={fmt(Number(comp.interest_income))} />
+            <Box number="4" label="UK dividends" value={fmt(Number(comp.dividend_income))} />
+          </div>
+
+          {/* Reliefs and other adjustments — not shown on the internal SA100 summary,
+              but included here since they directly affect the figures being approved. */}
+          {(Number(comp.personal_pension_contributions) > 0 || Number(comp.gift_aid_donations) > 0 || Number(comp.child_benefit_received) > 0 || comp.marriage_allowance_transferred_out || comp.marriage_allowance_received) && (
+            <div className="p-6 border-b border-slate-100">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Reliefs and Other Adjustments</p>
+              {Number(comp.personal_pension_contributions) > 0 && (
+                <Box number="1" label="Payments to registered pension schemes (relief at source)" value={fmt(Number(comp.personal_pension_contributions))} />
+              )}
+              {Number(comp.gift_aid_donations) > 0 && (
+                <Box number="5" label="Gift Aid payments" value={fmt(Number(comp.gift_aid_donations))} />
+              )}
+              {comp.marriage_allowance_transferred_out && (
+                <Box number="—" label="Marriage Allowance transferred to spouse/civil partner" value="Yes" />
+              )}
+              {comp.marriage_allowance_received && (
+                <Box number="—" label="Marriage Allowance received from spouse/civil partner" value="Yes" />
+              )}
+              {Number(comp.child_benefit_received) > 0 && (
+                <Box number="1" label="Child Benefit received (High Income Child Benefit Charge)" value={fmt(Number(comp.child_benefit_received))} note="For the High Income Child Benefit Charge calculation" />
+              )}
+            </div>
+          )}
+
+          {/* Taxable income summary */}
+          <div className="p-6 border-b border-slate-100 bg-slate-50 print:bg-white">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Taxable Income Summary</p>
+            <Box number="—" label="Personal Allowance" value={fmt(result.personalAllowance)}
+              note={result.personalAllowance < 12570 ? "Tapered — total income exceeds £100,000" : undefined} />
+            <Box number="—" label="Taxable non-savings, non-dividend income" value={fmt(result.taxableNonDividend)} />
+            <Box number="—" label="Taxable savings income" value={fmt(result.taxableSavings)}
+              note={result.startingRateUsed > 0 || result.psaUsed > 0 ? `After £${fmt(result.startingRateUsed)} starting rate band and £${fmt(result.psaUsed)} Personal Savings Allowance` : undefined} />
+            <Box number="—" label="Taxable dividend income" value={fmt(result.taxableDividends)}
+              note={`After £${fmt(result.dividendAllowanceUsed)} dividend allowance`} />
+          </div>
+
+          {/* Tax calculation */}
+          <div className="p-6 border-b border-slate-100">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Tax Calculation</p>
             <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Income Tax</span><span className="font-medium">{fmt(result.totalIncomeTax)}</span></div>
-              {Number(comp.self_employment_income) > 0 && (
+              <div className="flex justify-between"><span className="text-slate-500">Tax on non-savings, non-dividend income</span><span className="font-medium">{fmt(result.nonDividendTax)}</span></div>
+              {(result.financeCostTaxReducer > 0 || result.foreignFinanceCostTaxReducer > 0) && (
+                <div className="flex justify-between"><span className="text-slate-500">Less: property finance cost tax reducer (20%)</span><span className="font-medium text-red-600">({fmt(result.financeCostTaxReducer + result.foreignFinanceCostTaxReducer)})</span></div>
+              )}
+              <div className="flex justify-between"><span className="text-slate-500">Tax on savings income</span><span className="font-medium">{fmt(result.savingsTax)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Tax on dividend income</span><span className="font-medium">{fmt(result.dividendTax)}</span></div>
+              {result.foreignTaxCreditRelief > 0 && (
+                <div className="flex justify-between"><span className="text-slate-500">Less: Foreign Tax Credit Relief</span><span className="font-medium text-red-600">({fmt(result.foreignTaxCreditRelief)})</span></div>
+              )}
+              <div className="border-t border-slate-200 pt-2 flex justify-between font-bold text-base">
+                <span>Income Tax Due</span>
+                <span>{fmt(result.totalIncomeTax)}</span>
+              </div>
+              {result.class4NI > 0 && (
                 <div className="flex justify-between"><span className="text-slate-500">Class 4 National Insurance</span><span className="font-medium">{fmt(result.class4NI)}</span></div>
               )}
               {result.hicbcCharge > 0 && (
@@ -320,7 +381,7 @@ export default async function PublicTaxComputationPage({
               {result.totalStudentLoanRepayment > 0 && (
                 <div className="flex justify-between"><span className="text-slate-500">Student Loan Repayment</span><span className="font-medium">{fmt(result.totalStudentLoanRepayment)}</span></div>
               )}
-              <div className="flex justify-between font-bold border-t border-slate-100 pt-2">
+              <div className="border-t border-slate-200 pt-2 flex justify-between font-bold text-base">
                 <span>Total Liability</span>
                 <span>{fmt(result.totalLiability)}</span>
               </div>
@@ -331,10 +392,10 @@ export default async function PublicTaxComputationPage({
             </div>
           </div>
 
-          {/* Capital Gains Tax, shown when any disposals are linked to this computation */}
+          {/* Capital Gains Tax (SA108) */}
           {cgtRows.length > 0 && (
             <div className="p-6 border-b border-slate-100">
-              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Capital Gains Tax</h2>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Capital Gains Summary (SA108)</p>
               <div className="space-y-3">
                 {cgtRows.map((row) => (
                   <div key={row.comp.id} className="text-sm">
@@ -365,8 +426,14 @@ export default async function PublicTaxComputationPage({
 
           {/* Payment Schedule */}
           <div className="p-6 bg-slate-50 print:bg-white">
-            <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-3">Payment Schedule</h2>
-            <div className="space-y-3">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Payment Schedule</p>
+            <Box number="—" label="Tax already paid at source (PAYE)" value={fmt(Number(comp.tax_paid_at_source))} />
+            <div className="flex justify-between border-t border-slate-200 pt-3 mt-2 font-bold text-base">
+              <span>{schedule.balanceDue >= 0 ? "Balance Due" : "Overpaid"}</span>
+              <span>{fmt(Math.abs(schedule.balanceDue))}</span>
+            </div>
+
+            <div className="mt-4 space-y-3">
               <div className="rounded-xl bg-white border border-slate-100 p-3">
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{fmtDate(schedule.balancingPaymentDate)}</p>
                 <div className="mt-1 space-y-1 text-sm">
@@ -386,7 +453,7 @@ export default async function PublicTaxComputationPage({
                       <span className="font-medium">{fmt(schedule.poaAmount)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between font-bold border-t border-slate-100 pt-1">
+                  <div className="flex justify-between font-bold border-t border-slate-200 pt-1">
                     <span>Total due</span>
                     <span>{fmt(grandTotalAtBalancingPayment)}</span>
                   </div>
@@ -413,34 +480,25 @@ export default async function PublicTaxComputationPage({
                 </div>
               )}
             </div>
+            <p className="text-xs text-slate-400 mt-3">
+              Payments on account apply where the balance due exceeds £1,000 and less than 80% of the year's liability was collected at source.
+            </p>
           </div>
         </div>
 
         {/* Approve / Query Buttons */}
         {!isResponded && (
           <div className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100 print:hidden">
-            <h2 className="text-lg font-bold text-slate-900 text-center">
-              Do these figures look correct?
-            </h2>
-            <p className="text-sm text-slate-500 text-center mt-1">
-              Please approve below, or raise a query if anything needs checking.
-            </p>
-
+            <h2 className="text-lg font-bold text-slate-900 text-center">Do these figures look correct?</h2>
+            <p className="text-sm text-slate-500 text-center mt-1">Please approve below, or raise a query if anything needs checking.</p>
             <div className="mt-6 flex gap-4 justify-center">
               <form action={approveWithToken}>
-                <button
-                  type="submit"
-                  className="rounded-xl bg-green-600 px-8 py-3 text-sm font-bold text-white hover:bg-green-700 transition-colors"
-                >
+                <button type="submit" className="rounded-xl bg-green-600 px-8 py-3 text-sm font-bold text-white hover:bg-green-700 transition-colors">
                   ✓ Approve
                 </button>
               </form>
-
               <form action={queryWithToken}>
-                <button
-                  type="submit"
-                  className="rounded-xl bg-white border border-slate-200 px-8 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors"
-                >
+                <button type="submit" className="rounded-xl bg-white border border-slate-200 px-8 py-3 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors">
                   I Have a Question
                 </button>
               </form>
@@ -449,7 +507,7 @@ export default async function PublicTaxComputationPage({
         )}
 
         <p className="text-center text-xs text-slate-400 mt-6">
-          This computation was prepared by {firmName} · {comp.tax_year} · This is an estimate for approval purposes and does not constitute a filed return.
+          This computation was prepared by {firmName} · {comp.tax_year} · This is provided for approval purposes ahead of filing.
         </p>
 
       </div>
