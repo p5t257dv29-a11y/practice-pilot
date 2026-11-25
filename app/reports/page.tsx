@@ -37,6 +37,54 @@ const DEADLINE_FILTERS: Record<string, string> = {
   none: "No Due Date",
 };
 
+const FILING_FILTERS: Record<string, string> = {
+  all: "All",
+  filed: "Filed",
+  unfiled: "Unfiled",
+};
+
+const TARGET_FILING_DAYS = 60;
+
+function calcFilingDays(yearEndStr?: string | null, filedDateStr?: string | null): number | null {
+  if (!yearEndStr || !filedDateStr) return null;
+
+  const yearEnd = new Date(yearEndStr);
+  const filedDate = new Date(filedDateStr);
+
+  if (Number.isNaN(yearEnd.getTime()) || Number.isNaN(filedDate.getTime())) {
+    return null;
+  }
+
+  const utcEnd = Date.UTC(yearEnd.getUTCFullYear(), yearEnd.getUTCMonth(), yearEnd.getUTCDate());
+  const utcFiled = Date.UTC(filedDate.getUTCFullYear(), filedDate.getUTCMonth(), filedDate.getUTCDate());
+
+  const diffDays = Math.round((utcFiled - utcEnd) / (1000 * 60 * 60 * 24));
+  return Math.max(0, diffDays);
+}
+
+function formatUKDate(dateStr?: string | null): string {
+  if (!dateStr) return "—";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function formatPeriodLabel(dateStr?: string | null): string {
+  if (!dateStr) return "—";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d
+    .toLocaleDateString("en-GB", {
+      month: "short",
+      year: "2-digit",
+    })
+    .replace(" ", "-");
+}
+
 function isWithinPeriod(dateStr: string | null, period: string, now: Date): boolean {
   if (period === "all") return true;
   if (!dateStr) return false;
@@ -85,6 +133,7 @@ export default async function ReportsPage({
     workStaff?: string;
     workType?: string;
     workDeadline?: string;
+    filingFilter?: string;
   }>;
 }) {
   const {
@@ -94,16 +143,19 @@ export default async function ReportsPage({
     workStaff: workStaffFilter,
     workType: workTypeFilter,
     workDeadline: workDeadlineFilter,
+    filingFilter,
   } = await searchParams;
   const activeFilter = filter && FILTERS[filter] ? filter : null;
   const activeStaffPeriod = staffPeriod && STAFF_PERIODS[staffPeriod] ? staffPeriod : "all";
-
+  const activeFilingFilter = filingFilter && FILING_FILTERS[filingFilter] ? filingFilter : "all";
+  const now = new Date();
   const [
     { data: jobs },
     { data: entries },
     { data: invoices },
     { data: writeoffs },
     { data: clientsList },
+    { data: deferredIncomeRows },
   ] = await Promise.all([
     supabase
       .from("jobs")
@@ -121,27 +173,30 @@ export default async function ReportsPage({
     supabase
       .from("clients")
       .select("id, client_name"),
+    supabase.rpc("get_deferred_income_report", {
+      p_start_date: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`,
+      p_end_date: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()}`,
+    }),
   ]);
-
   const clientNameMap = new Map((clientsList || []).map((c) => [c.id, c.client_name]));
 
   const wipData = (jobs || []).map((job) => {
-    const jobEntries = (entries || []).filter(e => e.job_id === job.id);
+    const jobEntries = (entries || []).filter((e) => e.job_id === job.id);
     const totalHours = jobEntries.reduce((sum, e) => sum + Number(e.hours), 0);
-    const billableHours = jobEntries.filter(e => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
-    const chargeOutValue = jobEntries.filter(e => e.billable).reduce((sum, e) => sum + (Number(e.hours) * Number(e.hourly_rate)), 0);
+    const billableHours = jobEntries.filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
+    const chargeOutValue = jobEntries.filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours) * Number(e.hourly_rate), 0);
 
-    const jobInvoices = (invoices || []).filter(i => i.job_id === job.id);
+    const jobInvoices = (invoices || []).filter((i) => i.job_id === job.id);
     const invoicedAmount = jobInvoices.reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
-    const paidAmount = jobInvoices.filter(i => i.status === "Paid").reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
+    const paidAmount = jobInvoices.filter((i) => i.status === "Paid").reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
 
-    const jobWriteoffs = (writeoffs || []).filter(w => w.job_id === job.id);
+    const jobWriteoffs = (writeoffs || []).filter((w) => w.job_id === job.id);
     const writtenOffAmount = jobWriteoffs.reduce((sum, w) => sum + Number(w.amount), 0);
 
     const wip = chargeOutValue - invoicedAmount - writtenOffAmount;
     const overBudget = job.budgeted_fee
       ? chargeOutValue > Number(job.budgeted_fee)
-      : (invoicedAmount > 0 && chargeOutValue > invoicedAmount);
+      : invoicedAmount > 0 && chargeOutValue > invoicedAmount;
     const hasActivity = totalHours > 0 || invoicedAmount > 0 || writtenOffAmount > 0;
 
     return {
@@ -163,7 +218,7 @@ export default async function ReportsPage({
     };
   });
 
-  const generalEntries = (entries || []).filter(e => !e.job_id && e.client_id);
+  const generalEntries = (entries || []).filter((e) => !e.job_id && e.client_id);
   const generalByClient = new Map<string, typeof generalEntries>();
   generalEntries.forEach((e) => {
     const list = generalByClient.get(e.client_id) || [];
@@ -171,39 +226,41 @@ export default async function ReportsPage({
     generalByClient.set(e.client_id, list);
   });
 
-  const generalRows = Array.from(generalByClient.entries()).map(([clientId, clientEntries]) => {
-    const totalHours = clientEntries.reduce((sum, e) => sum + Number(e.hours), 0);
-    const billableHours = clientEntries.filter(e => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
-    const chargeOutValue = clientEntries.filter(e => e.billable).reduce((sum, e) => sum + (Number(e.hours) * Number(e.hourly_rate)), 0);
+  const generalRows = Array.from(generalByClient.entries())
+    .map(([clientId, clientEntries]) => {
+      const totalHours = clientEntries.reduce((sum, e) => sum + Number(e.hours), 0);
+      const billableHours = clientEntries.filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
+      const chargeOutValue = clientEntries.filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours) * Number(e.hourly_rate), 0);
 
-    return {
-      key: `general-${clientId}`,
-      isGeneral: true,
-      job: null as any,
-      clientId,
-      clientName: clientNameMap.get(clientId) || "Unknown",
-      jobType: "General / Not job-linked",
-      totalHours,
-      billableHours,
-      chargeOutValue,
-      invoicedAmount: 0,
-      paidAmount: 0,
-      writtenOffAmount: 0,
-      wip: Math.max(chargeOutValue, 0),
-      overBudget: false,
-      hasActivity: totalHours > 0,
-    };
-  }).filter(d => d.totalHours > 0);
+      return {
+        key: `general-${clientId}`,
+        isGeneral: true,
+        job: null as any,
+        clientId,
+        clientName: clientNameMap.get(clientId) || "Unknown",
+        jobType: "General / Not job-linked",
+        totalHours,
+        billableHours,
+        chargeOutValue,
+        invoicedAmount: 0,
+        paidAmount: 0,
+        writtenOffAmount: 0,
+        wip: Math.max(chargeOutValue, 0),
+        overBudget: false,
+        hasActivity: totalHours > 0,
+      };
+    })
+    .filter((d) => d.totalHours > 0);
 
   const allRows = [...wipData, ...generalRows];
 
-  const activityRows = allRows.filter(d => d.hasActivity);
+  const activityRows = allRows.filter((d) => d.hasActivity);
 
   const totalWIP = activityRows.reduce((sum, d) => sum + d.wip, 0);
   const totalInvoiced = activityRows.reduce((sum, d) => sum + d.invoicedAmount, 0);
   const totalPaid = activityRows.reduce((sum, d) => sum + d.paidAmount, 0);
   const totalWrittenOff = activityRows.reduce((sum, d) => sum + d.writtenOffAmount, 0);
-  const overBudgetJobs = wipData.filter(d => d.overBudget).length;
+  const overBudgetJobs = wipData.filter((d) => d.overBudget).length;
 
   const statusCounts = ["Draft", "Active", "On Hold", "Completed", "Cancelled"].map((status) => ({
     status,
@@ -292,11 +349,15 @@ export default async function ReportsPage({
 
   // --- Practice Overview: fee income, profitability, staff utilisation, YoY, service lines ---
 
-  const now = new Date();
   const monthKeys: { key: string; label: string; year: number; month: number }[] = [];
   for (let i = 11; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    monthKeys.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: `${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()}`, year: d.getFullYear(), month: d.getMonth() });
+    monthKeys.push({
+      key: `${d.getFullYear()}-${d.getMonth()}`,
+      label: `${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()}`,
+      year: d.getFullYear(),
+      month: d.getMonth(),
+    });
   }
 
   const monthlyFeeIncome = monthKeys.map(({ key, label, year, month }) => {
@@ -315,7 +376,13 @@ export default async function ReportsPage({
   const clientProfitMap = new Map<string, { clientId: string; clientName: string; invoiced: number; paid: number; writtenOff: number; timeValue: number; hours: number }>();
   allRows.forEach((d) => {
     const existing = clientProfitMap.get(d.clientId) || {
-      clientId: d.clientId, clientName: d.clientName, invoiced: 0, paid: 0, writtenOff: 0, timeValue: 0, hours: 0,
+      clientId: d.clientId,
+      clientName: d.clientName,
+      invoiced: 0,
+      paid: 0,
+      writtenOff: 0,
+      timeValue: 0,
+      hours: 0,
     };
     existing.invoiced += d.invoicedAmount;
     existing.paid += d.paidAmount;
@@ -388,6 +455,53 @@ export default async function ReportsPage({
   const serviceLines = Array.from(serviceLineMap.values()).sort((a, b) => b.invoiced - a.invoiced);
   const maxServiceLineInvoiced = Math.max(1, ...serviceLines.map((s) => s.invoiced));
 
+  // --- Year-End Accounts Filing Times ---
+  // Hook this array to your Supabase year-end accounts records (e.g. from a year-end accounts / filings table or jobs)
+  const yearEndAccountsRows: any[] = [];
+
+  const filingRecords = yearEndAccountsRows.map((item: any) => {
+    const yearEndRaw = item.year_end ?? item.period_end ?? null;
+    const filedDateRaw = item.filed_date ?? item.date_filed ?? item.submitted_at ?? null;
+    const filingDays = calcFilingDays(yearEndRaw, filedDateRaw);
+
+    return {
+      id: String(item.id),
+      clientName: item.client_name ?? item.clients?.client_name ?? "Unnamed Client",
+      periodLabel: formatPeriodLabel(yearEndRaw),
+      yearEndRaw,
+      filedDateRaw,
+      filingDays,
+      isFiled: filingDays !== null,
+    };
+  });
+
+  const filedAccounts = filingRecords.filter((r) => r.isFiled && r.filingDays !== null);
+  const unfiledAccounts = filingRecords.filter((r) => !r.isFiled);
+
+  const avgFilingDays =
+    filedAccounts.length > 0
+      ? Math.round(filedAccounts.reduce((sum, r) => sum + (r.filingDays ?? 0), 0) / filedAccounts.length)
+      : null;
+  const fastestFilingDays =
+    filedAccounts.length > 0 ? Math.min(...filedAccounts.map((r) => r.filingDays ?? 0)) : null;
+  const slowestFilingDays =
+    filedAccounts.length > 0 ? Math.max(...filedAccounts.map((r) => r.filingDays ?? 0)) : null;
+  const withinTargetCount = filedAccounts.filter((r) => (r.filingDays ?? 0) <= TARGET_FILING_DAYS).length;
+  const withinTargetPct =
+    filedAccounts.length > 0 ? Math.round((withinTargetCount / filedAccounts.length) * 100) : null;
+
+  const displayedFilingRecords =
+    activeFilingFilter === "filed"
+      ? filedAccounts
+      : activeFilingFilter === "unfiled"
+      ? unfiledAccounts
+      : filingRecords;
+
+  const totalDeferredIncome = (deferredIncomeRows || []).reduce(
+    (sum: number, row: any) => sum + Number(row.closing_balance || 0),
+    0
+  );
+  const totalOutstanding = Math.max(0, totalInvoiced - totalPaid);
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmt0 = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
@@ -405,43 +519,78 @@ export default async function ReportsPage({
 
       <div className="p-8 space-y-8">
 
-        <div className="grid grid-cols-2 gap-6 lg:grid-cols-5">
-          <Link href={activeFilter === "wip" ? "/reports" : "/reports?filter=wip"}
-            className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "wip" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
-            <p className="text-sm font-medium text-slate-500">Total WIP</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">{fmt(totalWIP)}</p>
-            <p className="mt-1 text-xs text-slate-400">Unbilled work value</p>
-          </Link>
+        {/* ============ ZONE 1: CASH & BILLING ============ */}
+        <div>
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Cash & Billing Overview</h2>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
 
-          <Link href={activeFilter === "invoiced" ? "/reports" : "/reports?filter=invoiced"}
-            className={`rounded-2xl bg-blue-600 p-6 shadow-sm transition-colors ${activeFilter === "invoiced" ? "ring-2 ring-blue-900" : "hover:bg-blue-700"}`}>
-            <p className="text-sm font-medium text-blue-100">Total Invoiced</p>
-            <p className="mt-2 text-3xl font-semibold text-white tabular-nums">{fmt(totalInvoiced)}</p>
-            <p className="mt-1 text-xs text-blue-200">All invoices raised</p>
-          </Link>
+            {/* Total Invoiced */}
+            <Link href={activeFilter === "invoiced" ? "/reports" : "/reports?filter=invoiced"}
+              className="rounded-2xl bg-blue-600 p-6 shadow-sm border border-blue-600 hover:bg-blue-700 transition-colors">
+              <p className="text-sm font-medium text-blue-100">Total Invoiced</p>
+              <p className="mt-2 text-3xl font-semibold text-white tabular-nums">{fmt(totalInvoiced)}</p>
+              <p className="mt-1 text-xs text-blue-200">All invoices raised</p>
+            </Link>
 
-          <Link href={activeFilter === "paid" ? "/reports" : "/reports?filter=paid"}
-            className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "paid" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
-            <p className="text-sm font-medium text-slate-500">Total Paid</p>
-            <p className="mt-2 text-3xl font-semibold text-green-600 tabular-nums">{fmt(totalPaid)}</p>
-            <p className="mt-1 text-xs text-slate-400">Cash received</p>
-          </Link>
+            {/* Total Paid */}
+            <Link href={activeFilter === "paid" ? "/reports" : "/reports?filter=paid"}
+              className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 hover:border-slate-300 transition-colors">
+              <p className="text-sm font-medium text-slate-500">Total Paid</p>
+              <p className="mt-2 text-3xl font-semibold text-emerald-600 tabular-nums">{fmt(totalPaid)}</p>
+              <p className="mt-1 text-xs text-slate-400">Cash received</p>
+            </Link>
 
-          <Link href={activeFilter === "writtenoff" ? "/reports" : "/reports?filter=writtenoff"}
-            className={`rounded-2xl bg-white p-6 shadow-sm border transition-colors ${activeFilter === "writtenoff" ? "border-slate-900 ring-1 ring-slate-900" : "border-slate-100 hover:border-slate-300"}`}>
-            <p className="text-sm font-medium text-slate-500">Written Off</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-500 tabular-nums">{fmt(totalWrittenOff)}</p>
-            <p className="mt-1 text-xs text-slate-400">WIP not being billed</p>
-          </Link>
+            {/* Total Outstanding */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <p className="text-sm font-medium text-slate-500">Total Outstanding</p>
+              <p className="mt-2 text-3xl font-semibold text-amber-600 tabular-nums">{fmt(totalOutstanding)}</p>
+              <p className="mt-1 text-xs text-slate-400">Awaiting client payment</p>
+            </div>
 
-          <Link href={activeFilter === "overbudget" ? "/reports" : "/reports?filter=overbudget"}
-            className={`rounded-2xl p-6 shadow-sm transition-colors ${overBudgetJobs > 0 ? "bg-red-50 border border-red-100 hover:border-red-300" : "bg-white border border-slate-100 hover:border-slate-300"} ${activeFilter === "overbudget" ? "ring-1 ring-red-500" : ""}`}>
-            <p className={`text-sm font-medium ${overBudgetJobs > 0 ? "text-red-500" : "text-slate-500"}`}>Over Budget</p>
-            <p className={`mt-2 text-3xl font-semibold tabular-nums ${overBudgetJobs > 0 ? "text-red-600" : "text-slate-900"}`}>{overBudgetJobs}</p>
-            <p className={`mt-1 text-xs ${overBudgetJobs > 0 ? "text-red-400" : "text-slate-400"}`}>Jobs over invoiced</p>
-          </Link>
+          </div>
         </div>
 
+        {/* ============ ZONE 2: ACCOUNTING & VALUATION ============ */}
+        <div className="pt-4 border-t border-slate-200/80">
+          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Accounting & Valuation Adjustments</h2>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
+
+            {/* Total WIP */}
+            <Link href={activeFilter === "wip" ? "/reports" : "/reports?filter=wip"}
+              className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 hover:border-slate-300 transition-colors">
+              <p className="text-sm font-medium text-slate-500">Total WIP</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">{fmt(totalWIP)}</p>
+              <p className="mt-1 text-xs text-slate-400">Unbilled work value</p>
+            </Link>
+
+            {/* Deferred Income */}
+            <a href="#deferred-income"
+              className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 hover:border-slate-300 transition-colors">
+              <p className="text-sm font-medium text-slate-500">Deferred Income</p>
+              <p className="mt-2 text-3xl font-semibold text-blue-600 tabular-nums">{fmt(totalDeferredIncome)}</p>
+              <p className="mt-1 text-xs text-slate-400">Unearned closing liability</p>
+            </a>
+
+            {/* Written Off */}
+            <Link href={activeFilter === "written-off" ? "/reports" : "/reports?filter=written-off"}
+              className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 hover:border-slate-300 transition-colors">
+              <p className="text-sm font-medium text-slate-500">Written Off</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">{fmt(totalWrittenOff)}</p>
+              <p className="mt-1 text-xs text-slate-400">WIP not being billed</p>
+            </Link>
+
+            {/* Over Budget */}
+            <Link href={activeFilter === "over-budget" ? "/reports" : "/reports?filter=over-budget"}
+              className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100 hover:border-slate-300 transition-colors">
+              <p className="text-sm font-medium text-slate-500">Over Budget</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">{overBudgetJobs}</p>
+              <p className="mt-1 text-xs text-slate-400">Jobs over invoiced</p>
+            </Link>
+
+          </div>
+        </div>
+
+        {/* ============ MAIN JOB SUMMARY & STATUS ============ */}
         <div className="grid gap-8 lg:grid-cols-3">
 
           <div className="lg:col-span-2">
@@ -607,6 +756,197 @@ export default async function ReportsPage({
           </div>
         </div>
 
+        {/* ============ DEFERRED INCOME REPORT ============ */}
+        <div id="deferred-income" className="mt-8 rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-slate-900">Deferred Income (Unearned Revenue)</h2>
+          </div>
+
+          {!deferredIncomeRows || deferredIncomeRows.length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-slate-500 text-sm">No deferred income schedules for this period.</p>
+              <p className="text-slate-400 text-xs mt-1">Add advance billings or retainers to track unearned revenue.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 2fr) repeat(4, minmax(85px, 1fr))", gap: "0.5rem" }}
+                className="text-xs font-semibold text-slate-400 uppercase tracking-wider px-4">
+                <div>Client / Invoice</div>
+                <div className="text-right">Total Billed</div>
+                <div className="text-right">Opening</div>
+                <div className="text-right">Recognized</div>
+                <div className="text-right">Closing Liability</div>
+              </div>
+
+              {deferredIncomeRows.map((row: any, i: number) => (
+                <div key={i} className="rounded-xl border border-slate-100 p-4">
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 2fr) repeat(4, minmax(85px, 1fr))", gap: "0.5rem" }}
+                    className="items-center">
+                    <div>
+                      <Link href={`/clients/${row.client_id}`} className="font-semibold text-slate-900 hover:text-blue-600 transition-colors text-sm">
+                        {row.client_name}
+                      </Link>
+                      <p className="text-xs text-slate-500 mt-0.5">Inv: {row.invoice_number}</p>
+                    </div>
+                    <div className="text-right font-semibold text-slate-900 text-sm tabular-nums">
+                      {fmt(row.total_billed)}
+                    </div>
+                    <div className="text-right text-slate-500 text-sm tabular-nums">
+                      {fmt(row.opening_balance)}
+                    </div>
+                    <div className="text-right text-green-600 text-sm tabular-nums">
+                      {fmt(row.recognized_in_period)}
+                    </div>
+                    <div className="text-right font-bold text-blue-600 text-sm tabular-nums">
+                      {fmt(row.closing_balance)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ============ YEAR-END ACCOUNTS FILING TIMES ============ */}
+        <div id="year-end-filings" className="pt-4 border-t border-slate-200/80 space-y-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Year-End Accounts Filing Times</h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Calendar days from period year-end to filing date (e.g. Mar-26 year end filed 30/04/26 = 30 days).
+              </p>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Link
+                href="/reports?filingFilter=all#year-end-filings"
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  activeFilingFilter === "all"
+                    ? "bg-slate-900 text-white"
+                    : "bg-white border border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                All ({filingRecords.length})
+              </Link>
+              <Link
+                href="/reports?filingFilter=filed#year-end-filings"
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  activeFilingFilter === "filed"
+                    ? "bg-slate-900 text-white"
+                    : "bg-white border border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                Filed ({filedAccounts.length})
+              </Link>
+              <Link
+                href="/reports?filingFilter=unfiled#year-end-filings"
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  activeFilingFilter === "unfiled"
+                    ? "bg-slate-900 text-white"
+                    : "bg-white border border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                Unfiled ({unfiledAccounts.length})
+              </Link>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <p className="text-sm font-medium text-slate-500">Average Filing Time</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900 tabular-nums">
+                {avgFilingDays !== null ? `${avgFilingDays} days` : "—"}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Across {filedAccounts.length} filed {filedAccounts.length === 1 ? "period" : "periods"}
+              </p>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <p className="text-sm font-medium text-slate-500">Fastest Turnaround</p>
+              <p className="mt-2 text-3xl font-semibold text-emerald-600 tabular-nums">
+                {fastestFilingDays !== null ? `${fastestFilingDays} days` : "—"}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">Shortest post-year-end filing</p>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <p className="text-sm font-medium text-slate-500">Longest Turnaround</p>
+              <p className="mt-2 text-3xl font-semibold text-amber-600 tabular-nums">
+                {slowestFilingDays !== null ? `${slowestFilingDays} days` : "—"}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">Slowest post-year-end filing</p>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+              <p className="text-sm font-medium text-slate-500">Within {TARGET_FILING_DAYS}-Day Target</p>
+              <p className="mt-2 text-3xl font-semibold text-blue-600 tabular-nums">
+                {withinTargetPct !== null ? `${withinTargetPct}%` : "—"}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                {withinTargetCount} of {filedAccounts.length} within target
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-100 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    <th className="py-3 pr-4">Client</th>
+                    <th className="py-3 px-4">Period</th>
+                    <th className="py-3 px-4">Year End</th>
+                    <th className="py-3 px-4">Date Filed</th>
+                    <th className="py-3 px-4">Filing Time</th>
+                    <th className="py-3 pl-4">Benchmark</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {displayedFilingRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-slate-400">
+                        No year-end accounts records to display yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    displayedFilingRecords.map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-50/70">
+                        <td className="py-3.5 pr-4 font-medium text-slate-900">{row.clientName}</td>
+                        <td className="py-3.5 px-4 text-slate-600">{row.periodLabel}</td>
+                        <td className="py-3.5 px-4 text-slate-600 tabular-nums">
+                          {formatUKDate(row.yearEndRaw)}
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-600 tabular-nums">
+                          {formatUKDate(row.filedDateRaw)}
+                        </td>
+                        <td className="py-3.5 px-4 font-semibold text-slate-900 tabular-nums">
+                          {row.filingDays !== null ? `${row.filingDays} days` : "—"}
+                        </td>
+                        <td className="py-3.5 pl-4">
+                          {!row.isFiled ? (
+                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                              Unfiled
+                            </span>
+                          ) : (row.filingDays ?? 0) <= TARGET_FILING_DAYS ? (
+                            <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                              On Target (≤ {TARGET_FILING_DAYS}d)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700">
+                              Over {TARGET_FILING_DAYS}d Target
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         {/* ============ WORKLOAD BY STAFF ============ */}
         <div id="workload-by-staff">
           <div className="mb-4 flex items-start justify-between flex-wrap gap-2">
@@ -743,7 +1083,7 @@ export default async function ReportsPage({
           )}
         </div>
 
-        {/* ============ PRACTICE OVERVIEW ============ */}
+{/* ============ PRACTICE OVERVIEW ============ */}
         <div>
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -845,7 +1185,7 @@ export default async function ReportsPage({
             </div>
 
             {/* Staff Utilisation — now with period selector */}
-            <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+            <div id="staff-utilisation" className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
               <div className="flex items-center justify-between mb-1">
                 <h3 className="text-base font-bold text-slate-900">Staff Utilisation</h3>
               </div>

@@ -99,9 +99,8 @@ const pathname = usePathname();
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
-      <aside className="w-64 bg-slate-900 text-white flex flex-col fixed h-full overflow-y-auto">
-
+    <div className="relative flex min-h-screen w-full bg-slate-50">
+<aside className="w-64 bg-slate-900 text-white flex flex-col fixed h-full overflow-y-auto">
         {/* Logo */}
         <div className="p-6 border-b border-slate-700/50">
           <div className="flex items-center gap-3">
@@ -173,7 +172,7 @@ const pathname = usePathname();
         </div>
       </aside>
 
-      <main className="flex-1 ml-64 min-h-screen">
+<main className="ml-64 min-h-screen min-w-0 w-[calc(100%-16rem)] flex-1">
         {children}
       </main>
     </div>
