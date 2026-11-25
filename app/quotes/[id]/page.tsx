@@ -73,6 +73,7 @@ async function addLineItem(quoteId: string, formData: FormData) {
   const price = parseFloat(get("price")) || 0;
   const vatRate = parseFloat(get("vat_rate")) || 20;
   const lineTotal = qty * price;
+  const includeInRenewal = formData.get("include_in_renewal") === "on";
 
   await supabase.from("quote_lines").insert({
     quote_id: quoteId,
@@ -82,6 +83,7 @@ async function addLineItem(quoteId: string, formData: FormData) {
     price,
     vat_rate: vatRate,
     line_total: lineTotal,
+    include_in_renewal: includeInRenewal,
   });
 
   const { data: lines } = await supabase
@@ -114,6 +116,7 @@ async function updateLineItem(quoteId: string, lineId: string, formData: FormDat
   const price = parseFloat(get("price")) || 0;
   const vatRate = parseFloat(get("vat_rate")) || 20;
   const lineTotal = qty * price;
+  const includeInRenewal = formData.get("include_in_renewal") === "on";
 
   await supabase.from("quote_lines").update({
     description: get("description"),
@@ -121,6 +124,7 @@ async function updateLineItem(quoteId: string, lineId: string, formData: FormDat
     price,
     vat_rate: vatRate,
     line_total: lineTotal,
+    include_in_renewal: includeInRenewal,
   }).eq("id", lineId);
 
   const { data: lines } = await supabase
@@ -296,6 +300,17 @@ export default async function QuoteDetailPage({
                             </select>
                           </div>
                         </div>
+
+                        <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            name="include_in_renewal"
+                            defaultChecked={line.include_in_renewal !== false}
+                            className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                          />
+                          <span>Include in annual renewal (uncheck for one-off / catch-up work)</span>
+                        </label>
+
                         <div className="flex gap-3">
                           <button type="submit"
                             className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
@@ -320,7 +335,14 @@ export default async function QuoteDetailPage({
                 return (
                   <div key={line.id} className="flex items-center justify-between rounded-xl border border-slate-100 p-4 hover:bg-slate-50 transition-colors">
                     <div className="flex-1">
-                      <p className="text-sm font-semibold text-slate-900">{line.description}</p>
+                      <p className="text-sm font-semibold text-slate-900">
+                        {line.description}
+                        {line.include_in_renewal === false && (
+                          <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                            One-off (excluded from renewal)
+                          </span>
+                        )}
+                      </p>
                       <p className="text-xs text-slate-500 mt-0.5">
                         Qty: {line.qty} × £{Number(line.price).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · VAT: {line.vat_rate}%
                       </p>
@@ -386,6 +408,16 @@ export default async function QuoteDetailPage({
                     </select>
                   </div>
                 </div>
+
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="include_in_renewal"
+                    defaultChecked={true}
+                    className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+                  />
+                  <span>Include in annual renewal (uncheck for one-off / catch-up work)</span>
+                </label>
 
                 <button type="submit"
                   className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors">
