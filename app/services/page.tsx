@@ -255,7 +255,20 @@ export default async function ReportsPage({
   const allRows = [...wipData, ...generalRows];
 
   const activityRows = allRows.filter((d) => d.hasActivity);
+const deferredIncomeByJob = wipData
+    .map((d) => {
+      const isClosed = d.job.status === "Completed" || d.job.status === "Cancelled";
+      const remainingDeferred = isClosed
+        ? 0
+        : Math.max(d.invoicedAmount - d.chargeOutValue, 0);
 
+      return {
+        ...d,
+        remainingDeferred,
+        recognisedSoFar: Math.min(d.invoicedAmount, Math.max(d.chargeOutValue, 0)),
+      };
+    })
+    .filter((d) => d.invoicedAmount > 0 || d.remainingDeferred > 0);
   const totalWIP = activityRows.reduce((sum, d) => sum + d.wip, 0);
   const totalInvoiced = activityRows.reduce((sum, d) => sum + d.invoicedAmount, 0);
   const totalPaid = activityRows.reduce((sum, d) => sum + d.paidAmount, 0);
@@ -503,11 +516,11 @@ export default async function ReportsPage({
       ? unfiledAccounts
       : filingRecords;
 
-  const totalDeferredIncome = (deferredIncomeRows || []).reduce(
-    (sum: number, row: any) => sum + Number(row.closing_balance || 0),
+const totalDeferredIncome = deferredIncomeByJob.reduce(
+    (sum, d) => sum + d.remainingDeferred,
     0
   );
-  const totalOutstanding = Math.max(0, totalInvoiced - totalPaid);
+      const totalOutstanding = Math.max(0, totalInvoiced - totalPaid);
   const fmt = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmt0 = (n: number) => `£${n.toLocaleString("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 

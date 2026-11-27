@@ -95,6 +95,7 @@ async function addJobNote(jobId: string, formData: FormData) {
   await supabase.from("job_notes").insert({ job_id: jobId, note_text: noteText, created_by: createdBy });
   revalidatePath(`/jobs/${jobId}`);
 }
+
 async function sendChaseReminder(jobId: string, clientEmail: string, clientName: string, outstandingItems: string[]) {
   "use server";
   if (!clientEmail || outstandingItems.length === 0) return;
@@ -133,6 +134,78 @@ async function deleteJobNote(jobId: string, noteId: string) {
   revalidatePath(`/jobs/${jobId}`);
 }
 
+async function convertTimeToInvoice(jobId: string) {
+  "use server";
+
+  const { data: job, error: jobError } = await supabase
+    .from("jobs")
+    .select("id, client_id, job_name, billing_type, status")
+    .eq("id", jobId)
+    .single();
+
+  if (jobError || !job) {
+    throw new Error("Job not found.");
+  }
+
+  if (job.status !== "Completed") {
+    throw new Error("Time can only be converted to an invoice once the job is marked Completed.");
+  }
+
+  const { data: unbilledEntries, error: entriesError } = await supabase
+    .from("time_entries")
+    .select("*")
+    .eq("job_id", jobId)
+    .eq("billable", true)
+    .is("billed_invoice_id", null);
+
+  if (entriesError) {
+    throw new Error("Could not load unbilled time entries.");
+  }
+
+  if (!unbilledEntries || unbilledEntries.length === 0) {
+    return;
+  }
+
+  const totalUnbilledHours = unbilledEntries.reduce((sum, e) => sum + Number(e.hours), 0);
+  const subtotal = unbilledEntries.reduce(
+    (sum, e) => sum + Number(e.hours) * Number(e.hourly_rate),
+    0
+  );
+
+  const { data: createdInvoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .insert({
+      client_id: job.client_id,
+      job_id: job.id,
+      status: "Draft",
+      invoice_date: new Date().toISOString().split("T")[0],
+      subtotal,
+    })
+    .select("id")
+    .single();
+
+  if (invoiceError || !createdInvoice) {
+    throw new Error(`Failed to create invoice: ${invoiceError?.message || "Unknown error"}`);
+  }
+
+  const entryIds = unbilledEntries.map((e) => e.id);
+  const { error: updateEntriesError } = await supabase
+    .from("time_entries")
+    .update({
+      billed_invoice_id: createdInvoice.id,
+      billed_at: new Date().toISOString(),
+    })
+    .in("id", entryIds);
+
+  if (updateEntriesError) {
+    throw new Error(`Invoice created, but failed to mark time entries as billed: ${updateEntriesError.message}`);
+  }
+
+  revalidatePath(`/jobs/${jobId}`);
+  revalidatePath("/reports");
+  revalidatePath("/invoices");
+}
+
 async function updateJobRecord(id: string, formData: FormData) {
   "use server";
   const get = (key: string) => String(formData.get(key) || "").trim();
@@ -145,7 +218,7 @@ async function updateJobRecord(id: string, formData: FormData) {
     .eq("id", id)
     .single();
 
-await supabase.from("jobs").update({
+  await supabase.from("jobs").update({
     client_id: get("client_id"),
     job_name: get("job_name"),
     job_type: get("job_type"),
@@ -160,6 +233,7 @@ await supabase.from("jobs").update({
     budgeted_hours: get("budgeted_hours") ? parseFloat(get("budgeted_hours")) : null,
     budgeted_fee: get("budgeted_fee") ? parseFloat(get("budgeted_fee")) : null,
   }).eq("id", id);
+
   const wasAlreadyCompleted = currentJob?.status === "Completed";
   if (isRecurring && newStatus === "Completed" && !wasAlreadyCompleted) {
     const nextDueDate = getNextDueDate(get("due_date") || currentJob?.due_date, get("recurrence_frequency"));
@@ -203,24 +277,28 @@ export default async function JobDetailPage({
     { data: templates },
     { data: staff },
     { data: timeEntries },
-{ data: trialBalance },
+    { data: trialBalance },
     { data: ctComputation },
     { data: taxComputation },
     { data: cgtComputation },
-    { data: mtdIncomeSource },    { data: invoices },    { data: writeoffs },
+    { data: mtdIncomeSource },
+    { data: invoices },
+    { data: writeoffs },
     { data: jobNotes },
   ] = await Promise.all([
-supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).single(),
+    supabase.from("jobs").select("*, clients(client_name, email)").eq("id", id).single(),
     supabase.from("clients").select("id, client_name").order("client_name", { ascending: true }),
     supabase.from("job_checklist_items").select("*").eq("job_id", id).order("sort_order", { ascending: true }),
     supabase.from("checklist_templates").select("id, name").order("name", { ascending: true }),
     supabase.from("staff").select("id, name").eq("is_active", true).order("name", { ascending: true }),
     supabase.from("time_entries").select("*").eq("job_id", id).order("date", { ascending: false }),
-supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("trial_balances").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("corporation_tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),supabase.from("capital_gains_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("invoices").select("subtotal, status").eq("job_id", id),    supabase.from("wip_writeoffs").select("*").eq("job_id", id).order("created_at", { ascending: false }),
+    supabase.from("tax_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("capital_gains_computations").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("invoices").select("subtotal, status").eq("job_id", id),
+    supabase.from("wip_writeoffs").select("*").eq("job_id", id).order("created_at", { ascending: false }),
     supabase.from("job_notes").select("*").eq("job_id", id).order("created_at", { ascending: false }),
   ]);
 
@@ -238,15 +316,25 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
 
   const totalHours = safeTimeEntries.reduce((sum, e) => sum + Number(e.hours), 0);
   const billableHours = safeTimeEntries.filter((e) => e.billable).reduce((sum, e) => sum + Number(e.hours), 0);
-  const chargeOutValue = safeTimeEntries.filter((e) => e.billable).reduce((sum, e) => sum + (Number(e.hours) * Number(e.hourly_rate)), 0);
+  const chargeOutValue = safeTimeEntries
+    .filter((e) => e.billable)
+    .reduce((sum, e) => sum + Number(e.hours) * Number(e.hourly_rate), 0);
+
+  const unbilledEntries = safeTimeEntries.filter((e) => e.billable && !e.billed_invoice_id);
+  const unbilledHours = unbilledEntries.reduce((sum, e) => sum + Number(e.hours), 0);
+  const unbilledChargeOutValue = unbilledEntries.reduce(
+    (sum, e) => sum + Number(e.hours) * Number(e.hourly_rate),
+    0
+  );
 
   const invoicedAmount = (invoices || []).reduce((sum, i) => sum + Number(i.subtotal || 0), 0);
   const writtenOffAmount = safeWriteoffs.reduce((sum, w) => sum + Number(w.amount), 0);
-  const currentWip = Math.max(chargeOutValue - invoicedAmount - writtenOffAmount, 0);
 
-// "Start Work" routes to the correct production screen based on job type, opening the
-  // existing computation/trial balance if one exists, or starting a new one linked to
-  // this job if not. Job types without a dedicated production screen yet get no button.
+  const isTimeAndMaterials = job.billing_type === "time_and_materials";
+  const currentWip = isTimeAndMaterials
+    ? Math.max(unbilledChargeOutValue - writtenOffAmount, 0)
+    : Math.max(chargeOutValue - invoicedAmount - writtenOffAmount, 0);
+
   let startWorkHref: string | null = null;
   let startWorkLabel = "";
 
@@ -258,7 +346,7 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
       ? `/corporation-tax/${ctComputation.id}`
       : `/corporation-tax?mode=new&client=${job.client_id}&job=${id}`;
     startWorkLabel = ctComputation ? "View CT Computation" : "Prepare CT Computation";
-} else if (job.job_type === "Self Assessment") {
+  } else if (job.job_type === "Self Assessment") {
     startWorkHref = taxComputation
       ? `/tax/${taxComputation.id}`
       : `/tax?mode=new&client=${job.client_id}&job=${id}`;
@@ -273,7 +361,9 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
       ? `/mtd/${mtdIncomeSource.id}`
       : `/mtd?mode=new&job=${id}`;
     startWorkLabel = mtdIncomeSource ? "View MTD Records" : "Set Up MTD Records";
-  }  return (
+  }
+
+  return (
     <div className="p-8">
       <a href="/jobs" className="text-sm text-slate-500 hover:text-slate-900 transition-colors">
         Back to Jobs
@@ -295,7 +385,7 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
         </div>
 
         <div className="flex items-center gap-2">
-{startWorkHref && (
+          {startWorkHref && (
             <a href={startWorkHref}
               className="rounded-xl bg-white border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               {startWorkLabel}
@@ -368,9 +458,10 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
                     <option>Bookkeeping</option>
                     <option>Management Accounts</option>
                     <option>Companies House Filing</option>
-<option>Capital Gains Tax</option>
+                    <option>Capital Gains Tax</option>
                     <option>Partnership Tax</option>
-                    <option>MTD Quarterly Update</option>                    <option>P11D / Benefits in Kind</option>
+                    <option>MTD Quarterly Update</option>
+                    <option>P11D / Benefits in Kind</option>
                     <option>Other</option>
                   </select>
                 </div>
@@ -438,7 +529,7 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
                 </div>
 
-<div>
+                <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Due Date</label>
                   <input name="due_date" type="date" defaultValue={job.due_date || ""}
                     className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
@@ -507,7 +598,7 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
               </a>
             </div>
 
-<div className="mt-4 grid grid-cols-3 gap-3 text-center">
+            <div className="mt-4 grid grid-cols-3 gap-3 text-center">
               <div>
                 <p className="text-xl font-bold text-slate-900">{totalHours.toFixed(1)}h</p>
                 <p className="text-xs text-slate-500">Total</p>
@@ -603,6 +694,30 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
                 <p className="text-xs text-slate-500">Written off to date: £{writtenOffAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               )}
 
+              {isTimeAndMaterials && (
+                <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600">
+                  <span className="font-semibold text-slate-800">Billing:</span> Time &amp; Materials (Bill on Completion)
+                  {job.agreed_hourly_rate ? ` · £${Number(job.agreed_hourly_rate).toFixed(2)}/hr` : ""}
+                </div>
+              )}
+
+              {job.status === "Completed" && unbilledChargeOutValue > 0 && (
+                <form action={convertTimeToInvoice.bind(null, id)}>
+                  <button
+                    type="submit"
+                    className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors"
+                  >
+                    Convert {unbilledHours.toFixed(1)}h (£{unbilledChargeOutValue.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) to Invoice
+                  </button>
+                </form>
+              )}
+
+              {job.status !== "Completed" && unbilledChargeOutValue > 0 && (
+                <p className="text-xs text-slate-400">
+                  Mark job as <span className="font-semibold text-slate-600">Completed</span> to raise an invoice for unbilled time.
+                </p>
+              )}
+
               <WriteOffWipForm jobId={id} currentWip={currentWip} />
 
               {safeWriteoffs.length > 0 && (
@@ -625,7 +740,7 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
             </div>
           </div>
 
-<div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
+          <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-900">Information Checklist</h2>
               {safeChecklistItems.length > 0 && (
@@ -658,40 +773,51 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
                 </div>
               );
             })()}
+
             {safeChecklistItems.length === 0 ? (
               <div className="mt-4">
-                <p className="text-sm text-slate-500 mb-3">
-                  No checklist attached yet. Pick a template to track what's been received from the client.
-                </p>
-                <form action={attachChecklistWithId} className="space-y-3">
-                  <select name="template_id" required
-                    className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
-                    <option value="">Select a checklist template</option>
-                    {(templates || []).map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </select>
-                  <button type="submit"
-                    className="w-full rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors">
-                    Attach Checklist
-                  </button>
-                </form>
+                <p className="text-sm text-slate-400">No checklist items attached yet.</p>
+                {(templates || []).length > 0 && (
+                  <form action={attachChecklistWithId} className="mt-3 flex gap-2">
+                    <select
+                      name="template_id"
+                      required
+                      className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    >
+                      <option value="">Select a checklist template</option>
+                      {(templates || []).map((tpl) => (
+                        <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors"
+                    >
+                      Attach
+                    </button>
+                  </form>
+                )}
               </div>
             ) : (
               <div className="mt-4 space-y-2">
                 {safeChecklistItems.map((item) => (
-                  <form key={item.id} action={toggleChecklistItem.bind(null, id, item.id, item.is_received)}>
-                    <button type="submit"
-                      className={item.is_received
-                        ? "w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors border-green-100 bg-green-50 hover:bg-green-100"
-                        : "w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors border-slate-100 hover:bg-slate-50"}>
-                      <span className={item.is_received
-                        ? "w-5 h-5 rounded-md border flex items-center justify-center text-xs flex-shrink-0 mt-0.5 bg-green-600 border-green-600 text-white"
-                        : "w-5 h-5 rounded-md border flex items-center justify-center text-xs flex-shrink-0 mt-0.5 border-slate-300 text-transparent"}>
-                        ✓
-                      </span>
-                      <span className={item.is_received ? "text-sm text-green-800 line-through" : "text-sm text-slate-700"}>
+                  <form
+                    key={item.id}
+                    action={toggleChecklistItem.bind(null, id, item.id, Boolean(item.is_received))}
+                  >
+                    <button
+                      type="submit"
+                      className="w-full flex items-center justify-between rounded-xl border border-slate-100 p-2.5 text-left hover:bg-slate-50 transition-colors"
+                    >
+                      <span className={`text-xs ${item.is_received ? "line-through text-slate-400" : "text-slate-700"}`}>
                         {item.item_text}
+                      </span>
+                      <span
+                        className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                          item.is_received ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        {item.is_received ? "Received" : "Pending"}
                       </span>
                     </button>
                   </form>
@@ -701,25 +827,30 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
-            <h2 className="text-lg font-bold text-slate-900">Notes</h2>
+            <h2 className="text-lg font-bold text-slate-900">Job Notes</h2>
             <div className="mt-4">
               <JobNotesForm addAction={addJobNoteWithId} />
             </div>
+
             {safeJobNotes.length > 0 && (
-              <div className="mt-4 space-y-2">
-                {safeJobNotes.map((n: any) => (
-                  <div key={n.id} className="rounded-lg border border-slate-100 p-2.5">
+              <div className="mt-4 space-y-2.5">
+                {safeJobNotes.map((note) => (
+                  <div key={note.id} className="rounded-xl border border-slate-100 p-3">
                     <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm text-slate-700 whitespace-pre-wrap flex-1">{n.note_text}</p>
-                      <form action={deleteJobNoteWithId.bind(null, n.id)}>
-                        <button className="text-xs font-semibold text-red-500 hover:text-red-700 transition-colors flex-shrink-0">
-                          Delete
+                      <p className="text-xs text-slate-700 whitespace-pre-wrap">{note.note_text}</p>
+                      <form action={deleteJobNoteWithId.bind(null, note.id)}>
+                        <button
+                          type="submit"
+                          className="text-xs text-slate-400 hover:text-red-600 transition-colors"
+                          title="Delete note"
+                        >
+                          ✕
                         </button>
                       </form>
                     </div>
-                    <p className="text-xs text-slate-400 mt-1">
-                      {n.created_by && `${n.created_by} · `}
-                      {new Date(n.created_at).toLocaleDateString("en-GB")} at {new Date(n.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      {note.created_by ? `${note.created_by} · ` : ""}
+                      {new Date(note.created_at).toLocaleDateString("en-GB")}
                     </p>
                   </div>
                 ))}
@@ -728,7 +859,6 @@ supabase.from("mtd_income_sources").select("id").eq("job_id", id).order("created
           </div>
 
         </div>
-
       </div>
     </div>
   );

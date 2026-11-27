@@ -20,7 +20,7 @@ async function syncEngagementLetter(quoteId: string) {
 
   const { data: quote } = await supabase
     .from("quotes")
-    .select("subtotal, vat, total")
+    .select("subtotal, vat, total, billing_type, agreed_hourly_rate")
     .eq("id", quoteId)
     .single();
 
@@ -31,9 +31,15 @@ async function syncEngagementLetter(quoteId: string) {
     .join("\n");
 
   const feeDescription =
-    `Subtotal: £${Number(quote.subtotal).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
-    `VAT: £${Number(quote.vat).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
-    `Total: £${Number(quote.total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    quote.billing_type === "time_and_materials"
+      ? `Billed on completion on a Time & Materials basis` +
+        (quote.agreed_hourly_rate
+          ? ` at £${Number(quote.agreed_hourly_rate).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} per hour`
+          : "") +
+        ` plus VAT where applicable.`
+      : `Subtotal: £${Number(quote.subtotal).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
+        `VAT: £${Number(quote.vat).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
+        `Total: £${Number(quote.total).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const { error } = await supabase
     .from("engagement_letters")
@@ -52,16 +58,64 @@ async function updateQuote(id: string, formData: FormData) {
   "use server";
 
   const get = (key: string) => String(formData.get(key) || "").trim();
+  const billingType = get("billing_type") || "fixed";
+  const agreedRateRaw = get("agreed_hourly_rate");
 
   await supabase.from("quotes").update({
     client_id: get("client_id"),
     status: get("status"),
     quote_date: get("quote_date") || null,
     valid_until: get("valid_until") || null,
+    billing_type: billingType,
+    agreed_hourly_rate: agreedRateRaw ? parseFloat(agreedRateRaw) : null,
     notes: get("notes"),
   }).eq("id", id);
 
+  await syncEngagementLetter(id);
+
   revalidatePath(`/quotes/${id}`);
+  revalidatePath("/engagement");
+}
+
+async function createJobFromQuote(quoteId: string) {
+  "use server";
+
+  const { data: quote } = await supabase
+    .from("quotes")
+    .select("id, client_id, quote_number, billing_type, agreed_hourly_rate")
+    .eq("id", quoteId)
+    .single();
+
+  if (!quote || !quote.client_id) return;
+
+  const { data: quoteLines } = await supabase
+    .from("quote_lines")
+    .select("description")
+    .eq("quote_id", quoteId);
+
+  const itemsToCreate =
+    quoteLines && quoteLines.length > 0
+      ? quoteLines.map((l) => l.description || `${quote.quote_number} Job`)
+      : [`${quote.quote_number} — Time & Materials`];
+
+  const billingType = quote.billing_type || "time_and_materials";
+  const agreedRate = quote.agreed_hourly_rate ? Number(quote.agreed_hourly_rate) : null;
+
+  await supabase.from("jobs").insert(
+    itemsToCreate.map((jobName) => ({
+      client_id: quote.client_id,
+      job_name: jobName,
+      status: "Active",
+      workflow_stage: "Not Started",
+      billing_type: billingType,
+      agreed_hourly_rate: agreedRate,
+      budgeted_fee: 0,
+    }))
+  );
+
+  revalidatePath(`/quotes/${quoteId}`);
+  revalidatePath("/jobs");
+  revalidatePath("/reports");
 }
 
 async function addLineItem(quoteId: string, formData: FormData) {
@@ -202,6 +256,7 @@ export default async function QuoteDetailPage({
 
   const updateWithId = updateQuote.bind(null, id);
   const addLineWithId = addLineItem.bind(null, id);
+  const createJobWithId = createJobFromQuote.bind(null, id);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -218,15 +273,22 @@ export default async function QuoteDetailPage({
             <p className="text-sm text-slate-500 mt-0.5">
               {quote.clients?.client_name || "No client"}
             </p>
-            <span className={`inline-block mt-2 rounded-full px-4 py-1.5 text-sm font-semibold ${
-              quote.status === "Accepted" ? "bg-green-100 text-green-700"
-              : quote.status === "Sent" ? "bg-blue-100 text-blue-700"
-              : quote.status === "Declined" ? "bg-red-100 text-red-700"
-              : quote.status === "Expired" ? "bg-orange-100 text-orange-700"
-              : "bg-slate-100 text-slate-600"
-            }`}>
-              {quote.status || "Draft"}
-            </span>
+            <div className="flex flex-wrap items-center gap-2 mt-2">
+              <span className={`inline-block rounded-full px-4 py-1.5 text-sm font-semibold ${
+                quote.status === "Accepted" ? "bg-green-100 text-green-700"
+                : quote.status === "Sent" ? "bg-blue-100 text-blue-700"
+                : quote.status === "Declined" ? "bg-red-100 text-red-700"
+                : quote.status === "Expired" ? "bg-orange-100 text-orange-700"
+                : "bg-slate-100 text-slate-600"
+              }`}>
+                {quote.status || "Draft"}
+              </span>
+              {quote.billing_type === "time_and_materials" && (
+                <span className="inline-block rounded-full bg-indigo-50 border border-indigo-200 px-3.5 py-1.5 text-xs font-semibold text-indigo-700">
+                  Time &amp; Materials{quote.agreed_hourly_rate ? ` · £${Number(quote.agreed_hourly_rate).toFixed(2)}/hr` : ""}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="text-right max-w-md">
@@ -454,11 +516,11 @@ export default async function QuoteDetailPage({
             </div>
           )}
 
-          {/* Convert to Invoice */}
+          {/* Convert to Invoice / Create Job */}
           <div className="rounded-2xl bg-white p-6 shadow-sm border border-slate-100">
             <h2 className="text-lg font-bold text-slate-900">Convert to Invoice</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              Create an invoice from this quote.
+              Create an invoice from this quote, or set up a job without raising an upfront invoice.
             </p>
             <div className="mt-4">
               <ConvertToInvoiceButton
@@ -471,6 +533,20 @@ export default async function QuoteDetailPage({
                 jobs={jobs || []}
                 quoteLines={(lines || []).map((l) => ({ id: l.id, description: l.description }))}
               />
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-slate-100">
+              <form action={createJobWithId}>
+                <button
+                  type="submit"
+                  className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 transition-colors"
+                >
+                  Create Job (No Invoice)
+                </button>
+              </form>
+              <p className="text-[11px] text-slate-400 mt-1.5">
+                Creates an active job with no upfront invoice so you can log time and bill on completion.
+              </p>
             </div>
           </div>
 
@@ -514,6 +590,23 @@ export default async function QuoteDetailPage({
                   <option>Declined</option>
                   <option>Expired</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Billing Type</label>
+                <select name="billing_type" defaultValue={quote.billing_type || "fixed"}
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400">
+                  <option value="fixed">Fixed Fee</option>
+                  <option value="time_and_materials">Time &amp; Materials (Bill on Completion)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Agreed Hourly Rate (£)</label>
+                <input name="agreed_hourly_rate" type="number" step="0.01" min="0"
+                  defaultValue={quote.agreed_hourly_rate ?? ""}
+                  placeholder="e.g. 100.00"
+                  className="w-full rounded-xl border border-slate-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
               </div>
 
               <div>
